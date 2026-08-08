@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
+import { createCloudflareRuntime } from "./cloudflare-runtime-harness.mjs";
 import { storyFixture } from "./story-fixture.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const port = 43100 + (process.pid % 500);
-const origin = `http://localhost:${port}`;
-let server;
-let serverOutput = "";
-let persistencePath;
-let testWranglerPath;
+const runtime = createCloudflareRuntime({
+  main: `${projectRoot}/worker/index.ts`,
+  port,
+  readinessPath: "/api/chapters",
+  launcher: "vinext",
+  vars: {
+    CREATOR_PASSWORD_HASH: createHash("sha256").update("test-creator-password").digest("hex"),
+    CREATOR_SESSION_SECRET: "test-session-secret-that-is-at-least-32-characters",
+    LOCAL_ADMIN_BYPASS: "false",
+    LOCAL_AUTH_BYPASS: "true",
+  },
+});
+const origin = runtime.origin;
 let adminCookie = "";
 let adminNovelId = "";
 
@@ -38,7 +44,7 @@ async function requestJson(path, options = {}) {
   try {
     payload = JSON.parse(text);
   } catch (error) {
-    throw new Error(`${method} ${path} 返回了非 JSON 响应（${response.status}）：${text}\n${serverOutput.slice(-3_000)}`, { cause: error });
+    throw new Error(`${method} ${path} 返回了非 JSON 响应（${response.status}）：${text}\n${runtime.output.slice(-3_000)}`, { cause: error });
   }
   return { response, payload };
 }
@@ -99,76 +105,8 @@ async function createAuthorAccount(label) {
   return { cookie, id: user.id };
 }
 
-function executeLocalD1(sql) {
-  const result = spawnSync("pnpm", [
-    "exec", "wrangler", "d1", "execute", "mist-page-fiction-db", "--local",
-    "--persist-to", persistencePath, "--command", sql,
-  ], { cwd: projectRoot, env: process.env, encoding: "utf8" });
-  assert.equal(result.status, 0, `本地 D1 命令失败：\n${result.stdout}\n${result.stderr}`);
-}
-
-async function waitForServer() {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (server?.exitCode !== null) throw new Error(`开发服务器提前退出：\n${serverOutput}`);
-    try {
-      const response = await fetch(`${origin}/api/chapters`);
-      if (response.ok) return;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  throw new Error(`等待开发服务器超时：\n${serverOutput}`);
-}
-
-before(async () => {
-  persistencePath = await mkdtemp(join(tmpdir(), "mist-page-d1-test-"));
-  testWranglerPath = join(persistencePath, "wrangler.test.json");
-  const wranglerConfig = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
-  delete wranglerConfig.$schema;
-  wranglerConfig.main = join(projectRoot, "worker/index.ts");
-  wranglerConfig.vars = {
-    CREATOR_PASSWORD_HASH: createHash("sha256").update("test-creator-password").digest("hex"),
-    CREATOR_SESSION_SECRET: "test-session-secret-that-is-at-least-32-characters",
-    LOCAL_ADMIN_BYPASS: "false",
-    LOCAL_AUTH_BYPASS: "true",
-  };
-  wranglerConfig.d1_databases = wranglerConfig.d1_databases.map((database) => ({
-    ...database,
-    migrations_dir: join(projectRoot, "drizzle"),
-  }));
-  await writeFile(testWranglerPath, JSON.stringify(wranglerConfig));
-  const migration = spawnSync("pnpm", ["exec", "wrangler", "d1", "migrations", "apply", "mist-page-fiction-db", "--local", "--persist-to", persistencePath], {
-    cwd: projectRoot,
-    env: process.env,
-    encoding: "utf8",
-  });
-  assert.equal(migration.status, 0, `本地 D1 迁移失败：\n${migration.stdout}\n${migration.stderr}`);
-  server = spawn("pnpm", ["exec", "vinext", "dev", "--port", String(port)], {
-    cwd: projectRoot,
-    env: {
-      ...process.env,
-      WRANGLER_LOG_PATH: ".wrangler/test.log",
-      CLOUDFLARE_PERSIST_PATH: persistencePath,
-      CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: testWranglerPath,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const collect = (chunk) => { serverOutput = `${serverOutput}${chunk}`.slice(-20_000); };
-  server.stdout.on("data", collect);
-  server.stderr.on("data", collect);
-  await waitForServer();
-});
-
-after(async () => {
-  if (server && server.exitCode === null) {
-    await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 2_000);
-      server.once("exit", () => { clearTimeout(timeout); resolve(); });
-      server.kill("SIGTERM");
-    });
-  }
-  if (persistencePath) await rm(persistencePath, { recursive: true, force: true });
-});
+before(() => runtime.start());
+after(() => runtime.stop());
 
 test("公开页面与后台页面由 Vinext Worker 正常渲染", async () => {
   const [home, admin] = await Promise.all([fetch(`${origin}/`), fetch(`${origin}/admin`)]);
@@ -864,7 +802,7 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     body: { email: expiredEmail, displayName: "过期验证账号", password: "test-password-123", turnstileToken: "" },
   });
   assert.equal(expiredRegistration.response.status, 201);
-  executeLocalD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${expiredEmail}') AND type = 'verify_email'`);
+  runtime.executeD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${expiredEmail}') AND type = 'verify_email'`);
   const expiredVerification = await requestText("/api/auth/verify-email", {
     method: "POST",
     body: { token: expiredRegistration.payload.developmentToken },
@@ -877,7 +815,7 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     body: { email: resetEmail, turnstileToken: "" },
   });
   assert.ok(expiringReset.payload.developmentToken);
-  executeLocalD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${resetEmail}') AND type = 'reset_password' AND used_at IS NULL`);
+  runtime.executeD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${resetEmail}') AND type = 'reset_password' AND used_at IS NULL`);
   const expiredReset = await requestText("/api/auth/reset-password", {
     method: "POST",
     body: { token: expiringReset.payload.developmentToken, password: "expired-password-123" },
