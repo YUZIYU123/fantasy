@@ -99,6 +99,14 @@ async function createAuthorAccount(label) {
   return { cookie, id: user.id };
 }
 
+function executeLocalD1(sql) {
+  const result = spawnSync("pnpm", [
+    "exec", "wrangler", "d1", "execute", "mist-page-fiction-db", "--local",
+    "--persist-to", persistencePath, "--command", sql,
+  ], { cwd: projectRoot, env: process.env, encoding: "utf8" });
+  assert.equal(result.status, 0, `本地 D1 命令失败：\n${result.stdout}\n${result.stderr}`);
+}
+
 async function waitForServer() {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -623,6 +631,19 @@ test("平台与作者素材的归属、整理和历史引用保护保持兼容",
   });
   assert.equal(longVideo.response.status, 400);
   assert.equal(longVideo.payload.error, "视频不能超过 60 秒");
+  const unsupported = await uploadAsset("/studio/api/assets", authorA.cookie, {
+    name: "notes.txt",
+    type: "text/plain",
+  });
+  assert.equal(unsupported.response.status, 400);
+  assert.equal(unsupported.payload.error, "仅支持图片、音频、MP4 和 WebM");
+  const oversized = await uploadAsset("/studio/api/assets", authorA.cookie, {
+    name: "oversized.png",
+    type: "image/png",
+    bytes: new Uint8Array(8 * 1024 * 1024 + 1),
+  });
+  assert.equal(oversized.response.status, 400);
+  assert.equal(oversized.payload.error, "图片文件过大");
 
   const deletePlatform = await requestJson(`/studio/api/assets?id=${platformUpload.payload.asset.id}`, {
     method: "DELETE",
@@ -647,9 +668,19 @@ test("平台与作者素材的归属、整理和历史引用保护保持兼容",
   assert.equal((await requestJson("/studio/api/novels", {
     method: "POST", cookie: authorA.cookie, body: { action: "save", id: novelId, novel: novelWithAsset },
   })).response.status, 200);
+  const draftReference = await requestJson(`/studio/api/assets?id=${authorUpload.payload.asset.id}`, {
+    method: "DELETE", cookie: authorA.cookie,
+  });
+  assert.equal(draftReference.response.status, 409);
+  assert.ok(draftReference.payload.references.some((reference) => reference.chapterId === novelId && reference.version === "draft"));
   assert.equal((await requestJson("/admin/api/novels", {
     method: "POST", cookie: adminCookie, body: { action: "publish", id: novelId, novel: novelWithAsset },
   })).response.status, 200);
+  const publishedReference = await requestJson(`/studio/api/assets?id=${authorUpload.payload.asset.id}`, {
+    method: "DELETE", cookie: authorA.cookie,
+  });
+  assert.equal(publishedReference.response.status, 409);
+  assert.ok(publishedReference.payload.references.some((reference) => reference.chapterId === novelId && reference.version === "published"));
   const novelWithoutAsset = structuredClone(novelWithAsset);
   novelWithoutAsset.coverAssetId = "";
   novelWithoutAsset.coverUrl = "https://example.com/history-cover.jpg";
@@ -671,6 +702,11 @@ test("平台与作者素材的归属、整理和历史引用保护保持兼容",
   assert.equal((await requestJson("/admin/api/chapters", {
     method: "POST", cookie: adminCookie, body: { action: "publish", id: chapterId, story: storyWithAsset },
   })).response.status, 200);
+  const chapterPublishedReference = await requestJson(`/studio/api/assets?id=${authorUpload.payload.asset.id}`, {
+    method: "DELETE", cookie: authorA.cookie,
+  });
+  assert.equal(chapterPublishedReference.response.status, 409);
+  assert.ok(chapterPublishedReference.payload.references.some((reference) => reference.chapterId === chapterId && reference.version === "published"));
   const storyWithoutAsset = structuredClone(storyWithAsset);
   storyWithoutAsset.coverAssetId = "";
   storyWithoutAsset.coverUrl = "https://example.com/history-chapter.jpg";
@@ -707,6 +743,12 @@ test("平台与作者素材的归属、整理和历史引用保护保持兼容",
 });
 
 test("账号验证、重置、角色状态和管理员能力的安全契约保持兼容", async () => {
+  const invalidRegistration = await requestText("/api/auth/register", {
+    method: "POST",
+    body: { email: "invalid", displayName: "无效账号", password: "test-password-123", turnstileToken: "" },
+  });
+  assert.equal(invalidRegistration.response.status, 500);
+  assert.equal(invalidRegistration.text, "");
   const pendingEmail = `pending-${process.pid}@example.com`;
   const pendingRegistration = await requestJson("/api/auth/register", {
     method: "POST",
@@ -815,6 +857,33 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
   assert.equal((await requestJson("/api/auth/login", {
     method: "POST", body: { email: resetEmail, password: "new-password-456" },
   })).response.status, 200);
+
+  const expiredEmail = `expired-${process.pid}@example.com`;
+  const expiredRegistration = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: { email: expiredEmail, displayName: "过期验证账号", password: "test-password-123", turnstileToken: "" },
+  });
+  assert.equal(expiredRegistration.response.status, 201);
+  executeLocalD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${expiredEmail}') AND type = 'verify_email'`);
+  const expiredVerification = await requestText("/api/auth/verify-email", {
+    method: "POST",
+    body: { token: expiredRegistration.payload.developmentToken },
+  });
+  assert.equal(expiredVerification.response.status, 500);
+  assert.equal(expiredVerification.text, "");
+
+  const expiringReset = await requestJson("/api/auth/forgot-password", {
+    method: "POST",
+    body: { email: resetEmail, turnstileToken: "" },
+  });
+  assert.ok(expiringReset.payload.developmentToken);
+  executeLocalD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${resetEmail}') AND type = 'reset_password' AND used_at IS NULL`);
+  const expiredReset = await requestText("/api/auth/reset-password", {
+    method: "POST",
+    body: { token: expiringReset.payload.developmentToken, password: "expired-password-123" },
+  });
+  assert.equal(expiredReset.response.status, 500);
+  assert.equal(expiredReset.text, "");
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const rejected = await requestJson("/admin/api/session", {

@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Reader } from "../app/story-studio";
-import { normalizeStory, STORY_PAGE_BREAK, type StoryDocument } from "../lib/story";
+import { createTerminalTask, normalizeStory, STORY_PAGE_BREAK, type StoryDocument } from "../lib/story";
 import { storyFixture } from "./story-fixture.mjs";
 
 type FetchCall = { input: string; method: string; body?: Record<string, unknown> };
@@ -14,6 +14,7 @@ let root: Root;
 let container: HTMLDivElement;
 let fetchCalls: FetchCall[];
 let remoteProgress: Record<string, unknown> | null;
+let prefersReducedMotion: boolean;
 
 function readerStory() {
   return normalizeStory(storyFixture() as unknown as StoryDocument);
@@ -40,7 +41,7 @@ function installDom() {
   });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: window.navigator });
   window.matchMedia = () => ({
-    matches: true,
+    matches: prefersReducedMotion,
     media: "",
     onchange: null,
     addListener() {},
@@ -59,6 +60,7 @@ function installDom() {
   globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
   fetchCalls = [];
   remoteProgress = null;
+  prefersReducedMotion = true;
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
     const method = init.method || "GET";
@@ -111,7 +113,7 @@ test("预览会话共享分页和剧情推进，但不读取或保存阅读进�
   assert.equal(localStorage.getItem("mist-page-progress:preview-chapter"), null);
 });
 
-test("正式阅读选择较新的云端进度，并在完成或版本变化后从开头重启", async () => {
+test("正式阅读选择较新的云端进度", async () => {
   const story = readerStory();
   localStorage.setItem("mist-page-progress:progress-chapter", JSON.stringify({
     nodeId: "branch-a",
@@ -131,9 +133,95 @@ test("正式阅读选择较新的云端进度，并在完成或版本变化后�
   await act(async () => root.render(<Reader story={story} chapterId="progress-chapter" chapterVersion={7} onBack={() => {}} />));
   await settle();
   assert.match(container.textContent || "", /分支乙正文/);
+});
 
-  await act(async () => root.unmount());
-  root = createRoot(container);
+test("完成记录和章节发布版本变化分别让会话从开头重启", async () => {
+  const story = readerStory();
+  for (const progress of [
+    {
+      nodeId: "ending-a",
+      pageIndex: 0,
+      terminalEventIds: ["old-event"],
+      version: 7,
+      updatedAt: "2026-08-08T12:00:00.000Z",
+      completedAt: "2026-08-08T12:00:00.000Z",
+    },
+    {
+      nodeId: "branch-b",
+      pageIndex: 0,
+      terminalEventIds: ["old-event"],
+      version: 6,
+      updatedAt: "2026-08-08T13:00:00.000Z",
+      completedAt: null,
+    },
+  ]) {
+    localStorage.setItem("mist-page-progress:restart-chapter", JSON.stringify(progress));
+    remoteProgress = null;
+    await act(async () => root.render(<Reader story={story} chapterId="restart-chapter" chapterVersion={7} onBack={() => {}} />));
+    await settle();
+    assert.match(container.textContent || "", /起点正文/);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+  }
+});
+
+test("正式阅读导航和完成都会写入设备与云端进度", async () => {
+  const story = readerStory();
+  story.nodes[0].canEndChapter = true;
+  let completed = false;
+  await act(async () => root.render(<Reader
+    story={story}
+    chapterId="persist-chapter"
+    chapterVersion={9}
+    onBack={() => {}}
+    onComplete={() => { completed = true; }}
+  />));
+  await settle();
+  assert.ok(fetchCalls.some((call) => call.input === "/api/account/progress" && call.method === "PUT" && call.body?.completed === false));
+  await act(async () => clickButton("结束本章"));
+  assert.equal(completed, true);
+  const saved = JSON.parse(localStorage.getItem("mist-page-progress:persist-chapter") || "{}");
+  assert.equal(saved.completedAt, saved.updatedAt);
+  assert.ok(fetchCalls.some((call) => call.input === "/api/account/progress" && call.method === "PUT" && call.body?.completed === true));
+});
+
+test("转场视频失败后会进入正文", async () => {
+  const story = readerStory();
+  story.nodes[0].videoMode = "transition";
+  story.nodes[0].videoUrl = "https://example.com/unavailable.mp4";
+  prefersReducedMotion = false;
+  await act(async () => root.render(<Reader story={story} chapterId="video-failure" preview onBack={() => {}} />));
+  const video = container.querySelector(".transition-video video");
+  assert.ok(video);
+  assert.doesNotMatch(container.textContent || "", /起点正文/);
+  await act(async () => video.dispatchEvent(new dom.window.Event("error", { bubbles: true })));
+  await settle();
+  assert.match(container.textContent || "", /起点正文/);
+});
+
+test("进入和离开音乐区间会更新当前配乐", async () => {
+  const story = readerStory();
+  story.musicCues = [{
+    id: "cue-main",
+    name: "契约配乐",
+    assetId: "music",
+    url: "https://example.com/music.mp3",
+    volume: 0.5,
+    loop: true,
+    fadeMs: 0,
+    startNodeId: "start",
+    stopNodeIds: ["start"],
+  }];
+  await act(async () => root.render(<Reader story={story} chapterId="music-range" preview onBack={() => {}} />));
+  await settle();
+  assert.match(container.textContent || "", /契约配乐/);
+  await act(async () => clickButton("路径甲"));
+  await settle(180);
+  assert.doesNotMatch(container.textContent || "", /契约配乐/);
+});
+
+test("旧格式的复合完成记录仍然从开头重启", async () => {
+  const story = readerStory();
   remoteProgress = {
     nodeId: "ending-a",
     pageIndex: 0,
@@ -142,7 +230,7 @@ test("正式阅读选择较新的云端进度，并在完成或版本变化后�
     updatedAt: "2026-08-08T12:00:00.000Z",
     completedAt: "2026-08-08T12:00:00.000Z",
   };
-  await act(async () => root.render(<Reader story={story} chapterId="progress-chapter" chapterVersion={7} onBack={() => {}} />));
+  await act(async () => root.render(<Reader story={story} chapterId="legacy-restart" chapterVersion={7} onBack={() => {}} />));
   await settle();
   assert.match(container.textContent || "", /起点正文/);
 });
@@ -180,8 +268,12 @@ test("终端反馈完成前保持选择锁定，完成后再进入目标节点",
   choice.terminalFeedbackEnabled = true;
   choice.terminalMessage = "任务已更新";
   choice.terminalSpeak = false;
-  choice.terminalTaskActions = [];
-  await act(async () => root.render(<Reader story={story} chapterId="terminal-order" preview onBack={() => {}} />));
+  const task = createTerminalTask();
+  task.title = "契约任务";
+  story.terminal.initialTask = task;
+  choice.terminalTaskActions = [{ id: "complete-task", type: "setTaskStatus", task: null, objective: null, objectiveId: "", status: "completed" }];
+  await act(async () => root.render(<Reader story={story} chapterId="terminal-order" onBack={() => {}} />));
+  await settle();
 
   await act(async () => clickButton("路径甲"));
   assert.doesNotMatch(container.textContent || "", /分支甲正文/);
@@ -192,4 +284,8 @@ test("终端反馈完成前保持选择锁定，完成后再进入目标节点",
   assert.equal(skip.disabled, false);
   await settle(120);
   assert.match(container.textContent || "", /分支甲正文/);
+  assert.ok(fetchCalls.some((call) => call.input === "/api/account/progress"
+    && call.method === "PUT"
+    && Array.isArray(call.body?.terminalEventIds)
+    && call.body.terminalEventIds.includes("complete-task")));
 });
