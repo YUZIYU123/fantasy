@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../db/assets";
-import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../_asset-lifecycle-http";
+import { assetLifecycleErrorResponse, assetLifecycleResponse, parseAssetMutation } from "../../../_asset-lifecycle-http";
 import { assertSameOrigin, authErrorResponse, requireRole } from "../../../../lib/auth";
 
 export async function GET(request: Request) {
@@ -34,7 +34,7 @@ export async function PATCH(request: Request) {
   try {
     assertSameOrigin(request);
     const identity = await requireRole(request, ["author"]);
-    const body = await request.json() as { action: "create-folder" | "rename-folder" | "delete-folder" | "update-asset"; id?: string; name?: string; folderId?: string | null };
+    const body = parseAssetMutation(await request.json());
     return assetLifecycleResponse(await assetLifecycle.execute({ kind: "author", id: identity.id }, body));
   } catch (error) {
     return assetLifecycleErrorResponse(error) ?? authErrorResponse(error);

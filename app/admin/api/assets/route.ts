@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../db/assets";
-import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../_asset-lifecycle-http";
+import { assetLifecycleErrorResponse, assetLifecycleResponse, parseAssetMutation } from "../../../_asset-lifecycle-http";
 import { adminAuthResponse, AdminAuthError, requireAdmin } from "../../../../lib/admin-auth";
 
 const actor = { kind: "administrator" } as const;
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     await requireAdmin(request);
-    const body = await request.json() as { action: "create-folder" | "rename-folder" | "delete-folder" | "update-asset"; id?: string; name?: string; folderId?: string | null };
+    const body = parseAssetMutation(await request.json());
     return assetLifecycleResponse(await assetLifecycle.execute(actor, body));
   } catch (error) {
     const response = assetLifecycleErrorResponse(error);

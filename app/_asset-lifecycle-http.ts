@@ -1,4 +1,14 @@
-import { AssetLifecycleError, type AssetLifecycleResult } from "../db/assets";
+import { AssetLifecycleError, type AssetCommand, type AssetLifecycleResult } from "../db/assets";
+
+type MutationCommand = Extract<AssetCommand, { action: "create-folder" | "rename-folder" | "delete-folder" | "update-asset" }>;
+
+export function parseAssetMutation(input: unknown): MutationCommand {
+  const body = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  if (!["create-folder", "rename-folder", "delete-folder", "update-asset"].includes(String(body.action || ""))) {
+    throw new AssetLifecycleError("不支持的素材操作");
+  }
+  return body as MutationCommand;
+}
 
 export function assetLifecycleResponse(result: AssetLifecycleResult) {
   if (result.kind === "folder") return Response.json({ folder: result.folder }, { status: 201 });

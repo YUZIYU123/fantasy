@@ -63,7 +63,7 @@ async function list(actor: AssetActor) {
   const db = getDb();
   if (actor.kind === "administrator") {
     const [assetRows, folders] = await Promise.all([
-      db.select().from(assets).orderBy(desc(assets.updatedAt)),
+      db.select().from(assets).where(isNull(assets.ownerId)).orderBy(desc(assets.updatedAt)),
       db.select().from(assetFolders).where(isNull(assetFolders.ownerId)).orderBy(asc(assetFolders.name)),
     ]);
     return { assets: assetRows, folders };
@@ -111,17 +111,18 @@ async function upload(actor: AssetActor, command: Extract<AssetCommand, { action
   const row = {
     id, name: command.file.name.slice(0, 200), type, url: `/api/assets/${id}`, storageKey,
     folderId: command.folderId, ownerId: ownerIdFor(actor), mimeType: command.file.type,
-    size: command.file.size, duration: Math.round(duration), alt: command.alt.slice(0, 500), status: "ready" as const,
+    size: command.file.size, duration: Math.round(duration), alt: command.alt.slice(0, 500), status: "deleting" as const,
   };
-  await command.bucket.put(storageKey, command.file.stream(), { httpMetadata: { contentType: command.file.type } });
+  await getDb().insert(assets).values(row);
   try {
-    await getDb().insert(assets).values(row);
+    await command.bucket.put(storageKey, command.file.stream(), { httpMetadata: { contentType: command.file.type } });
+    await getDb().update(assets).set({ status: "ready", updatedAt: new Date().toISOString() }).where(eq(assets.id, id));
   } catch (error) {
-    await command.bucket.delete(storageKey);
+    await getDb().update(assets).set({ status: "delete_failed", updatedAt: new Date().toISOString() }).where(eq(assets.id, id));
     throw error;
   }
   const now = new Date().toISOString();
-  return { kind: "asset", asset: { ...row, createdAt: now, updatedAt: now } };
+  return { kind: "asset", asset: { ...row, status: "ready", createdAt: now, updatedAt: now } };
 }
 
 async function generatedFolder(ownerId: string | null, name: string) {
@@ -129,33 +130,39 @@ async function generatedFolder(ownerId: string | null, name: string) {
   const rows = ownerId
     ? await db.select().from(assetFolders).where(and(eq(assetFolders.name, name), eq(assetFolders.ownerId, ownerId))).limit(1)
     : await db.select().from(assetFolders).where(and(eq(assetFolders.name, name), isNull(assetFolders.ownerId))).limit(1);
-  if (rows[0]) return rows[0].id;
-  const id = crypto.randomUUID();
-  await db.insert(assetFolders).values({ id, name, ownerId });
-  return id;
+  return rows[0] ? { id: rows[0].id, created: false } : { id: crypto.randomUUID(), created: true };
 }
 
 async function storeGenerated(
   bucket: R2Bucket,
   values: { ownerId: string | null; folderName: string; prefix: string; name: string; bytes: Uint8Array; mimeType: string; extension: string; duration: number },
 ) {
-  const folderId = await generatedFolder(values.ownerId, values.folderName);
+  const folder = await generatedFolder(values.ownerId, values.folderName);
   const id = crypto.randomUUID();
   const storageKey = `audio/${values.prefix}/${values.ownerId || "global"}/${id}.${values.extension}`;
   const row = {
-    id, name: values.name, type: "audio" as const, url: `/api/assets/${id}`, storageKey, folderId,
+    id, name: values.name, type: "audio" as const, url: `/api/assets/${id}`, storageKey, folderId: folder.id,
     ownerId: values.ownerId, mimeType: values.mimeType, size: values.bytes.byteLength,
-    duration: values.duration, alt: "", status: "ready" as const,
+    duration: values.duration, alt: "", status: "deleting" as const,
   };
-  await bucket.put(storageKey, values.bytes, { httpMetadata: { contentType: values.mimeType } });
+  const db = getDb();
+  if (folder.created) {
+    await db.batch([
+      db.insert(assetFolders).values({ id: folder.id, name: values.folderName, ownerId: values.ownerId }),
+      db.insert(assets).values(row),
+    ]);
+  } else {
+    await db.insert(assets).values(row);
+  }
   try {
-    await getDb().insert(assets).values(row);
+    await bucket.put(storageKey, values.bytes, { httpMetadata: { contentType: values.mimeType } });
+    await db.update(assets).set({ status: "ready", updatedAt: new Date().toISOString() }).where(eq(assets.id, id));
   } catch (error) {
-    await bucket.delete(storageKey);
+    await db.update(assets).set({ status: "delete_failed", updatedAt: new Date().toISOString() }).where(eq(assets.id, id));
     throw error;
   }
   const now = new Date().toISOString();
-  return { ...row, createdAt: now, updatedAt: now };
+  return { ...row, status: "ready", createdAt: now, updatedAt: now };
 }
 
 async function generateSfx(actor: AssetActor, command: Extract<AssetCommand, { action: "generate-sfx" }>): Promise<AssetLifecycleResult> {
@@ -251,9 +258,11 @@ async function mutate(actor: AssetActor, command: Exclude<AssetCommand, { action
       if (!name || name.length > 80) fail(actor.kind === "administrator" ? "文件夹名称不能超过 80 个字符" : "文件夹名称需要为 1–80 个字符");
       await db.update(assetFolders).set({ name, updatedAt: new Date().toISOString() }).where(eq(assetFolders.id, command.id));
     } else {
-      await db.update(assets).set({ folderId: null, updatedAt: new Date().toISOString() })
-        .where(and(eq(assets.folderId, command.id), ownerWhere(actor, assets.ownerId)));
-      await db.delete(assetFolders).where(eq(assetFolders.id, command.id));
+      await db.batch([
+        db.update(assets).set({ folderId: null, updatedAt: new Date().toISOString() })
+          .where(and(eq(assets.folderId, command.id), ownerWhere(actor, assets.ownerId))),
+        db.delete(assetFolders).where(eq(assetFolders.id, command.id)),
+      ]);
     }
   } else if (command.action === "update-asset") {
     await assertAsset(actor, command.id, actor.kind === "author" ? "只能整理自己的素材" : "只能整理平台素材");
@@ -263,7 +272,7 @@ async function mutate(actor: AssetActor, command: Exclude<AssetCommand, { action
       folderId: command.folderId ?? null,
       updatedAt: new Date().toISOString(),
     }).where(eq(assets.id, command.id));
-  }
+  } else fail("不支持的素材操作");
   return { kind: "ok" };
 }
 
