@@ -26,6 +26,8 @@ export type ReadingEffect =
   | { kind: "wait"; id: string; milliseconds: number }
   | { kind: "music"; action: "start"; cue: StoryMusicCue }
   | { kind: "music"; action: "stop" }
+  | { kind: "video"; id: string; action: "play" }
+  | { kind: "terminal-feedback"; id: string; playback: SessionTerminalPlayback }
   | { kind: "complete" };
 
 export type SessionTerminalPlayback = {
@@ -103,7 +105,8 @@ export function createReadingSession(input: ReadingSessionInput) {
   const now = input.now ?? (() => new Date().toISOString());
   const progress = chooseProgress(input);
   const nodeId = initialNodeId(input);
-  const resumed = nodeId === progress?.nodeId && !progress.completedAt && progress.version === input.chapterVersion;
+  const resumed = nodeId === progress?.nodeId && !progress.completedAt
+    && (typeof progress.version !== "number" || progress.version === input.chapterVersion);
   const firstPhase = (targetId: string): ReadingPhase => {
     const node = input.story.nodes.find((item) => item.id === targetId);
     if (node?.displayImagePosition === "before") return "beforeImage";
@@ -147,6 +150,7 @@ export function createReadingSession(input: ReadingSessionInput) {
     const effects: ReadingEffect[] = [];
     if (music.startCue) effects.push({ kind: "music", action: "start", cue: music.startCue });
     else if (music.stopActive) effects.push({ kind: "music", action: "stop" });
+    if (state.phase === "transitionVideo") effects.push({ kind: "video", id: `video:${targetId}`, action: "play" });
     effects.push(...progressEffect());
     return effects;
   };
@@ -156,6 +160,7 @@ export function createReadingSession(input: ReadingSessionInput) {
     state = { ...state, activeCueId: initialCue.id, activeCueName: initialCue.name };
     initialEffects.push({ kind: "music", action: "start", cue: initialCue });
   }
+  if (state.phase === "transitionVideo") initialEffects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play" });
   initialEffects.push(...progressEffect());
 
   function dispatch(event: ReadingEvent) {
@@ -182,21 +187,26 @@ export function createReadingSession(input: ReadingSessionInput) {
       if (choice.sfxUrl) effects.push({ kind: "play-sfx", id: `sfx:${choice.id}`, url: choice.sfxUrl, volume: choice.sfxVolume, maximumMs: choice.sfxMaxDurationMs });
       if (choice.terminalFeedbackEnabled) {
         const result = applyTerminalTaskEvents(input.story, [...state.terminalEventIds, ...choice.terminalTaskActions.map((action) => action.id)]);
+        const playback = {
+          id: `${node.id}:${choice.id}`, message: choice.terminalMessage, speak: choice.terminalSpeak,
+          voiceUrl: choice.terminalVoiceUrl, interactionPreset: choice.interactionPreset,
+          imageUrl: choice.feedbackImageUrl, imageAlt: choice.feedbackImageAlt,
+          imagePresentation: choice.feedbackImagePresentation, task: result.task,
+        };
         state = {
           ...state, terminalEventIds: result.appliedIds,
-          terminalPlayback: {
-            id: `${node.id}:${choice.id}`, message: choice.terminalMessage, speak: choice.terminalSpeak,
-            voiceUrl: choice.terminalVoiceUrl, interactionPreset: choice.interactionPreset,
-            imageUrl: choice.feedbackImageUrl, imageAlt: choice.feedbackImageAlt,
-            imagePresentation: choice.feedbackImagePresentation, task: result.task,
-          },
+          terminalPlayback: playback,
           incomingChoice: choice,
         };
+        effects.push({ kind: "terminal-feedback", id: playback.id, playback });
       } else {
         const duration = choice.feedbackImageUrl
           ? normalizeChoiceImageDuration(choice.feedbackImageDurationMs)
           : input.reducedMotion ? 140 : interactionDuration[choice.interactionPreset];
-        state = { ...state, choiceFeedback: choice, incomingChoice: choice };
+        state = {
+          ...state, choiceFeedback: choice, incomingChoice: choice,
+          activeTransition: choice.transitionPreset === "none" ? null : choice.transitionPreset,
+        };
         effects.push({ kind: "wait", id: `choice:${choice.id}`, milliseconds: duration });
       }
     } else if (event.type === "wait-complete" || event.type === "effect-result" && event.id.startsWith("choice:")) {

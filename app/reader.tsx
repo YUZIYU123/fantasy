@@ -33,9 +33,16 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   const [state, setState] = useState<ReadingState | null>(null);
   const [muted, setMuted] = useState(false);
   const [terminalDucking, setTerminalDucking] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(() => typeof window !== "undefined"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const [needsPlay, setNeedsPlay] = useState(false);
   const music = useRef<HTMLAudioElement>(null);
   const sfx = useRef<HTMLAudioElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const storyPanel = useRef<HTMLElement>(null);
+  const pausedForVideo = useRef(false);
+  const activeCueVolume = useRef(0.55);
+  const activeSfxVolume = useRef(0.8);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const dispatchRef = useRef<(event: ReadingEvent) => void>(() => {});
   const executeEffectsRef = useRef<(effects: ReadingEffect[]) => void>(() => {});
@@ -61,7 +68,8 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
         sfx.current.pause();
         sfx.current.src = effect.url;
         sfx.current.currentTime = 0;
-        sfx.current.volume = muted ? 0 : clampMediaVolume(effect.volume, 0.8);
+        activeSfxVolume.current = clampMediaVolume(effect.volume, 0.8);
+        sfx.current.volume = muted ? 0 : activeSfxVolume.current;
         sfx.current.play()
           .then(() => dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "success" }))
           .catch(() => dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "failure" }));
@@ -76,9 +84,17 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
         } else if (music.current && effect.cue.url) {
           music.current.src = effect.cue.url;
           music.current.loop = effect.cue.loop;
-          music.current.volume = muted ? 0 : clampMediaVolume(effect.cue.volume, 0.55) * (terminalDucking ? 0.25 : 1);
+          activeCueVolume.current = clampMediaVolume(effect.cue.volume, 0.55);
+          music.current.volume = muted ? 0 : activeCueVolume.current * (terminalDucking ? 0.25 : 1);
           music.current.play().catch(() => {});
         }
+      } else if (effect.kind === "video") {
+        queueMicrotask(() => video.current?.play()
+          .then(() => dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "success" }))
+          .catch(() => {
+            setNeedsPlay(true);
+            dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "failure" });
+          }));
       } else if (effect.kind === "complete") {
         (onComplete || onBack)();
       }
@@ -98,12 +114,14 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
 
   useEffect(() => {
     let cancelled = false;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updateMotion = () => setReducedMotion(media.matches);
+    media.addEventListener("change", updateMotion);
     const install = (cloudProgress: Parameters<typeof createReadingSession>[0]["cloudProgress"]) => {
       if (cancelled) return;
       const deviceProgress = preview ? null : parseReadingProgress(localStorage.getItem(storageKey), story.startNodeId);
       const session = createReadingSession({
-        story, chapterId, chapterVersion, preview, initialNodeId, deviceProgress, cloudProgress, reducedMotion,
+        story, chapterId, chapterVersion, preview, initialNodeId, deviceProgress, cloudProgress, reducedMotion: media.matches,
       });
       sessionRef.current = session;
       setState({ ...session.state });
@@ -119,6 +137,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     const sfxNode = sfx.current;
     return () => {
       cancelled = true;
+      media.removeEventListener("change", updateMotion);
       timerMap.forEach(clearTimeout);
       timerMap.clear();
       musicNode?.pause();
@@ -127,9 +146,19 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   }, [chapterId, chapterVersion, initialNodeId, preview, storageKey, story]);
 
   useEffect(() => {
-    if (music.current) music.current.volume = muted ? 0 : 0.55 * (terminalDucking ? 0.25 : 1);
-    if (sfx.current) sfx.current.volume = muted ? 0 : sfx.current.volume;
+    if (music.current) music.current.volume = muted ? 0 : activeCueVolume.current * (terminalDucking ? 0.25 : 1);
+    if (sfx.current) sfx.current.volume = muted ? 0 : activeSfxVolume.current;
   }, [muted, terminalDucking]);
+
+  useEffect(() => {
+    if (state?.phase === "transitionVideo" && music.current && !music.current.paused) {
+      music.current.pause();
+      pausedForVideo.current = true;
+    } else if (state?.phase !== "transitionVideo" && music.current && pausedForVideo.current) {
+      music.current.play().catch(() => {});
+      pausedForVideo.current = false;
+    }
+  }, [state?.phase]);
 
   const node = story.nodes.find((item) => item.id === state?.nodeId) || story.nodes[0];
   const pages = useMemo(() => paginateStoryBody(node?.body || ""), [node?.body]);
@@ -145,13 +174,14 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     <audio ref={music} /><audio ref={sfx} />
     {node.imageUrl && <div className="scene-image-layer"><Image src={node.imageUrl} alt={node.imageAlt} fill unoptimized sizes="100vw" style={{ objectFit: node.imagePresentation.fit, objectPosition: `${node.imagePresentation.positionX}% ${node.imagePresentation.positionY}%` }} /></div>}
     <div className="reader-shade" />
-    {state.choiceFeedback && <ChoiceFeedback choice={state.choiceFeedback} />}
+    {state.activeTransition && <div className={`choice-transition transition-${state.activeTransition}`} aria-label="剧情转场"><i /><i /></div>}
+    {state.choiceFeedback && <ChoiceFeedback choice={state.choiceFeedback} reducedMotion={reducedMotion} />}
     {node.videoMode === "background" && node.videoUrl && <video className="scene-video" src={node.videoUrl} poster={node.imageUrl || undefined} autoPlay muted loop playsInline onError={(event) => { event.currentTarget.style.display = "none"; }} />}
-    {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline autoPlay onEnded={() => dispatch({ type: "video-complete" })} onError={() => dispatch({ type: "video-failure" })} /><button className="skip-video" onClick={() => dispatch({ type: "video-complete" })}>跳过动画 →</button></div>}
+    {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={needsPlay} onEnded={() => dispatch({ type: "video-complete" })} onError={() => dispatch({ type: "video-failure" })} />{needsPlay && <button onClick={() => { video.current?.play(); setNeedsPlay(false); }}>点击播放</button>}<button className="skip-video" onClick={() => dispatch({ type: "video-complete" })}>跳过动画 →</button></div>}
     <header className="reader-nav"><button onClick={onBack} aria-label="返回章节目录">←</button><div><span>{story.title}</span>{state.activeCueName && <small>♫ {state.activeCueName}</small>}</div><button onClick={() => setMuted((value) => !value)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
     {(state.phase === "beforeImage" || state.phase === "afterImage") && <NodeDisplayImage node={node} onContinue={() => dispatch({ type: "continue-image" })} />}
-    {state.phase === "content" && <article className="story-panel"><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${pageIndex}`} aria-live="polite">{pages[pageIndex]}</p>
-      {pages.length > 1 && <nav className="story-pagination" aria-label="正文分页"><button disabled={pageIndex === 0 || state.choiceLocked} onClick={() => dispatch({ type: "page", index: pageIndex - 1 })}>← 上一页</button><span>{pageIndex + 1} / {pages.length}</span><button disabled={isLastPage || state.choiceLocked} onClick={() => dispatch({ type: "page", index: pageIndex + 1 })}>下一页 →</button></nav>}
+    {state.phase === "content" && <article className="story-panel" ref={storyPanel}><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${pageIndex}`} aria-live="polite">{pages[pageIndex]}</p>
+      {pages.length > 1 && <nav className="story-pagination" aria-label="正文分页"><button disabled={pageIndex === 0 || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex - 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>← 上一页</button><span>{pageIndex + 1} / {pages.length}</span><button disabled={isLastPage || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex + 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>下一页 →</button></nav>}
       {isLastPage && needsAfterImage && <div className="choices"><button disabled={state.choiceLocked} onClick={() => dispatch({ type: "show-after-image" })}><span>查看节点图片</span><i>→</i></button></div>}
       {isLastPage && !needsAfterImage && <div className="choices">{node.choices.map((choice) => <button key={choice.id} disabled={state.choiceLocked} onClick={() => dispatch({ type: "choose", choiceId: choice.id })}><span>{choice.label}</span><i>→</i></button>)}{node.canEndChapter && <button className="end-chapter-choice" disabled={state.choiceLocked} onClick={() => dispatch({ type: "complete" })}><span>结束本章</span><i>→</i></button>}</div>}
     </article>}
@@ -164,7 +194,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
       task={task}
       playback={state.terminalPlayback}
       muted={muted}
-      reducedMotion={window.matchMedia("(prefers-reduced-motion: reduce)").matches}
+      reducedMotion={reducedMotion}
       suppressed={state.phase !== "content" || state.choiceLocked && !state.terminalPlayback}
       preview={preview}
       onPlaybackComplete={() => dispatch({ type: "terminal-complete" })}
@@ -173,8 +203,8 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   </section>;
 }
 
-function ChoiceFeedback({ choice }: { choice: StoryChoice }) {
-  return <section className={`choice-feedback interaction-${choice.interactionPreset}`} aria-label={`选择反馈：${choice.label}`}>
+function ChoiceFeedback({ choice, reducedMotion }: { choice: StoryChoice; reducedMotion: boolean }) {
+  return <section className={`choice-feedback interaction-${reducedMotion ? "reduced" : choice.interactionPreset}`} aria-label={`选择反馈：${choice.label}`}>
     {choice.feedbackImageUrl && <Image src={choice.feedbackImageUrl} alt={choice.feedbackImageAlt} fill sizes="100vw" unoptimized style={{ objectFit: choice.feedbackImagePresentation.fit, objectPosition: `${choice.feedbackImagePresentation.positionX}% ${choice.feedbackImagePresentation.positionY}%` }} />}
     <div className="choice-feedback-shade" /><div className="choice-feedback-effect"><i /><i /><i /></div><p>{choice.label}</p>
   </section>;

@@ -45,9 +45,12 @@ test("媒体失败回送后会解除选择锁并抵达可继续状态", () => {
   const session = createReadingSession({ story: current, chapterId: "media", chapterVersion: 1, preview: true });
   const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
   assert.equal(chosen.state.choiceLocked, true);
-  assert.ok(chosen.effects.some((effect) => effect.kind === "play-sfx"));
+  const sfx = chosen.effects.find((effect) => effect.kind === "play-sfx");
+  assert.ok(sfx);
+  const failed = session.dispatch({ type: "effect-result", id: sfx.id, outcome: "failure" });
+  assert.equal(failed.state.choiceLocked, true);
   const wait = chosen.effects.find((effect) => effect.kind === "wait");
-  const advanced = session.dispatch({ type: "wait-complete", id: wait.id });
+  const advanced = session.dispatch({ type: "effect-result", id: wait.id, outcome: "timeout" });
   assert.equal(advanced.state.nodeId, choice.targetId);
   assert.equal(advanced.state.choiceLocked, false);
 });
