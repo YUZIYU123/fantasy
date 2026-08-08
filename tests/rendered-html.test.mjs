@@ -18,6 +18,61 @@ let testWranglerPath;
 let adminCookie = "";
 let adminNovelId = "";
 
+async function requestJson(path, { method = "GET", cookie = "", body } = {}) {
+  const response = await fetch(`${origin}${path}`, {
+    method,
+    headers: {
+      ...(body === undefined ? {} : { "content-type": "application/json", origin }),
+      ...(cookie ? { cookie } : {}),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { response, payload: await response.json() };
+}
+
+function publishableStory(title) {
+  const story = structuredClone(storyFixture());
+  story.title = title;
+  story.coverAssetId = "";
+  story.coverUrl = "https://example.com/test-cover.jpg";
+  story.openingImageAssetId = "";
+  story.openingImageUrl = "https://example.com/test-opening.jpg";
+  story.openingImageAlt = `${title}开场图`;
+  story.outroImageAssetId = "";
+  story.outroImageUrl = "https://example.com/test-outro.jpg";
+  return story;
+}
+
+async function createAuthorAccount(label) {
+  const email = `${label}-${process.pid}@example.com`;
+  const registration = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: { email, displayName: label, password: "test-password-123", turnstileToken: "" },
+  });
+  assert.equal(registration.response.status, 201);
+  const verification = await requestJson("/api/auth/verify-email", {
+    method: "POST",
+    body: { token: registration.payload.developmentToken },
+  });
+  assert.equal(verification.response.status, 200);
+  const login = await requestJson("/api/auth/login", {
+    method: "POST",
+    body: { email, password: "test-password-123" },
+  });
+  assert.equal(login.response.status, 200);
+  const cookie = login.response.headers.get("set-cookie")?.split(";")[0] || "";
+  const users = (await requestJson("/admin/api/users", { cookie: adminCookie })).payload.users;
+  const user = users.find((candidate) => candidate.email === email);
+  assert.ok(user);
+  const promotion = await requestJson("/admin/api/users", {
+    method: "PATCH",
+    cookie: adminCookie,
+    body: { id: user.id, role: "author" },
+  });
+  assert.equal(promotion.response.status, 200);
+  return { cookie, id: user.id };
+}
+
 async function waitForServer() {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -242,6 +297,193 @@ test("读者注册验证登录后可访问云端进度，管理员可升级为�
   });
   assert.equal(logout.status, 200);
   assert.match(logout.headers.get("set-cookie") ?? "", /Max-Age=0/);
+});
+
+test("创作者与管理员的小说章节生命周期保持兼容", async (t) => {
+  const authorA = await createAuthorAccount("契约作者甲");
+  const authorB = await createAuthorAccount("契约作者乙");
+  const authorPost = (path, cookie, body) => requestJson(path, { method: "POST", cookie, body });
+  const adminPost = (path, body) => requestJson(path, { method: "POST", cookie: adminCookie, body });
+
+  await t.test("平台作品与作者作品按所有权隔离", async () => {
+    const platformNovels = (await requestJson("/admin/api/novels", { cookie: adminCookie })).payload.novels;
+    const platformNovel = platformNovels.find((novel) => novel.id === adminNovelId);
+    assert.ok(platformNovel);
+    assert.equal(platformNovel.ownerId, null);
+    assert.equal(platformNovel.status, "published");
+    assert.equal(platformNovel.version, 1);
+
+    const authorNovels = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels;
+    assert.ok(!authorNovels.some((novel) => novel.id === adminNovelId));
+    const forbiddenSave = await authorPost("/studio/api/novels", authorA.cookie, {
+      action: "save",
+      id: adminNovelId,
+      novel: platformNovel.draft,
+    });
+    assert.equal(forbiddenSave.response.status, 403);
+    assert.equal(forbiddenSave.payload.error, "不能修改其他作者的小说");
+  });
+
+  let novelId = "";
+  let publishedNovel;
+  await t.test("作者小说经过提交、撤回、驳回、发布、下线与回滚", async () => {
+    const created = await authorPost("/studio/api/novels", authorA.cookie, { action: "create" });
+    assert.equal(created.response.status, 201);
+    novelId = created.payload.id;
+
+    const initialRows = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels;
+    const initial = initialRows.find((novel) => novel.id === novelId);
+    assert.deepEqual(
+      { ownerId: initial.ownerId, status: initial.status, draftStatus: initial.draftStatus, version: initial.version },
+      { ownerId: authorA.id, status: "draft", draftStatus: "draft", version: 0 },
+    );
+    const draft = structuredClone(initial.draft);
+    draft.name = "契约测试小说";
+    draft.summary = "用于锁定创作者与管理员审核、发布和版本回滚行为。";
+    draft.coverAssetId = "";
+    draft.coverUrl = "https://example.com/contract-novel.jpg";
+    draft.coverAlt = "契约测试小说封面";
+
+    const otherAuthorRows = (await requestJson("/studio/api/novels", { cookie: authorB.cookie })).payload.novels;
+    assert.ok(!otherAuthorRows.some((novel) => novel.id === novelId));
+    const forbiddenDuplicate = await authorPost("/studio/api/novels", authorB.cookie, { action: "duplicate", id: novelId });
+    assert.equal(forbiddenDuplicate.response.status, 403);
+    assert.equal(forbiddenDuplicate.payload.error, "只能复制自己的小说");
+
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, { action: "save", id: novelId, novel: draft })).response.status, 200);
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, { action: "submit", id: novelId, novel: draft })).response.status, 200);
+    let current = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels.find((novel) => novel.id === novelId);
+    assert.equal(current.draftStatus, "submitted");
+    assert.ok(current.submittedAt);
+
+    const lockedSave = await authorPost("/studio/api/novels", authorA.cookie, { action: "save", id: novelId, novel: draft });
+    assert.equal(lockedSave.response.status, 400);
+    assert.equal(lockedSave.payload.error, "审核中的小说资料已锁定，请先撤回");
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, { action: "withdraw", id: novelId })).response.status, 200);
+    const rejectWithdrawn = await adminPost("/admin/api/novels", { action: "reject", id: novelId, meta: { reviewNote: "不应接受" } });
+    assert.equal(rejectWithdrawn.response.status, 400);
+    assert.equal(rejectWithdrawn.payload.error, "小说当前不在审核中");
+
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, { action: "submit", id: novelId, novel: draft })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/novels", { action: "reject", id: novelId, meta: { reviewNote: "请补充世界观说明" } })).response.status, 200);
+    current = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels.find((novel) => novel.id === novelId);
+    assert.equal(current.draftStatus, "draft");
+    assert.equal(current.submittedAt, null);
+    assert.equal(current.reviewNote, "请补充世界观说明");
+
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, { action: "save", id: novelId, novel: draft })).response.status, 200);
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, { action: "submit", id: novelId, novel: draft })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/novels", { action: "publish", id: novelId, novel: draft })).response.status, 200);
+    current = (await requestJson("/admin/api/novels", { cookie: adminCookie })).payload.novels.find((novel) => novel.id === novelId);
+    assert.deepEqual(
+      { ownerId: current.ownerId, status: current.status, draftStatus: current.draftStatus, version: current.version, reviewNote: current.reviewNote },
+      { ownerId: authorA.id, status: "published", draftStatus: "draft", version: 1, reviewNote: "" },
+    );
+    publishedNovel = structuredClone(current.published);
+    const rejectedDelete = await authorPost("/studio/api/novels", authorA.cookie, { action: "delete", id: novelId });
+    assert.equal(rejectedDelete.response.status, 400);
+    assert.equal(rejectedDelete.payload.error, "只能删除未发布且未提交审核的小说");
+
+    const changedDraft = structuredClone(draft);
+    changedDraft.name = "尚未发布的小说改名";
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, { action: "save", id: novelId, novel: changedDraft })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/novels", { action: "offline", id: novelId })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/novels", { action: "rollback", id: novelId, version: 1 })).response.status, 200);
+    current = (await requestJson("/admin/api/novels", { cookie: adminCookie })).payload.novels.find((novel) => novel.id === novelId);
+    assert.equal(current.status, "published");
+    assert.equal(current.version, 2);
+    assert.equal(current.published.name, publishedNovel.name);
+    assert.equal(current.draft.name, publishedNovel.name);
+    const versions = (await requestJson(`/admin/api/novels/versions?novelId=${novelId}`, { cookie: adminCookie })).payload.versions;
+    assert.deepEqual(versions.map((version) => version.version), [2, 1]);
+  });
+
+  let chapterId = "";
+  await t.test("作者章节遵守审核锁定、父级发布和公开可见性约束", async () => {
+    const created = await authorPost("/studio/api/chapters", authorA.cookie, { action: "create", meta: { novelId } });
+    assert.equal(created.response.status, 201);
+    chapterId = created.payload.id;
+    const initial = (await requestJson("/studio/api/chapters", { cookie: authorA.cookie })).payload.chapters.find((chapter) => chapter.id === chapterId);
+    assert.deepEqual(
+      { ownerId: initial.ownerId, novelId: initial.novelId, status: initial.status, draftStatus: initial.draftStatus, version: initial.version },
+      { ownerId: authorA.id, novelId, status: "draft", draftStatus: "draft", version: 0 },
+    );
+    const story = publishableStory("契约测试章节");
+
+    const otherAuthorRows = (await requestJson("/studio/api/chapters", { cookie: authorB.cookie })).payload.chapters;
+    assert.ok(!otherAuthorRows.some((chapter) => chapter.id === chapterId));
+    const forbiddenDuplicate = await authorPost("/studio/api/chapters", authorB.cookie, { action: "duplicate", id: chapterId });
+    assert.equal(forbiddenDuplicate.response.status, 403);
+    assert.equal(forbiddenDuplicate.payload.error, "只能复制自己的章节");
+
+    assert.equal((await authorPost("/studio/api/chapters", authorA.cookie, { action: "save", id: chapterId, story })).response.status, 200);
+    assert.equal((await authorPost("/studio/api/chapters", authorA.cookie, { action: "submit", id: chapterId, story })).response.status, 200);
+    const lockedSave = await authorPost("/studio/api/chapters", authorA.cookie, { action: "save", id: chapterId, story });
+    assert.equal(lockedSave.response.status, 400);
+    assert.equal(lockedSave.payload.error, "审核中的草稿已锁定，请先撤回");
+    assert.equal((await authorPost("/studio/api/chapters", authorA.cookie, { action: "withdraw", id: chapterId })).response.status, 200);
+    const rejectWithdrawn = await adminPost("/admin/api/chapters", { action: "reject", id: chapterId, meta: { reviewNote: "不应接受" } });
+    assert.equal(rejectWithdrawn.response.status, 400);
+    assert.equal(rejectWithdrawn.payload.error, "章节当前不在审核中");
+
+    assert.equal((await authorPost("/studio/api/chapters", authorA.cookie, { action: "submit", id: chapterId, story })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/chapters", { action: "reject", id: chapterId, meta: { reviewNote: "请补充结局反馈" } })).response.status, 200);
+    let current = (await requestJson("/studio/api/chapters", { cookie: authorA.cookie })).payload.chapters.find((chapter) => chapter.id === chapterId);
+    assert.equal(current.draftStatus, "draft");
+    assert.equal(current.submittedAt, null);
+    assert.equal(current.reviewNote, "请补充结局反馈");
+    assert.equal((await authorPost("/studio/api/chapters", authorA.cookie, { action: "save", id: chapterId, story })).response.status, 200);
+    assert.equal((await authorPost("/studio/api/chapters", authorA.cookie, { action: "submit", id: chapterId, story })).response.status, 200);
+
+    assert.equal((await adminPost("/admin/api/novels", { action: "offline", id: novelId })).response.status, 200);
+    const unpublishedParent = await adminPost("/admin/api/chapters", { action: "publish", id: chapterId, story });
+    assert.equal(unpublishedParent.response.status, 400);
+    assert.equal(unpublishedParent.payload.error, "请先发布所属小说资料，再发布章节");
+    assert.equal((await adminPost("/admin/api/novels", { action: "rollback", id: novelId, version: 1 })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/chapters", { action: "publish", id: chapterId, story })).response.status, 200);
+    current = (await requestJson("/admin/api/chapters", { cookie: adminCookie })).payload.chapters.find((chapter) => chapter.id === chapterId);
+    assert.deepEqual(
+      { ownerId: current.ownerId, status: current.status, draftStatus: current.draftStatus, version: current.version, reviewNote: current.reviewNote },
+      { ownerId: authorA.id, status: "published", draftStatus: "draft", version: 1, reviewNote: "" },
+    );
+    const publishedStory = structuredClone(current.published);
+    const rejectedDelete = await authorPost("/studio/api/chapters", authorA.cookie, { action: "delete", id: chapterId });
+    assert.equal(rejectedDelete.response.status, 400);
+    assert.equal(rejectedDelete.payload.error, "只能删除未发布且未提交审核的草稿");
+
+    const changedStory = structuredClone(story);
+    changedStory.title = "尚未发布的章节改名";
+    assert.equal((await authorPost("/studio/api/chapters", authorA.cookie, { action: "save", id: chapterId, story: changedStory })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/chapters", { action: "offline", id: chapterId })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/chapters", { action: "rollback", id: chapterId, version: 1 })).response.status, 200);
+    current = (await requestJson("/admin/api/chapters", { cookie: adminCookie })).payload.chapters.find((chapter) => chapter.id === chapterId);
+    assert.equal(current.status, "published");
+    assert.equal(current.version, 2);
+    assert.equal(current.published.title, publishedStory.title);
+    assert.equal(current.draft.title, publishedStory.title);
+    const versions = (await requestJson(`/admin/api/chapters/versions?chapterId=${chapterId}`, { cookie: adminCookie })).payload.versions;
+    assert.deepEqual(versions.map((version) => version.version), [2, 1]);
+
+    let publicChapters = (await requestJson(`/api/chapters?novelId=${novelId}`)).payload.chapters;
+    assert.ok(publicChapters.some((chapter) => chapter.id === chapterId));
+    let publicNovels = (await requestJson("/api/novels")).payload.novels;
+    assert.ok(publicNovels.some((novel) => novel.id === novelId && novel.chapters.some((chapter) => chapter.id === chapterId)));
+
+    assert.equal((await adminPost("/admin/api/novels", { action: "offline", id: novelId })).response.status, 200);
+    publicChapters = (await requestJson(`/api/chapters?novelId=${novelId}`)).payload.chapters;
+    assert.ok(!publicChapters.some((chapter) => chapter.id === chapterId));
+    publicNovels = (await requestJson("/api/novels")).payload.novels;
+    assert.ok(!publicNovels.some((novel) => novel.id === novelId));
+    current = (await requestJson("/admin/api/chapters", { cookie: adminCookie })).payload.chapters.find((chapter) => chapter.id === chapterId);
+    assert.equal(current.status, "published");
+    assert.equal(current.version, 2);
+
+    assert.equal((await adminPost("/admin/api/novels", { action: "rollback", id: novelId, version: 1 })).response.status, 200);
+    const novelVersions = (await requestJson(`/admin/api/novels/versions?novelId=${novelId}`, { cookie: adminCookie })).payload.versions;
+    assert.deepEqual(novelVersions.map((version) => version.version), [4, 3, 2, 1]);
+    publicChapters = (await requestJson(`/api/chapters?novelId=${novelId}`)).payload.chapters;
+    assert.ok(publicChapters.some((chapter) => chapter.id === chapterId));
+  });
 });
 
 test("未配置 AI 提供商密钥时明确拒绝生成且不回退本地合成", async () => {
