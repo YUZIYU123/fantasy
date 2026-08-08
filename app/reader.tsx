@@ -39,12 +39,25 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   const sfx = useRef<HTMLAudioElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const storyPanel = useRef<HTMLElement>(null);
-  const pausedForVideo = useRef(false);
+  const activeVideoEffectId = useRef<string | null>(null);
   const activeCueVolume = useRef(0.55);
   const activeSfxVolume = useRef(0.8);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const dispatchRef = useRef<(event: ReadingEvent) => void>(() => {});
   const executeEffectsRef = useRef<(effects: ReadingEffect[]) => void>(() => {});
+
+  const reportVideoOutcome = useCallback((id: string, outcome: "success" | "complete" | "failure" | "timeout") => {
+    const timeoutId = `${id}:timeout`;
+    const timeout = timers.current.get(timeoutId);
+    if (timeout) clearTimeout(timeout);
+    timers.current.delete(timeoutId);
+    if (activeVideoEffectId.current !== id) return;
+    dispatchRef.current({ type: "effect-result", id, outcome });
+    if (outcome !== "success") {
+      activeVideoEffectId.current = null;
+      setNeedsPlay(false);
+    }
+  }, []);
 
   const executeEffects = useCallback((effects: ReadingEffect[]) => {
     for (const effect of effects) {
@@ -80,7 +93,11 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
         if (effect.action === "stop") {
           music.current?.pause();
           if (music.current) music.current.removeAttribute("src");
-        } else if (music.current && effect.cue.url) {
+        } else if (effect.action === "pause") {
+          music.current?.pause();
+        } else if (effect.action === "resume") {
+          music.current?.play().catch(() => {});
+        } else if (effect.action === "start" && music.current && effect.cue.url) {
           music.current.src = effect.cue.url;
           music.current.loop = effect.cue.loop;
           activeCueVolume.current = clampMediaVolume(effect.cue.volume, 0.55);
@@ -88,21 +105,27 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
           music.current.play().catch(() => {});
         }
       } else if (effect.kind === "video") {
+        if (activeVideoEffectId.current) {
+          const previousTimeoutId = `${activeVideoEffectId.current}:timeout`;
+          const previousTimeout = timers.current.get(previousTimeoutId);
+          if (previousTimeout) clearTimeout(previousTimeout);
+          timers.current.delete(previousTimeoutId);
+        }
+        activeVideoEffectId.current = effect.id;
         queueMicrotask(() => video.current?.play()
-          .then(() => dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "success" }))
+          .then(() => reportVideoOutcome(effect.id, "success"))
           .catch(() => {
             setNeedsPlay(true);
             const timeoutId = `${effect.id}:timeout`;
             timers.current.set(timeoutId, setTimeout(() => {
-              timers.current.delete(timeoutId);
-              dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "timeout" });
+              reportVideoOutcome(effect.id, "timeout");
             }, 30_000));
           }));
       } else if (effect.kind === "complete") {
         (onComplete || onBack)();
       }
     }
-  }, [chapterId, muted, onBack, onComplete, storageKey, terminalDucking]);
+  }, [chapterId, muted, onBack, onComplete, reportVideoOutcome, storageKey, terminalDucking]);
 
   const dispatch = useCallback((event: ReadingEvent) => {
     const session = sessionRef.current;
@@ -153,16 +176,6 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     if (sfx.current) sfx.current.volume = muted ? 0 : activeSfxVolume.current;
   }, [muted, terminalDucking]);
 
-  useEffect(() => {
-    if (state?.phase === "transitionVideo" && music.current && !music.current.paused) {
-      music.current.pause();
-      pausedForVideo.current = true;
-    } else if (state?.phase !== "transitionVideo" && music.current && pausedForVideo.current) {
-      music.current.play().catch(() => {});
-      pausedForVideo.current = false;
-    }
-  }, [state?.phase]);
-
   const node = story.nodes.find((item) => item.id === state?.nodeId) || story.nodes[0];
   const pages = useMemo(() => paginateStoryBody(node?.body || ""), [node?.body]);
   if (!state || !node) return <div className="reader"><button onClick={onBack}>返回</button>{node ? null : <p>章节内容为空。</p>}</div>;
@@ -178,7 +191,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     {state.activeTransition && <div className={`choice-transition transition-${state.activeTransition}`} aria-label="剧情转场"><i /><i /></div>}
     {state.choiceFeedback && <ChoiceFeedback choice={state.choiceFeedback} reducedMotion={reducedMotion} />}
     {node.videoMode === "background" && node.videoUrl && <video className="scene-video" src={node.videoUrl} poster={node.imageUrl || undefined} autoPlay muted loop playsInline onError={(event) => { event.currentTarget.style.display = "none"; }} />}
-    {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={needsPlay} onEnded={() => dispatch({ type: "video-complete" })} onError={() => dispatch({ type: "video-failure" })} />{needsPlay && <button onClick={() => { video.current?.play(); setNeedsPlay(false); }}>点击播放</button>}<button className="skip-video" onClick={() => dispatch({ type: "video-complete" })}>跳过动画 →</button></div>}
+    {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={needsPlay} onEnded={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")} onError={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "failure")} />{needsPlay && <button onClick={() => { const id = activeVideoEffectId.current; if (!id) return; video.current?.play().then(() => { setNeedsPlay(false); reportVideoOutcome(id, "success"); }).catch(() => reportVideoOutcome(id, "failure")); }}>点击播放</button>}<button className="skip-video" onClick={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")}>跳过动画 →</button></div>}
     <header className="reader-nav"><button onClick={onBack} aria-label="返回章节目录">←</button><div><span>{story.title}</span>{state.activeCueName && <small>♫ {state.activeCueName}</small>}</div><button onClick={() => setMuted((value) => !value)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
     {(state.phase === "beforeImage" || state.phase === "afterImage") && <NodeDisplayImage node={node} onContinue={() => dispatch({ type: "continue-image" })} />}
     {state.phase === "content" && <article className="story-panel" ref={storyPanel}><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${pageIndex}`} aria-live="polite">{pages[pageIndex]}</p>

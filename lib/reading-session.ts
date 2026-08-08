@@ -18,16 +18,15 @@ export type ReadingProgress = {
   completedAt?: string | null;
 };
 
-export type ReadingPhase = "beforeImage" | "transitionVideo" | "transitionEffect" | "content" | "afterImage";
+export type ReadingPhase = "beforeImage" | "transitionVideo" | "content" | "afterImage";
 
 export type ReadingEffect =
   | { kind: "persist-progress"; progress: ReadingProgress & { completed: boolean } }
   | { kind: "play-sfx"; id: string; url: string; volume: number; maximumMs: number }
   | { kind: "wait"; id: string; milliseconds: number }
   | { kind: "music"; action: "start"; cue: StoryMusicCue }
-  | { kind: "music"; action: "stop" }
+  | { kind: "music"; action: "stop" | "pause" | "resume" }
   | { kind: "video"; id: string; action: "play" }
-  | { kind: "terminal-feedback"; id: string; playback: SessionTerminalPlayback }
   | { kind: "complete" };
 
 export type SessionTerminalPlayback = {
@@ -63,10 +62,8 @@ export type ReadingEvent =
   | { type: "page"; index: number }
   | { type: "show-after-image" }
   | { type: "continue-image" }
-  | { type: "video-complete" | "video-failure" }
   | { type: "choose"; choiceId: string }
-  | { type: "wait-complete"; id: string }
-  | { type: "effect-result"; id: string; outcome: "success" | "failure" | "timeout" }
+  | { type: "effect-result"; id: string; outcome: "success" | "complete" | "failure" | "timeout" }
   | { type: "terminal-complete" }
   | { type: "complete" };
 
@@ -164,7 +161,10 @@ export function createReadingSession(input: ReadingSessionInput) {
     const effects: ReadingEffect[] = [];
     if (music.startCue) effects.push({ kind: "music", action: "start", cue: music.startCue });
     else if (music.stopActive) effects.push({ kind: "music", action: "stop" });
-    if (state.phase === "transitionVideo") effects.push({ kind: "video", id: `video:${targetId}`, action: "play" });
+    if (state.phase === "transitionVideo") {
+      if (state.activeCueId) effects.push({ kind: "music", action: "pause" });
+      effects.push({ kind: "video", id: `video:${targetId}`, action: "play" });
+    }
     effects.push(...progressEffect());
     return effects;
   };
@@ -174,7 +174,10 @@ export function createReadingSession(input: ReadingSessionInput) {
     state = { ...state, activeCueId: initialCue.id, activeCueName: initialCue.name };
     initialEffects.push({ kind: "music", action: "start", cue: initialCue });
   }
-  if (state.phase === "transitionVideo") initialEffects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play" });
+  if (state.phase === "transitionVideo") {
+    if (state.activeCueId) initialEffects.push({ kind: "music", action: "pause" });
+    initialEffects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play" });
+  }
   initialEffects.push(...progressEffect());
 
   function dispatch(event: ReadingEvent) {
@@ -191,8 +194,6 @@ export function createReadingSession(input: ReadingSessionInput) {
       state = state.phase === "afterImage"
         ? { ...state, afterImageDone: true, phase: "content" }
         : { ...state, phase: !input.reducedMotion && node.videoMode === "transition" && node.videoUrl && !state.transitionVideoDone ? "transitionVideo" : "content" };
-    } else if (event.type === "video-complete" || event.type === "video-failure") {
-      state = { ...state, transitionVideoDone: true, phase: "content" };
     } else if (event.type === "choose") {
       if (state.choiceLocked || state.activeTransition) return { state, effects };
       const choice = node.choices.find((item) => item.id === event.choiceId);
@@ -212,7 +213,6 @@ export function createReadingSession(input: ReadingSessionInput) {
           terminalPlayback: playback,
           incomingChoice: choice,
         };
-        effects.push({ kind: "terminal-feedback", id: playback.id, playback });
       } else {
         const duration = choice.feedbackImageUrl
           ? normalizeChoiceImageDuration(choice.feedbackImageDurationMs)
@@ -223,9 +223,11 @@ export function createReadingSession(input: ReadingSessionInput) {
         };
         effects.push({ kind: "wait", id: `choice:${choice.id}`, milliseconds: duration });
       }
-    } else if (event.type === "effect-result" && event.id.startsWith("video:") && event.outcome !== "success") {
+    } else if (event.type === "effect-result" && event.id === `video:${state.nodeId}`
+      && state.phase === "transitionVideo" && event.outcome !== "success") {
       state = { ...state, transitionVideoDone: true, phase: "content", choiceLocked: false };
-    } else if (event.type === "wait-complete" || event.type === "effect-result" && event.id.startsWith("choice:")) {
+      if (state.activeCueId) effects.push({ kind: "music", action: "resume" });
+    } else if (event.type === "effect-result" && event.id.startsWith("choice:")) {
       const choice = state.incomingChoice;
       if (choice && event.id === `choice:${choice.id}`) effects.push(...enter(choice.targetId, null));
     } else if (event.type === "terminal-complete") {

@@ -67,6 +67,61 @@ function ownerIdFor(actor: CreationActor) {
   return actor.kind === "author" ? actor.id : null;
 }
 
+type ExistingCreationAction = Exclude<CreationCommand["action"], "create" | "duplicate">;
+type CreationState = { ownerId: string | null; status: string; draftStatus: string };
+
+const creationMessages = {
+  novel: {
+    forbidden: "不能修改其他作者的小说",
+    locked: "审核中的小说资料已锁定，请先撤回",
+    submitted: "小说资料已在审核中",
+    notSubmitted: "小说资料当前不在审核中",
+    notReviewing: "小说当前不在审核中",
+    authorDelete: "只能删除未发布且未提交审核的小说",
+    administratorDelete: "只能删除未发布的小说草稿",
+    unsupported: "不支持的小说操作",
+  },
+  chapter: {
+    forbidden: "不能修改其他作者的章节",
+    locked: "审核中的草稿已锁定，请先撤回",
+    submitted: "章节已在审核中",
+    notSubmitted: "章节当前不在审核中",
+    notReviewing: "章节当前不在审核中",
+    authorDelete: "只能删除未发布且未提交审核的草稿",
+    administratorDelete: "只能删除未发布的草稿",
+    unsupported: "不支持的章节操作",
+  },
+} as const;
+
+function enforceCreationPolicy(
+  actor: CreationActor,
+  entity: "novel" | "chapter",
+  action: ExistingCreationAction,
+  current: CreationState,
+  reviewNoteValue?: string,
+) {
+  const message = creationMessages[entity];
+  if (actor.kind === "author" && current.ownerId !== actor.id) fail(message.forbidden, 403);
+  const allowed = actor.kind === "author"
+    ? ["save", "submit", "withdraw", "delete"]
+    : ["save", "publish", "offline", "reject", "delete", "rollback"];
+  if (!allowed.includes(action)) fail(message.unsupported);
+  if (action === "save" && actor.kind === "author" && current.draftStatus === "submitted") fail(message.locked);
+  if (action === "submit" && current.draftStatus === "submitted") fail(message.submitted);
+  if (action === "withdraw" && current.draftStatus !== "submitted") fail(message.notSubmitted);
+  if (action === "reject" && current.draftStatus !== "submitted") fail(message.notReviewing);
+  if (action === "delete" && actor.kind === "author" && (current.status !== "draft" || current.draftStatus !== "draft")) {
+    fail(message.authorDelete);
+  }
+  if (action === "delete" && actor.kind === "administrator" && current.status !== "draft") fail(message.administratorDelete);
+  if (action === "reject") {
+    const reviewNote = String(reviewNoteValue || "").trim();
+    if (!reviewNote || reviewNote.length > 500) fail("请填写 1–500 字的驳回原因");
+    return reviewNote;
+  }
+  return "";
+}
+
 async function list(actor: CreationActor, entity: "novel" | "chapter") {
   await ensureSeed();
   const db = getDb();
@@ -165,10 +220,9 @@ async function executeNovel(actor: CreationActor, command: NovelCommand): Promis
   const rows = await db.select().from(novels).where(eq(novels.id, command.id)).limit(1);
   const current = rows[0];
   if (!current) fail("小说不存在", 404);
-  if (actor.kind === "author" && current.ownerId !== actor.id) fail("不能修改其他作者的小说", 403);
+  const reviewNote = enforceCreationPolicy(actor, "novel", command.action, current, command.action === "reject" ? command.meta.reviewNote : undefined);
 
   if (command.action === "save" && command.novel) {
-    if (actor.kind === "author" && current.draftStatus === "submitted") fail("审核中的小说资料已锁定，请先撤回");
     const novel = normalizeNovel(command.novel);
     await db.update(novels).set({
       slug: String(command.meta?.slug || current.slug).slice(0, 100),
@@ -179,7 +233,6 @@ async function executeNovel(actor: CreationActor, command: NovelCommand): Promis
       updatedAt: new Date().toISOString(),
     }).where(eq(novels.id, current.id));
   } else if (actor.kind === "author" && command.action === "submit" && command.novel) {
-    if (current.draftStatus === "submitted") fail("小说资料已在审核中");
     const novel = normalizeNovel(command.novel);
     const errors = [...validateNovel(novel), ...validateNovelAssetReferences(novel, await availableAssets(actor))];
     if (errors.length) fail("提交审核校验失败", 400, errors);
@@ -188,7 +241,6 @@ async function executeNovel(actor: CreationActor, command: NovelCommand): Promis
       reviewNote: "", updatedAt: new Date().toISOString(),
     }).where(eq(novels.id, current.id));
   } else if (actor.kind === "author" && command.action === "withdraw") {
-    if (current.draftStatus !== "submitted") fail("小说资料当前不在审核中");
     await db.update(novels).set({ draftStatus: "draft", submittedAt: null, updatedAt: new Date().toISOString() })
       .where(eq(novels.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "publish" && command.novel) {
@@ -199,18 +251,11 @@ async function executeNovel(actor: CreationActor, command: NovelCommand): Promis
   } else if (actor.kind === "administrator" && command.action === "offline") {
     await db.update(novels).set({ status: "offline", updatedAt: new Date().toISOString() }).where(eq(novels.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "reject") {
-    if (current.draftStatus !== "submitted") fail("小说当前不在审核中");
-    const reviewNote = String(command.meta?.reviewNote || "").trim();
-    if (!reviewNote || reviewNote.length > 500) fail("请填写 1–500 字的驳回原因");
     await db.update(novels).set({ draftStatus: "draft", submittedAt: null, reviewNote, updatedAt: new Date().toISOString() })
       .where(eq(novels.id, current.id));
   } else if (command.action === "delete") {
     const linked = await db.select({ id: chapters.id }).from(chapters).where(eq(chapters.novelId, current.id)).limit(1);
     if (linked[0]) fail("请先删除该小说下的草稿章节");
-    if (actor.kind === "author" && (current.status !== "draft" || current.draftStatus !== "draft")) {
-      fail("只能删除未发布且未提交审核的小说");
-    }
-    if (actor.kind === "administrator" && current.status !== "draft") fail("只能删除未发布的小说草稿");
     await db.delete(novels).where(eq(novels.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "rollback" && command.version) {
     const versions = await db.select().from(novelVersions).where(and(
@@ -258,11 +303,10 @@ async function executeChapter(actor: CreationActor, command: ChapterCommand): Pr
   if (!command.id) fail("缺少章节 ID");
   const current = (await db.select().from(chapters).where(eq(chapters.id, command.id)).limit(1))[0];
   if (!current) fail("章节不存在", 404);
-  if (actor.kind === "author" && current.ownerId !== actor.id) fail("不能修改其他作者的章节", 403);
+  const reviewNote = enforceCreationPolicy(actor, "chapter", command.action, current, command.action === "reject" ? command.meta.reviewNote : undefined);
   let updatedAt: string | undefined;
 
   if (command.action === "save" && command.story) {
-    if (actor.kind === "author" && current.draftStatus === "submitted") fail("审核中的草稿已锁定，请先撤回");
     const story = normalizeStory(command.story);
     const errors = [...validateStoryBodyLengths(story), ...validateStoryInputLengths(story)];
     if (errors.length) fail("草稿字数校验失败", 400, errors);
@@ -276,7 +320,6 @@ async function executeChapter(actor: CreationActor, command: ChapterCommand): Pr
       reviewNote: "", updatedAt,
     }).where(eq(chapters.id, current.id));
   } else if (actor.kind === "author" && command.action === "submit" && command.story) {
-    if (current.draftStatus === "submitted") fail("章节已在审核中");
     const story = normalizeStory(command.story);
     const errors = [...validateStory(story), ...validateStoryMedia(story), ...validateStoryAssetReferences(story, await availableAssets(actor))];
     if (errors.length) fail("提交审核校验失败", 400, errors);
@@ -286,7 +329,6 @@ async function executeChapter(actor: CreationActor, command: ChapterCommand): Pr
       reviewNote: "", updatedAt: new Date().toISOString(),
     }).where(eq(chapters.id, current.id));
   } else if (actor.kind === "author" && command.action === "withdraw") {
-    if (current.draftStatus !== "submitted") fail("章节当前不在审核中");
     await db.update(chapters).set({ draftStatus: "draft", submittedAt: null, updatedAt: new Date().toISOString() })
       .where(eq(chapters.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "publish" && command.story) {
@@ -299,16 +341,9 @@ async function executeChapter(actor: CreationActor, command: ChapterCommand): Pr
   } else if (actor.kind === "administrator" && command.action === "offline") {
     await db.update(chapters).set({ status: "offline", updatedAt: new Date().toISOString() }).where(eq(chapters.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "reject") {
-    if (current.draftStatus !== "submitted") fail("章节当前不在审核中");
-    const reviewNote = String(command.meta?.reviewNote || "").trim();
-    if (!reviewNote || reviewNote.length > 500) fail("请填写 1–500 字的驳回原因");
     await db.update(chapters).set({ draftStatus: "draft", submittedAt: null, reviewNote, updatedAt: new Date().toISOString() })
       .where(eq(chapters.id, current.id));
   } else if (command.action === "delete") {
-    if (actor.kind === "author" && (current.status !== "draft" || current.draftStatus !== "draft")) {
-      fail("只能删除未发布且未提交审核的草稿");
-    }
-    if (actor.kind === "administrator" && current.status !== "draft") fail("只能删除未发布的草稿");
     await db.delete(chapters).where(eq(chapters.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "rollback" && command.version) {
     const versionRows = await db.select().from(chapterVersions).where(and(

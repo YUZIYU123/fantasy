@@ -125,12 +125,13 @@ function isLocalBypass(request: Request) {
   return (hostname === "localhost" || hostname === "127.0.0.1") && authEnv().LOCAL_AUTH_BYPASS === "true";
 }
 
-export async function validateTurnstile(request: Request, token: string, action: string) {
+export async function validateTurnstile(request: Request, token: string, action: string, signal?: AbortSignal) {
   if (isLocalBypass(request)) return;
   const secret = authEnv().TURNSTILE_SECRET_KEY;
   if (!secret) throw new AuthError("注册验证服务尚未配置", 503);
   const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
     method: "POST",
+    signal,
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       secret,
@@ -169,7 +170,7 @@ export async function createAuthToken(userId: string, type: "verify_email" | "re
   return token;
 }
 
-export async function sendAuthEmail(request: Request, to: string, type: "verify_email" | "reset_password", token: string) {
+export async function sendAuthEmail(request: Request, to: string, type: "verify_email" | "reset_password", token: string, signal?: AbortSignal) {
   if (isLocalBypass(request)) return { developmentToken: token };
   const values = authEnv();
   if (!values.RESEND_API_KEY || !values.AUTH_FROM_EMAIL || !values.APP_ORIGIN) throw new AuthError("邮件服务尚未配置", 503);
@@ -178,6 +179,7 @@ export async function sendAuthEmail(request: Request, to: string, type: "verify_
   const subject = type === "verify_email" ? "验证你的幻界 Fantasy 账号" : "重置你的幻界 Fantasy 密码";
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
+    signal,
     headers: {
       authorization: `Bearer ${values.RESEND_API_KEY}`,
       "content-type": "application/json",

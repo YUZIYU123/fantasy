@@ -20,11 +20,11 @@ import {
 } from "../lib/auth";
 
 export interface TurnstileVerifier {
-  verify(request: Request, token: string, action: string): Promise<void>;
+  verify(request: Request, token: string, action: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface AuthMailer {
-  send(request: Request, to: string, type: "verify_email" | "reset_password", token: string): Promise<{ developmentToken?: string }>;
+  send(request: Request, to: string, type: "verify_email" | "reset_password", token: string, signal?: AbortSignal): Promise<{ developmentToken?: string }>;
 }
 
 export const productionTurnstileVerifier: TurnstileVerifier = { verify: validateTurnstile };
@@ -32,21 +32,57 @@ export const productionAuthMailer: AuthMailer = { send: sendAuthEmail };
 
 export class MockTurnstileVerifier implements TurnstileVerifier {
   readonly calls: Array<{ token: string; action: string }> = [];
-  constructor(private readonly failure?: Error) {}
-  async verify(_request: Request, token: string, action: string) {
+  constructor(private readonly failure?: Error, private readonly hangs = false) {}
+  async verify(_request: Request, token: string, action: string, signal?: AbortSignal) {
     this.calls.push({ token, action });
     if (this.failure) throw this.failure;
+    if (this.hangs) await waitForAbort(signal);
   }
 }
 
 export class MockAuthMailer implements AuthMailer {
   readonly calls: Array<{ to: string; type: "verify_email" | "reset_password"; token: string }> = [];
-  constructor(private readonly result: { developmentToken?: string } = {}, private readonly failure?: Error) {}
-  async send(_request: Request, to: string, type: "verify_email" | "reset_password", token: string) {
+  constructor(
+    private readonly result: { developmentToken?: string } = {},
+    private readonly failure?: Error,
+    private readonly hangs = false,
+  ) {}
+  async send(_request: Request, to: string, type: "verify_email" | "reset_password", token: string, signal?: AbortSignal) {
     this.calls.push({ to, type, token });
     if (this.failure) throw this.failure;
+    if (this.hangs) await waitForAbort(signal);
     return this.result;
   }
+}
+
+function waitForAbort(signal?: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    if (signal?.aborted) reject(new Error("external request aborted"));
+    else signal?.addEventListener("abort", () => reject(new Error("external request aborted")), { once: true });
+  });
+}
+
+async function executeExternal<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  retries: number,
+  timeoutError: () => AuthError,
+) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await operation(controller.signal);
+    } catch (error) {
+      if (attempt === retries) {
+        if (controller.signal.aborted) throw timeoutError();
+        throw error;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw timeoutError();
 }
 
 export type AccountCommand =
@@ -106,7 +142,9 @@ async function consumeToken(
 export function createAccountLifecycle({
   turnstile = productionTurnstileVerifier,
   mailer = productionAuthMailer,
-}: { turnstile?: TurnstileVerifier; mailer?: AuthMailer } = {}) {
+  externalTimeoutMs = 8_000,
+  externalRetries = 1,
+}: { turnstile?: TurnstileVerifier; mailer?: AuthMailer; externalTimeoutMs?: number; externalRetries?: number } = {}) {
   async function execute(command: AccountCommand): Promise<AccountResult> {
     const db = getDb();
     if ("request" in command) assertSameOrigin(command.request);
@@ -118,7 +156,10 @@ export function createAccountLifecycle({
       const passwordError = validatePassword(command.password);
       if (passwordError) throw new AuthError(passwordError);
       await enforceRateLimit(command.request, "register", email, 5, 30);
-      await turnstile.verify(command.request, command.turnstileToken, "register");
+      await executeExternal(
+        (signal) => turnstile.verify(command.request, command.turnstileToken, "register", signal),
+        externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
+      );
       const existing = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
       if (existing?.status === "active" || existing?.status === "disabled") throw new AuthError("此邮箱已注册", 409);
       const userId = existing?.id || crypto.randomUUID();
@@ -126,7 +167,10 @@ export function createAccountLifecycle({
       if (existing) await db.update(users).set({ displayName, passwordHash, updatedAt: new Date().toISOString() }).where(eq(users.id, existing.id));
       else await db.insert(users).values({ id: userId, email, displayName, passwordHash, role: "reader", status: "pending" });
       const token = await createAuthToken(userId, "verify_email", 24 * 60 * 60_000);
-      const delivery = await mailer.send(command.request, email, "verify_email", token);
+      const delivery = await executeExternal(
+        (signal) => mailer.send(command.request, email, "verify_email", token, signal),
+        externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
+      );
       return { status: 201, body: { ok: true, message: "验证邮件已发送", ...delivery } };
     }
     if (command.action === "verify-email") {
@@ -151,12 +195,18 @@ export function createAccountLifecycle({
       const email = normalizeEmail(command.email);
       if (email.length > 254) throw new AuthError("邮箱格式无效");
       await enforceRateLimit(command.request, "forgot-password", email, 4, 60);
-      await turnstile.verify(command.request, command.turnstileToken, "forgot-password");
+      await executeExternal(
+        (signal) => turnstile.verify(command.request, command.turnstileToken, "forgot-password", signal),
+        externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
+      );
       const user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
       let developmentToken: string | undefined;
       if (user?.status === "active") {
         const token = await createAuthToken(user.id, "reset_password", 30 * 60_000);
-        developmentToken = (await mailer.send(command.request, email, "reset_password", token)).developmentToken;
+        developmentToken = (await executeExternal(
+          (signal) => mailer.send(command.request, email, "reset_password", token, signal),
+          externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
+        )).developmentToken;
       }
       return { body: { ok: true, message: "如果账号存在，重置邮件已经发送", ...(developmentToken ? { developmentToken } : {}) } };
     }

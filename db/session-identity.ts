@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
-import { getDb } from "../db";
-import { sessions, users } from "../db/schema";
-import { AuthError, hashToken, type SessionIdentity, type UserRole } from "./auth";
+import { getDb } from ".";
+import { sessions, users } from "./schema";
+import { AuthError, hashToken, type SessionIdentity, type UserRole } from "../lib/auth";
 
 function sessionToken(request: Request) {
   const cookie = request.headers.get("cookie") || "";

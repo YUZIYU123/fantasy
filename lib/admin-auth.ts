@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { optionalSessionIdentity } from "./session-identity";
+import { optionalSessionIdentity } from "../db/session-identity";
 
 type AdminEnv = {
   CREATOR_PASSWORD_HASH?: string;

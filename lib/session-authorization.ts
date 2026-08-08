@@ -7,7 +7,7 @@ import {
   requireAdmin,
   verifyCreatorPassword,
 } from "./admin-auth";
-import { optionalSessionIdentity, requireSessionIdentity, requireSessionRole } from "./session-identity";
+import { optionalSessionIdentity, requireSessionIdentity, requireSessionRole } from "../db/session-identity";
 
 export const sessionAuthorization = {
   optional: optionalSessionIdentity,
