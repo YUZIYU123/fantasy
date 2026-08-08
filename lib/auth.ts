@@ -198,17 +198,6 @@ export async function createAuthToken(userId: string, type: "verify_email" | "re
   return token;
 }
 
-export async function consumeAuthToken(token: string, type: "verify_email" | "reset_password") {
-  const rows = await getDb().select().from(authTokens).where(and(
-    eq(authTokens.tokenHash, await hashToken(token)),
-    eq(authTokens.type, type),
-  )).limit(1);
-  const row = rows[0];
-  if (!row || row.usedAt || new Date(row.expiresAt).getTime() <= Date.now()) throw new AuthError("链接无效或已过期", 400);
-  await getDb().update(authTokens).set({ usedAt: new Date().toISOString() }).where(eq(authTokens.id, row.id));
-  return row.userId;
-}
-
 export async function sendAuthEmail(request: Request, to: string, type: "verify_email" | "reset_password", token: string) {
   if (isLocalBypass(request)) return { developmentToken: token };
   const values = authEnv();

@@ -3,13 +3,13 @@ import { getDb } from ".";
 import { authTokens, sessions, users } from "./schema";
 import {
   AuthError,
+  assertSameOrigin,
   createAuthToken,
   createSession,
   enforceRateLimit,
   hashPassword,
   hashToken,
   normalizeEmail,
-  requireSession,
   revokeCurrentSession,
   sendAuthEmail,
   validatePassword,
@@ -18,6 +18,7 @@ import {
   type UserRole,
   type UserStatus,
 } from "../lib/auth";
+import { sessionAuthorization } from "../lib/session-authorization";
 
 export interface TurnstileVerifier {
   verify(request: Request, token: string, action: string): Promise<void>;
@@ -30,12 +31,31 @@ export interface AuthMailer {
 export const productionTurnstileVerifier: TurnstileVerifier = { verify: validateTurnstile };
 export const productionAuthMailer: AuthMailer = { send: sendAuthEmail };
 
+export class MockTurnstileVerifier implements TurnstileVerifier {
+  readonly calls: Array<{ token: string; action: string }> = [];
+  constructor(private readonly failure?: Error) {}
+  async verify(_request: Request, token: string, action: string) {
+    this.calls.push({ token, action });
+    if (this.failure) throw this.failure;
+  }
+}
+
+export class MockAuthMailer implements AuthMailer {
+  readonly calls: Array<{ to: string; type: "verify_email" | "reset_password"; token: string }> = [];
+  constructor(private readonly result: { developmentToken?: string } = {}, private readonly failure?: Error) {}
+  async send(_request: Request, to: string, type: "verify_email" | "reset_password", token: string) {
+    this.calls.push({ to, type, token });
+    if (this.failure) throw this.failure;
+    return this.result;
+  }
+}
+
 export type AccountCommand =
   | { action: "register"; request: Request; email: string; displayName: string; password: string; turnstileToken: string }
-  | { action: "verify-email"; token: string }
+  | { action: "verify-email"; request: Request; token: string }
   | { action: "login"; request: Request; email: string; password: string }
   | { action: "forgot-password"; request: Request; email: string; turnstileToken: string }
-  | { action: "reset-password"; token: string; password: string }
+  | { action: "reset-password"; request: Request; token: string; password: string }
   | { action: "profile"; request: Request; displayName: string }
   | { action: "logout"; request: Request }
   | { action: "list-users" }
@@ -62,17 +82,20 @@ async function consumeToken(
     eq(authTokens.tokenHash, tokenHash), eq(authTokens.type, type), isNull(authTokens.usedAt), gt(authTokens.expiresAt, new Date().toISOString()),
   )).limit(1))[0];
   if (!row) throw new AuthError("链接无效或已过期");
-  const marker = new Date().toISOString();
-  const consume = db.update(authTokens).set({ usedAt: marker }).where(and(eq(authTokens.id, row.id), isNull(authTokens.usedAt)));
-  const validUserId = sql<string>`(SELECT user_id FROM auth_tokens WHERE id = ${row.id} AND used_at IS NULL AND expires_at > ${marker})`;
+  const now = new Date().toISOString();
+  const marker = `${now}:${crypto.randomUUID()}`;
+  const consume = db.update(authTokens).set({ usedAt: marker }).where(and(
+    eq(authTokens.id, row.id), isNull(authTokens.usedAt), gt(authTokens.expiresAt, now),
+  ));
+  const validUserId = sql<string>`(SELECT user_id FROM auth_tokens WHERE id = ${row.id} AND used_at IS NULL AND expires_at > ${now})`;
   if (type === "verify_email") {
     await db.batch([
-      db.update(users).set({ status: "active", emailVerifiedAt: marker, updatedAt: marker }).where(eq(users.id, validUserId)),
+      db.update(users).set({ status: "active", emailVerifiedAt: now, updatedAt: now }).where(eq(users.id, validUserId)),
       consume,
     ]);
   } else {
     await db.batch([
-      db.update(users).set({ passwordHash: passwordHash!, updatedAt: marker }).where(eq(users.id, validUserId)),
+      db.update(users).set({ passwordHash: passwordHash!, updatedAt: now }).where(eq(users.id, validUserId)),
       db.delete(sessions).where(eq(sessions.userId, validUserId)),
       consume,
     ]);
@@ -87,6 +110,7 @@ export function createAccountLifecycle({
 }: { turnstile?: TurnstileVerifier; mailer?: AuthMailer } = {}) {
   async function execute(command: AccountCommand): Promise<AccountResult> {
     const db = getDb();
+    if ("request" in command) assertSameOrigin(command.request);
     if (command.action === "register") {
       const email = normalizeEmail(command.email);
       const displayName = command.displayName.trim();
@@ -146,7 +170,7 @@ export function createAccountLifecycle({
       return { body: { ok: true } };
     }
     if (command.action === "profile") {
-      const identity = await requireSession(command.request);
+      const identity = await sessionAuthorization.require(command.request);
       const displayName = command.displayName.trim();
       if (!displayName || displayName.length > 40) throw new AuthError("昵称需要为 1–40 个字符");
       await db.update(users).set({ displayName, updatedAt: new Date().toISOString() }).where(eq(users.id, identity.id));

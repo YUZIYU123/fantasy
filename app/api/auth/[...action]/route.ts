@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../../db";
 import { accountLifecycle, type AccountCommand } from "../../../../db/account-lifecycle";
 import { accountLifecycleResponse } from "../../../_account-lifecycle-http";
-import { assertSameOrigin, authErrorResponse, clearSessionCookie } from "../../../../lib/auth";
+import { authErrorResponse, clearSessionCookie } from "../../../../lib/auth";
 import { sessionAuthorization } from "../../../../lib/session-authorization";
 
 type Context = { params: Promise<{ action: string[] }> };
@@ -24,9 +24,9 @@ export async function GET(request: Request, context: Context) {
 function commandFor(action: string, request: Request, body: Record<string, unknown>): AccountCommand | null {
   if (action === "register") return { action, request, email: String(body.email || ""), displayName: String(body.displayName || ""), password: String(body.password || ""), turnstileToken: String(body.turnstileToken || "") };
   if (action === "login") return { action, request, email: String(body.email || ""), password: String(body.password || "") };
-  if (action === "verify-email") return { action, token: String(body.token || "") };
+  if (action === "verify-email") return { action, request, token: String(body.token || "") };
   if (action === "forgot-password") return { action, request, email: String(body.email || ""), turnstileToken: String(body.turnstileToken || "") };
-  if (action === "reset-password") return { action, token: String(body.token || ""), password: String(body.password || "") };
+  if (action === "reset-password") return { action, request, token: String(body.token || ""), password: String(body.password || "") };
   if (action === "profile") return { action, request, displayName: String(body.displayName || "") };
   return null;
 }
@@ -34,7 +34,6 @@ function commandFor(action: string, request: Request, body: Record<string, unkno
 export async function POST(request: Request, context: Context) {
   try {
     await ensureSchema();
-    assertSameOrigin(request);
     const action = actionName((await context.params).action);
     if (action === "logout") {
       const result = await accountLifecycle.execute({ action, request });
