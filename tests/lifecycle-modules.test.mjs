@@ -23,6 +23,17 @@ test("CreationLifecycle 通过公开接口创建并按作者隔离小说", async
   assert.equal(payload.strangerIds.includes(payload.created.id), false);
 });
 
+test("CreationLifecycle 公开接口覆盖小说与章节完整转换矩阵", async () => {
+  const response = await fetch(`${runtime.origin}/creation-matrix`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  const expected = ["create", "save", "duplicate", "delete", "submit", "withdraw", "submit", "reject", "submit", "publish", "offline", "rollback"];
+  assert.deepEqual(payload.novelActions, expected);
+  assert.deepEqual(payload.chapterActions, expected);
+  assert.deepEqual(payload.novelVersions, [2, 1]);
+  assert.deepEqual(payload.chapterVersions, [2, 1]);
+});
+
 test("AssetLifecycle 通过公开接口补偿式删除且重复删除幂等", async () => {
   const response = await fetch(`${runtime.origin}/assets`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);
@@ -31,6 +42,23 @@ test("AssetLifecycle 通过公开接口补偿式删除且重复删除幂等", as
   assert.equal(payload.deleted.kind, "ok");
   assert.equal(payload.repeated.kind, "ok");
   assert.equal(payload.remainingIds.includes(payload.uploaded.asset.id), false);
+});
+
+test("AssetLifecycle 公开接口覆盖整理、生成、引用保护和失败重试", async () => {
+  const response = await fetch(`${runtime.origin}/asset-matrix`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.deepEqual(payload.operations, [
+    "create-folder", "upload", "update-asset", "rename-folder", "delete-folder",
+    "generate-sfx", "generate-tts", "reference-block", "delete-failed", "delete-retry",
+  ]);
+  assert.deepEqual(payload.upload, { type: "image", mimeType: "image/png", duration: 0, status: "ready" });
+  assert.equal(payload.generated.sfxType, "audio");
+  assert.equal(payload.generated.ttsType, "audio");
+  assert.equal(payload.generated.sourceKey, "mock-source");
+  assert.equal(payload.referenceStatus, 409);
+  assert.equal(payload.failedStatus, "delete_failed");
+  assert.equal(payload.retryRemoved, true);
 });
 
 test("AccountLifecycle 通过公开端口完成注册、验证与登录", async () => {
@@ -46,10 +74,43 @@ test("AccountLifecycle 通过公开端口完成注册、验证与登录", async 
   assert.match(payload.login.cookie, /^mist_session=/);
 });
 
+test("AccountLifecycle 公开接口覆盖找回、重置、资料、角色与状态矩阵", async () => {
+  const response = await fetch(`${runtime.origin}/account-matrix`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.deepEqual(payload.operations, [
+    "register", "verify-email", "login", "profile", "forgot-password", "reset-password",
+    "login", "update-role", "list-users", "logout", "login", "update-status",
+  ]);
+  assert.equal(payload.forgotExistingMessage, payload.forgotMissingMessage);
+  assert.equal(payload.resetReuseStatus, 400);
+  assert.equal(payload.oldSessionAfterReset, null);
+  assert.equal(payload.roleAfterUpdate, "author");
+  assert.equal(payload.sessionAfterLogout, null);
+  assert.equal(payload.sessionAfterDisable, null);
+});
+
 test("SessionAuthorization 每次请求读取最新账号状态", async () => {
   const response = await fetch(`${runtime.origin}/authorization`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);
   const payload = await response.json();
   assert.equal(payload.before.status, "active");
   assert.equal(payload.after, null);
+});
+
+test("AccountLifecycle 对邮件超时执行有限重试并返回稳定错误", async () => {
+  const response = await fetch(`${runtime.origin}/account-mail-timeout`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.equal(payload.status, 504);
+  assert.equal(payload.message, "邮件发送超时，请稍后重试");
+  assert.equal(payload.calls, 2);
+});
+
+test("AccountLifecycle 的 Turnstile 超时与邮件瞬时失败可通过 port 验证", async () => {
+  const response = await fetch(`${runtime.origin}/account-port-resilience`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.deepEqual(payload.turnstileTimeout, { status: 504, calls: 2 });
+  assert.deepEqual(payload.mailRetry, { status: 201, calls: 2 });
 });

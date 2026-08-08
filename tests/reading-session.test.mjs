@@ -33,7 +33,7 @@ test("预览会话推进剧情但永不产生持久化 effect", () => {
   const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
   const wait = chosen.effects.find((effect) => effect.kind === "wait");
   assert.ok(wait);
-  const advanced = session.dispatch({ type: "wait-complete", id: wait.id });
+  const advanced = session.dispatch({ type: "effect-result", id: wait.id, outcome: "timeout" });
   assert.equal(advanced.state.nodeId, choice.targetId);
   assert.equal(advanced.effects.some((effect) => effect.kind === "persist-progress"), false);
 });
@@ -77,4 +77,44 @@ test("转场视频 effect 失败后进入可继续的正文状态", () => {
   const failed = session.dispatch({ type: "effect-result", id: video.id, outcome: "failure" });
   assert.equal(failed.state.phase, "content");
   assert.equal(failed.state.choiceLocked, false);
+});
+
+test("旧视频 effect 的超时不能结束当前转场视频", () => {
+  const current = story();
+  const start = current.nodes.find((node) => node.id === current.startNodeId);
+  const target = current.nodes.find((node) => node.id === start.choices[0].targetId);
+  start.videoMode = "transition";
+  start.videoUrl = "https://example.com/a.mp4";
+  target.videoMode = "transition";
+  target.videoUrl = "https://example.com/b.mp4";
+  const session = createReadingSession({
+    story: current, chapterId: "video-order", chapterVersion: 1, preview: true, reducedMotion: false,
+  });
+  const firstVideo = session.initialEffects.find((effect) => effect.kind === "video");
+  session.dispatch({ type: "effect-result", id: firstVideo.id, outcome: "complete" });
+  const chosen = session.dispatch({ type: "choose", choiceId: start.choices[0].id });
+  const wait = chosen.effects.find((effect) => effect.kind === "wait");
+  const entered = session.dispatch({ type: "effect-result", id: wait.id, outcome: "timeout" });
+  const secondVideo = entered.effects.find((effect) => effect.kind === "video");
+  assert.ok(secondVideo);
+  const stale = session.dispatch({ type: "effect-result", id: firstVideo.id, outcome: "timeout" });
+  assert.equal(stale.state.nodeId, target.id);
+  assert.equal(stale.state.phase, "transitionVideo");
+});
+
+test("ReadingSession 用 effect 声明转场视频期间的音乐暂停与恢复", () => {
+  const current = story();
+  current.nodes[0].videoMode = "transition";
+  current.nodes[0].videoUrl = "https://example.com/transition.mp4";
+  current.musicCues = [{
+    id: "cue", name: "转场配乐", assetId: "music", url: "https://example.com/music.mp3",
+    volume: 0.5, loop: true, fadeMs: 0, startNodeId: current.startNodeId, stopNodeIds: [],
+  }];
+  const session = createReadingSession({
+    story: current, chapterId: "video-music", chapterVersion: 1, preview: true, reducedMotion: false,
+  });
+  assert.deepEqual(session.initialEffects.filter((effect) => effect.kind === "music").map((effect) => effect.action), ["start", "pause"]);
+  const video = session.initialEffects.find((effect) => effect.kind === "video");
+  const completed = session.dispatch({ type: "effect-result", id: video.id, outcome: "complete" });
+  assert.deepEqual(completed.effects.filter((effect) => effect.kind === "music").map((effect) => effect.action), ["resume"]);
 });
