@@ -195,6 +195,11 @@ async function publishChapterSnapshot(id: string, story: StoryDocument) {
   ]);
 }
 
+async function assertPublishedParent(novelId: string) {
+  const parent = (await getDb().select({ status: novels.status }).from(novels).where(eq(novels.id, novelId)).limit(1))[0];
+  if (!parent || parent.status !== "published") fail("请先发布所属小说资料，再发布章节");
+}
+
 async function executeNovel(actor: CreationActor, command: NovelCommand): Promise<CreationResult> {
   const db = getDb();
   if (command.action === "create" || command.action === "duplicate") {
@@ -332,8 +337,7 @@ async function executeChapter(actor: CreationActor, command: ChapterCommand): Pr
     await db.update(chapters).set({ draftStatus: "draft", submittedAt: null, updatedAt: new Date().toISOString() })
       .where(eq(chapters.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "publish" && command.story) {
-    const parent = (await db.select({ status: novels.status }).from(novels).where(eq(novels.id, current.novelId)).limit(1))[0];
-    if (!parent || parent.status !== "published") fail("请先发布所属小说资料，再发布章节");
+    await assertPublishedParent(current.novelId);
     const story = normalizeStory(command.story);
     const errors = [...validateStory(story), ...validateStoryMedia(story), ...validateStoryAssetReferences(story, await availableAssets(actor))];
     if (errors.length) fail("发布校验失败", 400, errors);
@@ -346,6 +350,7 @@ async function executeChapter(actor: CreationActor, command: ChapterCommand): Pr
   } else if (command.action === "delete") {
     await db.delete(chapters).where(eq(chapters.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "rollback" && command.version) {
+    await assertPublishedParent(current.novelId);
     const versionRows = await db.select().from(chapterVersions).where(and(
       eq(chapterVersions.chapterId, current.id), eq(chapterVersions.version, command.version),
     )).limit(1);

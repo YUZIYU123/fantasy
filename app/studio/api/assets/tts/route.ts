@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
-import { assertSameOrigin, authErrorResponse, enforceRateLimit } from "../../../../../lib/auth";
+import { assertSameOrigin, authErrorResponse } from "../../../../../lib/auth";
 import { sessionAuthorization } from "../../../../../lib/session-authorization";
 import { ElevenLabsTerminalSpeechProvider, TerminalSpeechError } from "../../../../../lib/tts";
 
@@ -26,10 +26,9 @@ export async function POST(request: Request) {
     assertSameOrigin(request);
     const identity = await sessionAuthorization.requireRole(request, ["author"]);
     const body = await request.json() as { text?: string; voiceId?: string; voiceName?: string };
-    await enforceRateLimit(request, "tts-generation-minute", identity.email, 5, 1);
-    await enforceRateLimit(request, "tts-generation-day", identity.email, 50, 1_440);
     return assetLifecycleResponse(await assetLifecycle.execute({ kind: "author", id: identity.id }, {
       action: "generate-tts", bucket: env.ASSET_BUCKET, provider: provider(),
+      rateLimit: { request, identity: identity.email },
       text: String(body.text || ""), voiceId: String(body.voiceId || ""), voiceName: String(body.voiceName || ""),
     }));
   } catch (error) {

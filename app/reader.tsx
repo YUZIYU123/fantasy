@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createReadingSession, observeReadingSession, type ReadingEffect, type ReadingEvent, type ReadingState } from "../lib/reading-session";
+import { createReadingSession, observeReadingSession, type ReadingEffect, type ReadingEvent, type ReadingState, type SessionTerminalPlayback } from "../lib/reading-session";
 import {
   clampMediaVolume,
   normalizeChoiceSfxMaxDuration,
@@ -32,6 +32,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   const [state, setState] = useState<ReadingState | null>(null);
   const [muted, setMuted] = useState(false);
   const [terminalDucking, setTerminalDucking] = useState(false);
+  const [terminalPlayback, setTerminalPlayback] = useState<SessionTerminalPlayback | null>(null);
   const [reducedMotion, setReducedMotion] = useState(() => typeof window !== "undefined"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   const [needsPlay, setNeedsPlay] = useState(false);
@@ -40,6 +41,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   const video = useRef<HTMLVideoElement>(null);
   const storyPanel = useRef<HTMLElement>(null);
   const activeVideoEffectId = useRef<string | null>(null);
+  const activeTerminalEffectId = useRef<string | null>(null);
   const activeCueVolume = useRef(0.55);
   const activeSfxVolume = useRef(0.8);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -121,6 +123,19 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
               reportVideoOutcome(effect.id, "timeout");
             }, 30_000));
           }));
+      } else if (effect.kind === "terminal-feedback") {
+        activeTerminalEffectId.current = effect.id;
+        setTerminalPlayback(effect.playback);
+        const timeoutId = `${effect.id}:timeout`;
+        const previous = timers.current.get(timeoutId);
+        if (previous) clearTimeout(previous);
+        timers.current.set(timeoutId, setTimeout(() => {
+          timers.current.delete(timeoutId);
+          if (activeTerminalEffectId.current !== effect.id) return;
+          activeTerminalEffectId.current = null;
+          setTerminalPlayback(null);
+          dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "timeout" });
+        }, effect.maximumMs));
       } else if (effect.kind === "complete") {
         (onComplete || onBack)();
       }
@@ -145,6 +160,8 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     media.addEventListener("change", updateMotion);
     const install = (cloudProgress: Parameters<typeof createReadingSession>[0]["cloudProgress"]) => {
       if (cancelled) return;
+      activeTerminalEffectId.current = null;
+      setTerminalPlayback(null);
       const deviceProgress = preview ? null : parseReadingProgress(localStorage.getItem(storageKey), story.startNodeId);
       const session = createReadingSession({
         story, chapterId, chapterVersion, preview, initialNodeId, deviceProgress, cloudProgress, reducedMotion: media.matches,
@@ -206,12 +223,22 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
       event={sessionView.terminalEvent}
       eventKey={`${chapterId}:${node.id}:${node.terminalEvent?.trigger || "none"}`}
       task={sessionView.terminalTask}
-      playback={state.terminalPlayback}
+      playback={terminalPlayback}
       muted={muted}
       reducedMotion={reducedMotion}
       suppressed={sessionView.terminalSuppressed}
       preview={preview}
-      onPlaybackComplete={() => dispatch({ type: "terminal-complete" })}
+      onPlaybackComplete={() => {
+        const id = activeTerminalEffectId.current;
+        if (!id) return;
+        const timeoutId = `${id}:timeout`;
+        const timeout = timers.current.get(timeoutId);
+        if (timeout) clearTimeout(timeout);
+        timers.current.delete(timeoutId);
+        activeTerminalEffectId.current = null;
+        setTerminalPlayback(null);
+        dispatch({ type: "effect-result", id, outcome: "complete" });
+      }}
       onDuckingChange={setTerminalDucking}
     />
   </section>;

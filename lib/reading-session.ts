@@ -27,6 +27,7 @@ export type ReadingEffect =
   | { kind: "music"; action: "start"; cue: StoryMusicCue }
   | { kind: "music"; action: "stop" | "pause" | "resume" }
   | { kind: "video"; id: string; action: "play" }
+  | { kind: "terminal-feedback"; id: string; playback: SessionTerminalPlayback; maximumMs: number }
   | { kind: "complete" };
 
 export type SessionTerminalPlayback = {
@@ -52,7 +53,6 @@ export type ReadingState = {
   choiceLocked: boolean;
   choiceFeedback: StoryChoice | null;
   terminalEventIds: string[];
-  terminalPlayback: SessionTerminalPlayback | null;
   activeCueId: string | null;
   activeCueName: string;
   completed: boolean;
@@ -64,7 +64,6 @@ export type ReadingEvent =
   | { type: "continue-image" }
   | { type: "choose"; choiceId: string }
   | { type: "effect-result"; id: string; outcome: "success" | "complete" | "failure" | "timeout" }
-  | { type: "terminal-complete" }
   | { type: "complete" };
 
 export type ReadingSessionInput = {
@@ -89,7 +88,7 @@ export function observeReadingSession(story: StoryDocument, state: ReadingState)
   return {
     terminalEvent,
     terminalTask: applyTerminalTaskEvents(story, state.terminalEventIds).task,
-    terminalSuppressed: state.phase !== "content" || state.choiceLocked && !state.terminalPlayback,
+    terminalSuppressed: state.phase !== "content" || state.choiceLocked,
   };
 }
 
@@ -135,7 +134,6 @@ export function createReadingSession(input: ReadingSessionInput) {
     choiceLocked: false,
     choiceFeedback: null,
     terminalEventIds: resumed ? progress?.terminalEventIds ?? [] : [],
-    terminalPlayback: null,
     activeCueId: null,
     activeCueName: "",
     completed: false,
@@ -154,7 +152,7 @@ export function createReadingSession(input: ReadingSessionInput) {
     state = {
       ...state, nodeId: targetId, pageIndex: 0, phase: firstPhase(targetId), afterImageDone: false,
       incomingChoice: choice, transitionVideoDone: false, activeTransition: null,
-      choiceLocked: false, choiceFeedback: null, terminalPlayback: null,
+      choiceLocked: false, choiceFeedback: null,
       activeCueId: music.startCue?.id ?? (music.stopActive ? null : state.activeCueId),
       activeCueName: music.startCue?.name ?? (music.stopActive ? "" : state.activeCueName),
     };
@@ -191,9 +189,17 @@ export function createReadingSession(input: ReadingSessionInput) {
     } else if (event.type === "show-after-image") {
       state = { ...state, phase: "afterImage" };
     } else if (event.type === "continue-image") {
-      state = state.phase === "afterImage"
-        ? { ...state, afterImageDone: true, phase: "content" }
-        : { ...state, phase: !input.reducedMotion && node.videoMode === "transition" && node.videoUrl && !state.transitionVideoDone ? "transitionVideo" : "content" };
+      if (state.phase === "afterImage") {
+        state = { ...state, afterImageDone: true, phase: "content" };
+      } else {
+        const phase = !input.reducedMotion && node.videoMode === "transition" && node.videoUrl && !state.transitionVideoDone
+          ? "transitionVideo" : "content";
+        state = { ...state, phase };
+        if (phase === "transitionVideo") {
+          if (state.activeCueId) effects.push({ kind: "music", action: "pause" });
+          effects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play" });
+        }
+      }
     } else if (event.type === "choose") {
       if (state.choiceLocked || state.activeTransition) return { state, effects };
       const choice = node.choices.find((item) => item.id === event.choiceId);
@@ -210,9 +216,9 @@ export function createReadingSession(input: ReadingSessionInput) {
         };
         state = {
           ...state, terminalEventIds: result.appliedIds,
-          terminalPlayback: playback,
           incomingChoice: choice,
         };
+        effects.push({ kind: "terminal-feedback", id: `terminal:${playback.id}`, playback, maximumMs: 30_000 });
       } else {
         const duration = choice.feedbackImageUrl
           ? normalizeChoiceImageDuration(choice.feedbackImageDurationMs)
@@ -230,11 +236,11 @@ export function createReadingSession(input: ReadingSessionInput) {
     } else if (event.type === "effect-result" && event.id.startsWith("choice:")) {
       const choice = state.incomingChoice;
       if (choice && event.id === `choice:${choice.id}`) effects.push(...enter(choice.targetId, null));
-    } else if (event.type === "terminal-complete") {
+    } else if (event.type === "effect-result" && event.id.startsWith("terminal:")) {
       const choice = state.incomingChoice;
-      if (choice) effects.push(...enter(choice.targetId, null));
+      if (choice && event.id === `terminal:${node.id}:${choice.id}`) effects.push(...enter(choice.targetId, null));
     } else if (event.type === "complete") {
-      state = { ...state, completed: true, choiceLocked: true, terminalPlayback: null, activeCueId: null, activeCueName: "" };
+      state = { ...state, completed: true, choiceLocked: true, activeCueId: null, activeCueName: "" };
       effects.push({ kind: "music", action: "stop" }, ...progressEffect(true), { kind: "complete" });
     }
     return { state, effects };

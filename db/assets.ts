@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, isNull, or } from "drizzle-orm";
 import { getDb } from ".";
 import { assetFolders, assets, chapters, chapterVersions, novels, novelVersions } from "./schema";
+import { enforceRateLimit } from "./rate-limit";
 import {
   assetStorageKey,
   novelReferencesAsset,
@@ -25,10 +26,12 @@ export type AssetCommand =
   | { action: "delete"; id?: string; bucket: R2Bucket }
   | {
     action: "generate-sfx"; bucket: R2Bucket; provider: SoundEffectProvider; choiceText: string;
+    rateLimit: { request: Request; identity: string };
     preset: string; prompt: string; generationDurationSeconds: number;
   }
   | {
     action: "generate-tts"; bucket: R2Bucket; provider: TerminalSpeechProvider;
+    rateLimit: { request: Request; identity: string };
     text: string; voiceId: string; voiceName: string;
   };
 
@@ -166,6 +169,8 @@ async function storeGenerated(
 }
 
 async function generateSfx(actor: AssetActor, command: Extract<AssetCommand, { action: "generate-sfx" }>): Promise<AssetLifecycleResult> {
+  await enforceRateLimit(command.rateLimit.request, "sfx-generation-minute", command.rateLimit.identity, 5, 1);
+  await enforceRateLimit(command.rateLimit.request, "sfx-generation-day", command.rateLimit.identity, 50, 1_440);
   const label = command.choiceText.trim().slice(0, 120);
   if (!label) fail("请先填写选项文字");
   if (!INTERACTION_PRESETS.includes(command.preset as InteractionPreset)) fail("不支持的互动动画");
@@ -184,6 +189,8 @@ async function generateSfx(actor: AssetActor, command: Extract<AssetCommand, { a
 }
 
 async function generateTts(actor: AssetActor, command: Extract<AssetCommand, { action: "generate-tts" }>): Promise<AssetLifecycleResult> {
+  await enforceRateLimit(command.rateLimit.request, "tts-generation-minute", command.rateLimit.identity, 5, 1);
+  await enforceRateLimit(command.rateLimit.request, "tts-generation-day", command.rateLimit.identity, 50, 1_440);
   const generated = await command.provider.generate({ voiceId: command.voiceId, text: command.text });
   const safeVoice = Array.from(command.voiceName.trim() || "AI音色").slice(0, 20).join("").replace(/[\\/:*?"<>|]/g, "-");
   const safeText = Array.from(command.text.trim()).slice(0, 16).join("").replace(/[\\/:*?"<>|]/g, "-");

@@ -3,7 +3,7 @@ import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
 import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
 import { administratorCapability } from "../../../../../lib/session-authorization";
-import { AuthError, enforceRateLimit } from "../../../../../lib/auth";
+import { AuthError } from "../../../../../lib/auth";
 import { createSoundEffectProvider, SoundEffectError } from "../../../../../lib/sfx";
 
 type SfxEnvironment = { SFX_PROVIDER?: string; ELEVENLABS_API_KEY?: string };
@@ -14,10 +14,9 @@ export async function POST(request: Request) {
     const body = await request.json() as { choiceText?: string; interactionPreset?: string; prompt?: string; generationDurationSeconds?: number };
     const sfxEnv = env as unknown as SfxEnvironment;
     const provider = createSoundEffectProvider({ providerId: sfxEnv.SFX_PROVIDER, elevenLabsApiKey: sfxEnv.ELEVENLABS_API_KEY });
-    await enforceRateLimit(request, "sfx-generation-minute", identity.email, 5, 1);
-    await enforceRateLimit(request, "sfx-generation-day", identity.email, 50, 1_440);
     return assetLifecycleResponse(await assetLifecycle.execute({ kind: "administrator" }, {
       action: "generate-sfx", bucket: env.ASSET_BUCKET, provider,
+      rateLimit: { request, identity: identity.email },
       choiceText: String(body.choiceText || ""), preset: String(body.interactionPreset || "glow"),
       prompt: String(body.prompt || ""), generationDurationSeconds: Number(body.generationDurationSeconds),
     }));

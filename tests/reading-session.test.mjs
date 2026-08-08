@@ -118,3 +118,41 @@ test("ReadingSession 用 effect 声明转场视频期间的音乐暂停与恢复
   const completed = session.dispatch({ type: "effect-result", id: video.id, outcome: "complete" });
   assert.deepEqual(completed.effects.filter((effect) => effect.kind === "music").map((effect) => effect.action), ["resume"]);
 });
+
+test("前置图片完成后由 ReadingSession 启动转场视频", () => {
+  const current = story();
+  current.nodes[0].displayImagePosition = "before";
+  current.nodes[0].displayImageUrl = "https://example.com/before.jpg";
+  current.nodes[0].displayImageAlt = "前置图片";
+  current.nodes[0].videoMode = "transition";
+  current.nodes[0].videoUrl = "https://example.com/after-image.mp4";
+  const session = createReadingSession({
+    story: current, chapterId: "image-video", chapterVersion: 1, preview: true, reducedMotion: false,
+  });
+  assert.equal(session.state.phase, "beforeImage");
+  const continued = session.dispatch({ type: "continue-image" });
+  assert.equal(continued.state.phase, "transitionVideo");
+  assert.deepEqual(continued.effects.filter((effect) => effect.kind === "video").map((effect) => effect.id), [`video:${current.startNodeId}`]);
+});
+
+test("终端反馈由 effect 驱动且失败或超时后仍能继续", () => {
+  for (const outcome of ["failure", "timeout"]) {
+    const current = story();
+    const choice = current.nodes[0].choices[0];
+    choice.terminalFeedbackEnabled = true;
+    choice.terminalMessage = "任务链路异常，继续剧情。";
+    choice.terminalSpeak = true;
+    choice.terminalVoiceUrl = "https://example.com/fail.mp3";
+    const session = createReadingSession({
+      story: current, chapterId: `terminal-${outcome}`, chapterVersion: 1, preview: true,
+    });
+    const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
+    const terminal = chosen.effects.find((effect) => effect.kind === "terminal-feedback");
+    assert.ok(terminal);
+    assert.equal(terminal.playback.message, choice.terminalMessage);
+    assert.equal(chosen.state.choiceLocked, true);
+    const recovered = session.dispatch({ type: "effect-result", id: terminal.id, outcome });
+    assert.equal(recovered.state.nodeId, choice.targetId);
+    assert.equal(recovered.state.choiceLocked, false);
+  }
+});

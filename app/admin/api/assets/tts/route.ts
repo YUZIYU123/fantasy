@@ -3,7 +3,7 @@ import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
 import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
 import { administratorCapability } from "../../../../../lib/session-authorization";
-import { AuthError, enforceRateLimit } from "../../../../../lib/auth";
+import { AuthError } from "../../../../../lib/auth";
 import { ElevenLabsTerminalSpeechProvider, TerminalSpeechError } from "../../../../../lib/tts";
 
 type TtsEnvironment = { ELEVENLABS_API_KEY?: string };
@@ -27,10 +27,9 @@ export async function POST(request: Request) {
   try {
     const identity = await administratorCapability.require(request);
     const body = await request.json() as { text?: string; voiceId?: string; voiceName?: string };
-    await enforceRateLimit(request, "tts-generation-minute", identity.email, 5, 1);
-    await enforceRateLimit(request, "tts-generation-day", identity.email, 50, 1_440);
     return assetLifecycleResponse(await assetLifecycle.execute({ kind: "administrator" }, {
       action: "generate-tts", bucket: env.ASSET_BUCKET, provider: provider(),
+      rateLimit: { request, identity: identity.email },
       text: String(body.text || ""), voiceId: String(body.voiceId || ""), voiceName: String(body.voiceName || ""),
     }));
   } catch (error) {

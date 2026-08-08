@@ -99,6 +99,15 @@ const lifecycleWorker = {
       chapterActions.push("publish");
       await creationLifecycle.execute(administrator, { entity: "chapter", action: "offline", id: chapterCreated.id });
       chapterActions.push("offline");
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "offline", id: novelCreated.id });
+      let chapterRollbackWithOfflineParentStatus = 0;
+      try {
+        await creationLifecycle.execute(administrator, { entity: "chapter", action: "rollback", id: chapterCreated.id, version: 1 });
+      } catch (error) {
+        if (!(error instanceof Error) || !("status" in error)) throw error;
+        chapterRollbackWithOfflineParentStatus = Number(error.status);
+      }
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "rollback", id: novelCreated.id, version: 1 });
       await creationLifecycle.execute(administrator, { entity: "chapter", action: "rollback", id: chapterCreated.id, version: 1 });
       chapterActions.push("rollback");
       const [novelVersions, chapterVersions] = await Promise.all([
@@ -109,6 +118,45 @@ const lifecycleWorker = {
         novelActions, chapterActions,
         novelVersions: novelVersions.map((version) => version.version),
         chapterVersions: chapterVersions.map((version) => version.version),
+        chapterRollbackWithOfflineParentStatus,
+      });
+    }
+
+    if (pathname === "/creation-rejections" && request.method === "POST") {
+      const owner = { kind: "author" as const, id: crypto.randomUUID() };
+      const stranger = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const statusOf = async (operation: () => Promise<unknown>) => {
+        try {
+          await operation();
+          return 200;
+        } catch (error) {
+          if (!(error instanceof Error) || !("status" in error)) throw error;
+          return Number(error.status);
+        }
+      };
+      const created = await creationLifecycle.execute(owner, { entity: "novel", action: "create" });
+      if (created.kind !== "created") throw new Error("小说创建失败");
+      const novel = createBlankNovel();
+      novel.name = "拒绝矩阵小说";
+      novel.summary = "验证越权和非法状态转换。";
+      novel.coverUrl = "https://example.com/rejections.jpg";
+      novel.coverAlt = "拒绝矩阵小说封面";
+      const crossOwnerSave = await statusOf(() => creationLifecycle.execute(stranger, { entity: "novel", action: "save", id: created.id, novel }));
+      const crossOwnerDuplicate = await statusOf(() => creationLifecycle.execute(stranger, { entity: "novel", action: "duplicate", id: created.id }));
+      const authorPublish = await statusOf(() => creationLifecycle.execute(owner, { entity: "novel", action: "publish", id: created.id, novel }));
+      const administratorSubmit = await statusOf(() => creationLifecycle.execute(administrator, { entity: "novel", action: "submit", id: created.id, novel }));
+      const withdrawDraft = await statusOf(() => creationLifecycle.execute(owner, { entity: "novel", action: "withdraw", id: created.id }));
+      await creationLifecycle.execute(owner, { entity: "novel", action: "submit", id: created.id, novel });
+      const repeatedSubmit = await statusOf(() => creationLifecycle.execute(owner, { entity: "novel", action: "submit", id: created.id, novel }));
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "reject", id: created.id, meta: { reviewNote: "请修改" } });
+      const rejectDraft = await statusOf(() => creationLifecycle.execute(administrator, { entity: "novel", action: "reject", id: created.id, meta: { reviewNote: "请修改" } }));
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "publish", id: created.id, novel });
+      const authorDeletePublished = await statusOf(() => creationLifecycle.execute(owner, { entity: "novel", action: "delete", id: created.id }));
+      const administratorDeletePublished = await statusOf(() => creationLifecycle.execute(administrator, { entity: "novel", action: "delete", id: created.id }));
+      return Response.json({
+        crossOwnerSave, crossOwnerDuplicate, authorPublish, administratorSubmit, withdrawDraft,
+        repeatedSubmit, rejectDraft, authorDeletePublished, administratorDeletePublished,
       });
     }
 
@@ -154,6 +202,7 @@ const lifecycleWorker = {
 
       const sfx = await assetLifecycle.execute(actor, {
         action: "generate-sfx", bucket: workerEnv.ASSET_BUCKET,
+        rateLimit: { request, identity: `sfx-${crypto.randomUUID()}@example.com` },
         provider: {
           id: "mock",
           async generate() {
@@ -166,6 +215,7 @@ const lifecycleWorker = {
       operations.push("generate-sfx");
       const tts = await assetLifecycle.execute(actor, {
         action: "generate-tts", bucket: workerEnv.ASSET_BUCKET,
+        rateLimit: { request, identity: `tts-${crypto.randomUUID()}@example.com` },
         provider: {
           async listVoices() { return []; },
           async generate() {
@@ -228,6 +278,68 @@ const lifecycleWorker = {
         generated: { sfxType: sfx.asset.type, ttsType: tts.asset.type, sourceKey: tts.sourceKey },
         referenceStatus, failedStatus, retryRemoved,
       });
+    }
+
+    if (pathname === "/asset-ownership" && request.method === "POST") {
+      const owner = { kind: "author" as const, id: crypto.randomUUID() };
+      const stranger = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const statusOf = async (operation: () => Promise<unknown>) => {
+        try {
+          await operation();
+          return 200;
+        } catch (error) {
+          if (!(error instanceof AssetLifecycleError)) throw error;
+          return error.status;
+        }
+      };
+      const authorAsset = await assetLifecycle.execute(owner, {
+        action: "upload", bucket: workerEnv.ASSET_BUCKET,
+        file: new File(["author"], "author.png", { type: "image/png" }),
+        duration: 0, folderId: null, alt: "作者素材",
+      });
+      const platformAsset = await assetLifecycle.execute(administrator, {
+        action: "upload", bucket: workerEnv.ASSET_BUCKET,
+        file: new File(["platform"], "platform.png", { type: "image/png" }),
+        duration: 0, folderId: null, alt: "平台素材",
+      });
+      if (authorAsset.kind !== "asset" || platformAsset.kind !== "asset") throw new Error("素材上传失败");
+      const authorAssetId = String(authorAsset.asset.id);
+      const platformAssetId = String(platformAsset.asset.id);
+      return Response.json({
+        strangerCanSeeAuthorAsset: (await assetLifecycle.list(stranger)).assets.some((asset) => asset.id === authorAssetId),
+        strangerUpdate: await statusOf(() => assetLifecycle.execute(stranger, { action: "update-asset", id: authorAssetId, name: "越权" })),
+        strangerDelete: await statusOf(() => assetLifecycle.execute(stranger, { action: "delete", id: authorAssetId, bucket: workerEnv.ASSET_BUCKET })),
+        authorUpdatePlatform: await statusOf(() => assetLifecycle.execute(owner, { action: "update-asset", id: platformAssetId, name: "越权" })),
+      });
+    }
+
+    if (pathname === "/asset-generation-rate-limit" && request.method === "POST") {
+      const actor = { kind: "author" as const, id: crypto.randomUUID() };
+      const identity = `asset-limit-${crypto.randomUUID()}@example.com`;
+      const limitedRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.20" },
+      });
+      const generate = () => assetLifecycle.execute(actor, {
+        action: "generate-sfx", bucket: workerEnv.ASSET_BUCKET,
+        rateLimit: { request: limitedRequest(), identity },
+        provider: {
+          id: "mock",
+          async generate() {
+            return { bytes: new Uint8Array([1]), mimeType: "audio/mpeg" as const, extension: "mp3" as const, durationSeconds: 1, provider: "mock" };
+          },
+        },
+        choiceText: "频控", preset: "glow", prompt: "频控测试音效", generationDurationSeconds: 1,
+      });
+      for (let index = 0; index < 5; index += 1) await generate();
+      let rateLimited = 0;
+      try {
+        await generate();
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        rateLimited = error.status;
+      }
+      return Response.json({ generated: 5, rateLimited });
     }
 
     if (pathname === "/account" && request.method === "POST") {
@@ -399,9 +511,12 @@ const lifecycleWorker = {
       }
 
       let mailCalls = 0;
+      const mailIdempotencyKeys: string[] = [];
       const retryingMailer = {
-        async send() {
+        async send(...args: [Request, string, "verify_email" | "reset_password", string, { idempotencyKey: string }?]) {
+          const attempt = args[4];
           mailCalls += 1;
+          if (attempt) mailIdempotencyKeys.push(attempt.idempotencyKey);
           if (mailCalls === 1) throw new AuthError("邮件发送失败，请稍后重试", 502);
           return {};
         },
@@ -415,9 +530,120 @@ const lifecycleWorker = {
         password: "contract-password-123", turnstileToken: "retry-token",
       });
       return Response.json({
-        turnstileTimeout: { status: turnstileTimeoutStatus, calls: hangingTurnstile.calls.length },
-        mailRetry: { status: registration.status, calls: mailCalls },
+        turnstileTimeout: {
+          status: turnstileTimeoutStatus,
+          calls: hangingTurnstile.calls.length,
+          sameKey: new Set(hangingTurnstile.idempotencyKeys).size === 1,
+        },
+        mailRetry: { status: registration.status, calls: mailCalls, sameKey: new Set(mailIdempotencyKeys).size === 1 },
       });
+    }
+
+    if (pathname === "/account-forgot-enumeration" && request.method === "POST") {
+      const requestForLifecycle = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin },
+      });
+      const setupMailer = new MockAuthMailer();
+      const setup = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer: setupMailer });
+      const email = `forgot-enumeration-${crypto.randomUUID()}@example.com`;
+      await setup.execute({
+        action: "register", request: requestForLifecycle(), email, displayName: "Forgot Enumeration",
+        password: "contract-password-123", turnstileToken: "register-token",
+      });
+      const verificationToken = setupMailer.calls.at(-1)?.token;
+      if (!verificationToken) throw new Error("没有验证 token");
+      await setup.execute({ action: "verify-email", request: requestForLifecycle(), token: verificationToken });
+      const lifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(), mailer: new MockAuthMailer({}, undefined, true),
+        externalTimeoutMs: 5, externalRetries: 1,
+      });
+      const outcome = async (candidate: string) => {
+        try {
+          const result = await lifecycle.execute({
+            action: "forgot-password", request: requestForLifecycle(), email: candidate, turnstileToken: "forgot-token",
+          });
+          return { status: result.status ?? 200, message: result.body.message };
+        } catch (error) {
+          if (!(error instanceof AuthError)) throw error;
+          return { status: error.status, message: error.message };
+        }
+      };
+      return Response.json({
+        existing: await outcome(email),
+        missing: await outcome(`missing-${crypto.randomUUID()}@example.com`),
+      });
+    }
+
+    if (pathname === "/account-security" && request.method === "POST") {
+      const lifecycleRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": crypto.randomUUID() },
+      });
+      const statusOf = async (operation: () => Promise<unknown>) => {
+        try {
+          await operation();
+          return 200;
+        } catch (error) {
+          if (!(error instanceof AuthError)) throw error;
+          return error.status;
+        }
+      };
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer });
+      const email = `account-security-${crypto.randomUUID()}@example.com`;
+      const password = "contract-password-123";
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email, displayName: "Account Security",
+        password, turnstileToken: "register-token",
+      });
+      const pendingLogin = await statusOf(() => lifecycle.execute({ action: "login", request: lifecycleRequest(), email, password }));
+      const verificationToken = mailer.calls.at(-1)?.token;
+      if (!verificationToken) throw new Error("没有验证 token");
+      await lifecycle.execute({ action: "verify-email", request: lifecycleRequest(), token: verificationToken });
+      const login = await lifecycle.execute({ action: "login", request: lifecycleRequest(), email, password });
+      const user = login.body.user as { id: string };
+
+      const expiredVerificationMailer = new MockAuthMailer();
+      const expiredVerificationLifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(), mailer: expiredVerificationMailer, verificationTokenLifetimeMs: -1,
+      });
+      await expiredVerificationLifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: `expired-${crypto.randomUUID()}@example.com`,
+        displayName: "Expired Verification", password, turnstileToken: "expired-token",
+      });
+      const expiredVerificationToken = expiredVerificationMailer.calls.at(-1)?.token;
+      if (!expiredVerificationToken) throw new Error("没有过期验证 token");
+      const expiredVerification = await statusOf(() => expiredVerificationLifecycle.execute({
+        action: "verify-email", request: lifecycleRequest(), token: expiredVerificationToken,
+      }));
+
+      const resetMailer = new MockAuthMailer();
+      const resetLifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(), mailer: resetMailer, resetTokenLifetimeMs: -1,
+      });
+      await resetLifecycle.execute({
+        action: "forgot-password", request: lifecycleRequest(), email, turnstileToken: "forgot-token",
+      });
+      const expiredResetToken = resetMailer.calls.at(-1)?.token;
+      if (!expiredResetToken) throw new Error("没有过期重置 token");
+      const expiredReset = await statusOf(() => resetLifecycle.execute({
+        action: "reset-password", request: lifecycleRequest(), token: expiredResetToken, password: "replacement-password-456",
+      }));
+      await lifecycle.execute({ action: "update-user", id: user.id, status: "disabled" });
+      const disabledLogin = await statusOf(() => lifecycle.execute({ action: "login", request: lifecycleRequest(), email, password }));
+
+      const limitedEmail = `limited-${crypto.randomUUID()}@example.com`;
+      const limitedRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.10" },
+      });
+      for (let index = 0; index < 4; index += 1) {
+        await lifecycle.execute({
+          action: "forgot-password", request: limitedRequest(), email: limitedEmail, turnstileToken: `limited-${index}`,
+        });
+      }
+      const rateLimited = await statusOf(() => lifecycle.execute({
+        action: "forgot-password", request: limitedRequest(), email: limitedEmail, turnstileToken: "limited-final",
+      }));
+      return Response.json({ pendingLogin, disabledLogin, expiredVerification, expiredReset, rateLimited });
     }
 
     return Response.json({ error: "not implemented" }, { status: 501 });

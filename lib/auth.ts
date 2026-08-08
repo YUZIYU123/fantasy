@@ -1,8 +1,3 @@
-import { env } from "cloudflare:workers";
-import { and, count, eq, gt } from "drizzle-orm";
-import { getDb } from "../db";
-import { authAttempts, authTokens, sessions } from "../db/schema";
-
 export type UserRole = "reader" | "author" | "admin";
 export type UserStatus = "pending" | "active" | "disabled";
 export type SessionIdentity = {
@@ -13,22 +8,8 @@ export type SessionIdentity = {
   status: UserStatus;
 };
 
-type AuthEnv = {
-  RESEND_API_KEY?: string;
-  AUTH_FROM_EMAIL?: string;
-  APP_ORIGIN?: string;
-  TURNSTILE_SITE_KEY?: string;
-  TURNSTILE_SECRET_KEY?: string;
-  LOCAL_AUTH_BYPASS?: string;
-};
-
-const SESSION_COOKIE = "mist_session";
-const SESSION_DAYS = 30;
+export const AUTH_SESSION_COOKIE = "mist_session";
 const PASSWORD_ITERATIONS = 210_000;
-
-function authEnv() {
-  return env as unknown as AuthEnv;
-}
 
 function bytesToBase64Url(bytes: Uint8Array) {
   let binary = "";
@@ -83,118 +64,14 @@ export async function hashToken(token: string) {
   return bytesToBase64Url(new Uint8Array(digest));
 }
 
-function cookieValue(request: Request, name: string) {
-  const cookie = request.headers.get("cookie") || "";
-  for (const part of cookie.split(";")) {
-    const [key, ...rest] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(rest.join("="));
-  }
-  return "";
-}
-
-export async function createSession(userId: string, request: Request) {
-  const token = randomToken();
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
-  await getDb().insert(sessions).values({
-    id: crypto.randomUUID(),
-    userId,
-    tokenHash: await hashToken(token),
-    expiresAt,
-  });
-  const secure = new URL(request.url).protocol === "https:";
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}${secure ? "; Secure" : ""}`;
-}
-
-export async function revokeCurrentSession(request: Request) {
-  const token = cookieValue(request, SESSION_COOKIE);
-  if (token) await getDb().delete(sessions).where(eq(sessions.tokenHash, await hashToken(token)));
-}
-
 export function clearSessionCookie(request: Request) {
   const secure = new URL(request.url).protocol === "https:";
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`;
+  return `${AUTH_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`;
 }
 
 export function assertSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
   if (origin && origin !== new URL(request.url).origin) throw new AuthError("请求来源无效", 403);
-}
-
-function isLocalBypass(request: Request) {
-  const hostname = new URL(request.url).hostname;
-  return (hostname === "localhost" || hostname === "127.0.0.1") && authEnv().LOCAL_AUTH_BYPASS === "true";
-}
-
-export async function validateTurnstile(request: Request, token: string, action: string, signal?: AbortSignal) {
-  if (isLocalBypass(request)) return;
-  const secret = authEnv().TURNSTILE_SECRET_KEY;
-  if (!secret) throw new AuthError("注册验证服务尚未配置", 503);
-  const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    signal,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      secret,
-      response: token,
-      remoteip: request.headers.get("cf-connecting-ip") || undefined,
-      idempotency_key: crypto.randomUUID(),
-    }),
-  });
-  const result = await response.json() as { success?: boolean; action?: string };
-  if (!result.success || (result.action && result.action !== action)) throw new AuthError("人机验证失败，请重试", 400);
-}
-
-export async function enforceRateLimit(request: Request, action: string, email: string, maximum = 8, minutes = 15) {
-  if (isLocalBypass(request)) return;
-  const ip = request.headers.get("cf-connecting-ip") || "unknown";
-  const key = await hashToken(`${ip}:${normalizeEmail(email)}`);
-  const since = new Date(Date.now() - minutes * 60_000).toISOString();
-  const result = await getDb().select({ value: count() }).from(authAttempts).where(and(
-    eq(authAttempts.key, key),
-    eq(authAttempts.action, action),
-    gt(authAttempts.createdAt, since),
-  ));
-  if ((result[0]?.value ?? 0) >= maximum) throw new AuthError("操作过于频繁，请稍后再试", 429);
-  await getDb().insert(authAttempts).values({ key, action });
-}
-
-export async function createAuthToken(userId: string, type: "verify_email" | "reset_password", lifetimeMs: number) {
-  const token = randomToken();
-  await getDb().insert(authTokens).values({
-    id: crypto.randomUUID(),
-    userId,
-    tokenHash: await hashToken(token),
-    type,
-    expiresAt: new Date(Date.now() + lifetimeMs).toISOString(),
-  });
-  return token;
-}
-
-export async function sendAuthEmail(request: Request, to: string, type: "verify_email" | "reset_password", token: string, signal?: AbortSignal) {
-  if (isLocalBypass(request)) return { developmentToken: token };
-  const values = authEnv();
-  if (!values.RESEND_API_KEY || !values.AUTH_FROM_EMAIL || !values.APP_ORIGIN) throw new AuthError("邮件服务尚未配置", 503);
-  const path = type === "verify_email" ? "/verify-email" : "/reset-password";
-  const link = `${values.APP_ORIGIN.replace(/\/$/, "")}${path}?token=${encodeURIComponent(token)}`;
-  const subject = type === "verify_email" ? "验证你的幻界 Fantasy 账号" : "重置你的幻界 Fantasy 密码";
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    signal,
-    headers: {
-      authorization: `Bearer ${values.RESEND_API_KEY}`,
-      "content-type": "application/json",
-      "idempotency-key": crypto.randomUUID(),
-    },
-    body: JSON.stringify({
-      from: values.AUTH_FROM_EMAIL,
-      to: [to],
-      subject,
-      text: `${subject}\n\n请在有效期内打开以下链接：\n${link}`,
-      html: `<p>${subject}</p><p><a href="${link}">继续操作</a></p><p>如果不是你本人操作，请忽略此邮件。</p>`,
-    }),
-  });
-  if (!response.ok) throw new AuthError("邮件发送失败，请稍后重试", 502);
-  return {};
 }
 
 export class AuthError extends Error {

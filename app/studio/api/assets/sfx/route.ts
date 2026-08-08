@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
-import { assertSameOrigin, authErrorResponse, enforceRateLimit } from "../../../../../lib/auth";
+import { assertSameOrigin, authErrorResponse } from "../../../../../lib/auth";
 import { sessionAuthorization } from "../../../../../lib/session-authorization";
 import { createSoundEffectProvider, SoundEffectError } from "../../../../../lib/sfx";
 
@@ -14,10 +14,9 @@ export async function POST(request: Request) {
     const body = await request.json() as { choiceText?: string; interactionPreset?: string; prompt?: string; generationDurationSeconds?: number };
     const sfxEnv = env as unknown as SfxEnvironment;
     const provider = createSoundEffectProvider({ providerId: sfxEnv.SFX_PROVIDER, elevenLabsApiKey: sfxEnv.ELEVENLABS_API_KEY });
-    await enforceRateLimit(request, "sfx-generation-minute", identity.email, 5, 1);
-    await enforceRateLimit(request, "sfx-generation-day", identity.email, 50, 1_440);
     return assetLifecycleResponse(await assetLifecycle.execute({ kind: "author", id: identity.id }, {
       action: "generate-sfx", bucket: env.ASSET_BUCKET, provider,
+      rateLimit: { request, identity: identity.email },
       choiceText: String(body.choiceText || ""), preset: String(body.interactionPreset || "glow"),
       prompt: String(body.prompt || ""), generationDurationSeconds: Number(body.generationDurationSeconds),
     }));

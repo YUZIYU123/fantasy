@@ -1,56 +1,93 @@
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { getDb } from ".";
+import { sendAuthEmail, validateTurnstile } from "./account-providers";
+import { enforceRateLimit } from "./rate-limit";
 import { authTokens, sessions, users } from "./schema";
 import {
   AuthError,
   assertSameOrigin,
-  createAuthToken,
-  createSession,
-  enforceRateLimit,
   hashPassword,
   hashToken,
   normalizeEmail,
-  revokeCurrentSession,
-  sendAuthEmail,
   validatePassword,
-  validateTurnstile,
   verifyPassword,
   type UserRole,
   type UserStatus,
+  AUTH_SESSION_COOKIE,
+  randomToken,
 } from "../lib/auth";
 
+const SESSION_DAYS = 30;
+
+function cookieValue(request: Request, name: string) {
+  const cookie = request.headers.get("cookie") || "";
+  for (const part of cookie.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return "";
+}
+
+async function createSession(userId: string, request: Request) {
+  const token = randomToken();
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
+  await getDb().insert(sessions).values({ id: crypto.randomUUID(), userId, tokenHash: await hashToken(token), expiresAt });
+  const secure = new URL(request.url).protocol === "https:";
+  return `${AUTH_SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}${secure ? "; Secure" : ""}`;
+}
+
+async function revokeCurrentSession(request: Request) {
+  const token = cookieValue(request, AUTH_SESSION_COOKIE);
+  if (token) await getDb().delete(sessions).where(eq(sessions.tokenHash, await hashToken(token)));
+}
+
+async function createAuthToken(userId: string, type: "verify_email" | "reset_password", lifetimeMs: number) {
+  const token = randomToken();
+  await getDb().insert(authTokens).values({
+    id: crypto.randomUUID(), userId, tokenHash: await hashToken(token), type,
+    expiresAt: new Date(Date.now() + lifetimeMs).toISOString(),
+  });
+  return token;
+}
+
 export interface TurnstileVerifier {
-  verify(request: Request, token: string, action: string, signal?: AbortSignal): Promise<void>;
+  verify(request: Request, token: string, action: string, attempt?: ExternalAttempt): Promise<void>;
 }
 
 export interface AuthMailer {
-  send(request: Request, to: string, type: "verify_email" | "reset_password", token: string, signal?: AbortSignal): Promise<{ developmentToken?: string }>;
+  send(request: Request, to: string, type: "verify_email" | "reset_password", token: string, attempt?: ExternalAttempt): Promise<{ developmentToken?: string }>;
 }
+
+type ExternalAttempt = { signal: AbortSignal; idempotencyKey: string };
 
 export const productionTurnstileVerifier: TurnstileVerifier = { verify: validateTurnstile };
 export const productionAuthMailer: AuthMailer = { send: sendAuthEmail };
 
 export class MockTurnstileVerifier implements TurnstileVerifier {
   readonly calls: Array<{ token: string; action: string }> = [];
+  readonly idempotencyKeys: string[] = [];
   constructor(private readonly failure?: Error, private readonly hangs = false) {}
-  async verify(_request: Request, token: string, action: string, signal?: AbortSignal) {
+  async verify(_request: Request, token: string, action: string, attempt?: ExternalAttempt) {
     this.calls.push({ token, action });
+    if (attempt) this.idempotencyKeys.push(attempt.idempotencyKey);
     if (this.failure) throw this.failure;
-    if (this.hangs) await waitForAbort(signal);
+    if (this.hangs) await waitForAbort(attempt?.signal);
   }
 }
 
 export class MockAuthMailer implements AuthMailer {
   readonly calls: Array<{ to: string; type: "verify_email" | "reset_password"; token: string }> = [];
+  readonly idempotencyKeys: string[] = [];
   constructor(
     private readonly result: { developmentToken?: string } = {},
     private readonly failure?: Error,
     private readonly hangs = false,
   ) {}
-  async send(_request: Request, to: string, type: "verify_email" | "reset_password", token: string, signal?: AbortSignal) {
+  async send(_request: Request, to: string, type: "verify_email" | "reset_password", token: string, attempt?: ExternalAttempt) {
     this.calls.push({ to, type, token });
+    if (attempt) this.idempotencyKeys.push(attempt.idempotencyKey);
     if (this.failure) throw this.failure;
-    if (this.hangs) await waitForAbort(signal);
+    if (this.hangs) await waitForAbort(attempt?.signal);
     return this.result;
   }
 }
@@ -144,7 +181,16 @@ export function createAccountLifecycle({
   mailer = productionAuthMailer,
   externalTimeoutMs = 8_000,
   externalRetries = 1,
-}: { turnstile?: TurnstileVerifier; mailer?: AuthMailer; externalTimeoutMs?: number; externalRetries?: number } = {}) {
+  verificationTokenLifetimeMs = 24 * 60 * 60_000,
+  resetTokenLifetimeMs = 30 * 60_000,
+}: {
+  turnstile?: TurnstileVerifier;
+  mailer?: AuthMailer;
+  externalTimeoutMs?: number;
+  externalRetries?: number;
+  verificationTokenLifetimeMs?: number;
+  resetTokenLifetimeMs?: number;
+} = {}) {
   async function execute(command: AccountCommand): Promise<AccountResult> {
     const db = getDb();
     if ("request" in command) assertSameOrigin(command.request);
@@ -156,8 +202,9 @@ export function createAccountLifecycle({
       const passwordError = validatePassword(command.password);
       if (passwordError) throw new AuthError(passwordError);
       await enforceRateLimit(command.request, "register", email, 5, 30);
+      const turnstileIdempotencyKey = crypto.randomUUID();
       await executeExternal(
-        (signal) => turnstile.verify(command.request, command.turnstileToken, "register", signal),
+        (signal) => turnstile.verify(command.request, command.turnstileToken, "register", { signal, idempotencyKey: turnstileIdempotencyKey }),
         externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
       );
       const existing = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
@@ -166,9 +213,10 @@ export function createAccountLifecycle({
       const passwordHash = await hashPassword(command.password);
       if (existing) await db.update(users).set({ displayName, passwordHash, updatedAt: new Date().toISOString() }).where(eq(users.id, existing.id));
       else await db.insert(users).values({ id: userId, email, displayName, passwordHash, role: "reader", status: "pending" });
-      const token = await createAuthToken(userId, "verify_email", 24 * 60 * 60_000);
+      const token = await createAuthToken(userId, "verify_email", verificationTokenLifetimeMs);
+      const mailIdempotencyKey = crypto.randomUUID();
       const delivery = await executeExternal(
-        (signal) => mailer.send(command.request, email, "verify_email", token, signal),
+        (signal) => mailer.send(command.request, email, "verify_email", token, { signal, idempotencyKey: mailIdempotencyKey }),
         externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
       );
       return { status: 201, body: { ok: true, message: "验证邮件已发送", ...delivery } };
@@ -195,18 +243,24 @@ export function createAccountLifecycle({
       const email = normalizeEmail(command.email);
       if (email.length > 254) throw new AuthError("邮箱格式无效");
       await enforceRateLimit(command.request, "forgot-password", email, 4, 60);
+      const turnstileIdempotencyKey = crypto.randomUUID();
       await executeExternal(
-        (signal) => turnstile.verify(command.request, command.turnstileToken, "forgot-password", signal),
+        (signal) => turnstile.verify(command.request, command.turnstileToken, "forgot-password", { signal, idempotencyKey: turnstileIdempotencyKey }),
         externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
       );
       const user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
       let developmentToken: string | undefined;
       if (user?.status === "active") {
-        const token = await createAuthToken(user.id, "reset_password", 30 * 60_000);
-        developmentToken = (await executeExternal(
-          (signal) => mailer.send(command.request, email, "reset_password", token, signal),
-          externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
-        )).developmentToken;
+        try {
+          const token = await createAuthToken(user.id, "reset_password", resetTokenLifetimeMs);
+          const mailIdempotencyKey = crypto.randomUUID();
+          developmentToken = (await executeExternal(
+            (signal) => mailer.send(command.request, email, "reset_password", token, { signal, idempotencyKey: mailIdempotencyKey }),
+            externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
+          )).developmentToken;
+        } catch {
+          // Password recovery intentionally returns the same response for every address.
+        }
       }
       return { body: { ok: true, message: "如果账号存在，重置邮件已经发送", ...(developmentToken ? { developmentToken } : {}) } };
     }

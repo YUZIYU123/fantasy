@@ -8,7 +8,7 @@ const runtime = createCloudflareRuntime({
   main: fileURLToPath(new URL("./lifecycle-worker.ts", import.meta.url)),
   port,
   readinessPath: "/health",
-  vars: { LOCAL_AUTH_BYPASS: "true" },
+  vars: { LOCAL_AUTH_BYPASS: "false" },
 });
 
 before(() => runtime.start());
@@ -30,8 +30,25 @@ test("CreationLifecycle 公开接口覆盖小说与章节完整转换矩阵", as
   const expected = ["create", "save", "duplicate", "delete", "submit", "withdraw", "submit", "reject", "submit", "publish", "offline", "rollback"];
   assert.deepEqual(payload.novelActions, expected);
   assert.deepEqual(payload.chapterActions, expected);
-  assert.deepEqual(payload.novelVersions, [2, 1]);
+  assert.deepEqual(payload.novelVersions, [3, 2, 1]);
   assert.deepEqual(payload.chapterVersions, [2, 1]);
+  assert.equal(payload.chapterRollbackWithOfflineParentStatus, 400);
+});
+
+test("CreationLifecycle 公开接口拒绝越权和非法状态转换", async () => {
+  const response = await fetch(`${runtime.origin}/creation-rejections`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    crossOwnerSave: 403,
+    crossOwnerDuplicate: 403,
+    authorPublish: 400,
+    administratorSubmit: 400,
+    withdrawDraft: 400,
+    repeatedSubmit: 400,
+    rejectDraft: 400,
+    authorDeletePublished: 400,
+    administratorDeletePublished: 400,
+  });
 });
 
 test("AssetLifecycle 通过公开接口补偿式删除且重复删除幂等", async () => {
@@ -59,6 +76,23 @@ test("AssetLifecycle 公开接口覆盖整理、生成、引用保护和失败�
   assert.equal(payload.referenceStatus, 409);
   assert.equal(payload.failedStatus, "delete_failed");
   assert.equal(payload.retryRemoved, true);
+});
+
+test("AssetLifecycle 公开接口隔离作者素材和平台素材管理权", async () => {
+  const response = await fetch(`${runtime.origin}/asset-ownership`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    strangerCanSeeAuthorAsset: false,
+    strangerUpdate: 403,
+    strangerDelete: 403,
+    authorUpdatePlatform: 403,
+  });
+});
+
+test("AssetLifecycle 在公开生成命令内统一执行频控", async () => {
+  const response = await fetch(`${runtime.origin}/asset-generation-rate-limit`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), { generated: 5, rateLimited: 429 });
 });
 
 test("AccountLifecycle 通过公开端口完成注册、验证与登录", async () => {
@@ -111,6 +145,26 @@ test("AccountLifecycle 的 Turnstile 超时与邮件瞬时失败可通过 port �
   const response = await fetch(`${runtime.origin}/account-port-resilience`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);
   const payload = await response.json();
-  assert.deepEqual(payload.turnstileTimeout, { status: 504, calls: 2 });
-  assert.deepEqual(payload.mailRetry, { status: 201, calls: 2 });
+  assert.deepEqual(payload.turnstileTimeout, { status: 504, calls: 2, sameKey: true });
+  assert.deepEqual(payload.mailRetry, { status: 201, calls: 2, sameKey: true });
+});
+
+test("AccountLifecycle 在邮件超时时仍保持找回密码不可枚举", async () => {
+  const response = await fetch(`${runtime.origin}/account-forgot-enumeration`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.deepEqual(payload.existing, payload.missing);
+  assert.deepEqual(payload.existing, { status: 200, message: "如果账号存在，重置邮件已经发送" });
+});
+
+test("AccountLifecycle 公开接口覆盖待验证、禁用、过期 token 与频控", async () => {
+  const response = await fetch(`${runtime.origin}/account-security`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    pendingLogin: 403,
+    disabledLogin: 403,
+    expiredVerification: 400,
+    expiredReset: 400,
+    rateLimited: 429,
+  });
 });
