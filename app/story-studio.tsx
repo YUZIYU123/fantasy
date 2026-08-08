@@ -1,145 +1,577 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChapterRecord, StoryDocument, StoryNode } from "../lib/story";
-import { demoStory, validateStory } from "../lib/story";
+import {
+  applyTerminalTaskEvents,
+  calculateAudioFadeFrame,
+  clampMediaVolume,
+  DEFAULT_COVER_PRESENTATION,
+  paginateStoryBody,
+  parseReadingProgress,
+  resolveMusicCueAction,
+  normalizeChoiceImageDuration,
+  normalizeChoiceSfxMaxDuration,
+  type ChapterRecord,
+  type ImagePresentation,
+  type NovelRecord,
+  type StoryChoice,
+  type StoryDocument,
+  type StoryMusicCue,
+  type TransitionPreset,
+} from "../lib/story";
+import { Brand } from "./brand";
+import { FantasyTerminal, type TerminalPlayback } from "./fantasy-terminal";
 
-type Asset = { id: string; name: string; type: "image" | "audio"; url: string; size: number; alt: string };
-type View = "library" | "reader" | "admin" | "editor" | "preview";
-
-const emptyNode = (): StoryNode => ({ id: `node-${Date.now().toString(36)}`, title: "新场景", body: "在这里写下故事……", type: "scene", imageUrl: "", imageAlt: "", audioUrl: "", animation: "fade", choices: [] });
+type PublicChapter = ChapterRecord;
+type PublicNovel = NovelRecord & { chapters: PublicChapter[] };
+type View = "library" | "novel" | "cover" | "reader" | "outro";
 
 export function StoryStudio() {
   const [view, setView] = useState<View>("library");
-  const [chapters, setChapters] = useState<ChapterRecord[]>([]);
-  const [active, setActive] = useState<ChapterRecord | null>(null);
-  const [story, setStory] = useState<StoryDocument>(demoStory);
-  const [assets, setAssets] = useState<Asset[]>([]);
+  const [novels, setNovels] = useState<PublicNovel[]>([]);
+  const [novelId, setNovelId] = useState("");
+  const [chapterId, setChapterId] = useState("");
   const [busy, setBusy] = useState(true);
-  const [toast, setToast] = useState("");
+  const novel = novels.find((item) => item.id === novelId) ?? null;
+  const chapterIndex = novel?.chapters.findIndex((item) => item.id === chapterId) ?? -1;
+  const chapter = chapterIndex >= 0 ? novel?.chapters[chapterIndex] ?? null : null;
+  const nextChapter = novel && chapterIndex >= 0 ? novel.chapters[chapterIndex + 1] ?? null : null;
+  const openRecommendedNovel = (id: string) => {
+    if (!novels.some((item) => item.id === id)) return;
+    setNovelId(id);
+    setView("novel");
+  };
+  const guide = <FantasyTerminal novels={novels} onOpenNovel={openRecommendedNovel} />;
 
-  const loadPublic = useCallback(async () => {
+  const load = useCallback(async () => {
     setBusy(true);
-    const res = await fetch("/api/chapters");
-    const data = await res.json();
-    setChapters(data.chapters || []);
+    const response = await fetch("/api/novels");
+    const data = await response.json() as { novels?: PublicNovel[] };
+    setNovels(data.novels || []);
     setBusy(false);
   }, []);
-  const loadAdmin = useCallback(async () => {
-    setBusy(true);
-    const [chapterRes, assetRes] = await Promise.all([fetch("/api/chapters?mode=admin"), fetch("/api/assets")]);
-    if (chapterRes.status === 401) { window.location.href = "/signin-with-chatgpt?return_to=%2F"; return; }
-    const chapterData = await chapterRes.json();
-    const assetData = await assetRes.json();
-    setChapters(chapterData.chapters || []);
-    setAssets(assetData.assets || []);
-    setBusy(false);
-  }, []);
+  useEffect(() => { queueMicrotask(() => load().catch(() => setBusy(false))); }, [load]);
 
-  useEffect(() => { loadPublic().catch(() => setBusy(false)); }, [loadPublic]);
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2600); return () => clearTimeout(t); }, [toast]);
-
-  const openReader = (chapter: ChapterRecord) => { setActive(chapter); setStory(chapter.published || chapter.draft); setView("reader"); };
-  const openEditor = (chapter: ChapterRecord) => { setActive(chapter); setStory(structuredClone(chapter.draft)); setView("editor"); };
-  const goLibrary = () => { setView("library"); setActive(null); loadPublic(); };
-  const goAdmin = () => { setView("admin"); loadAdmin(); };
-
-  async function action(actionName: string, id?: string, extra: Record<string, unknown> = {}) {
-    setBusy(true);
-    const res = await fetch("/api/chapters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: actionName, id, ...extra }) });
-    const data = await res.json();
-    setBusy(false);
-    if (!res.ok) { setToast(data.errors?.join("；") || data.error || "操作失败"); return false; }
-    setToast(actionName === "publish" ? "章节已发布" : actionName === "save" ? "草稿已保存" : "操作完成");
-    await loadAdmin();
-    return data;
+  if (view === "novel" && novel) {
+    return <><NovelHome novel={novel} onBack={() => setView("library")} onRead={(selected) => {
+      setChapterId(selected.id);
+      setView("cover");
+    }} />{guide}</>;
   }
-
-  return (
-    <main className="app-shell">
-      {toast && <div className="toast" role="status">{toast}</div>}
-      {busy && <div className="loading-bar" aria-label="加载中" />}
-      {view === "library" && <Library chapters={chapters} onRead={openReader} onAdmin={goAdmin} />}
-      {view === "reader" && <Reader story={story} chapterId={active?.id || "preview"} onBack={goLibrary} />}
-      {view === "admin" && <Admin chapters={chapters} onBack={goLibrary} onEdit={openEditor} onAction={action} />}
-      {view === "editor" && active && <Editor chapter={active} story={story} setStory={setStory} assets={assets} onBack={goAdmin} onPreview={() => setView("preview")} onSave={() => action("save", active.id, { story, meta: { slug: active.slug, sortOrder: active.sortOrder } })} onPublish={() => action("publish", active.id, { story })} onRollback={async (version) => { const ok = await action("rollback", active.id, { version }); if (ok) goAdmin(); }} onUpload={async (form) => { const res = await fetch("/api/assets", { method: "POST", body: form }); const data = await res.json(); if (!res.ok) return setToast(data.error); setAssets((items) => [data.asset, ...items]); setToast("素材上传完成"); }} />}
-      {view === "preview" && <div className="preview-wrap"><button className="preview-exit" onClick={() => setView("editor")}>← 返回编辑</button><div className="phone-frame"><Reader story={story} chapterId="preview" onBack={() => setView("editor")} preview /></div></div>}
-    </main>
-  );
+  if (view === "cover" && novel?.published && chapter?.published) {
+    return <><ChapterCover novel={novel} chapter={chapter} onBack={() => setView("novel")} onStart={() => setView("reader")} />{guide}</>;
+  }
+  if (view === "reader" && chapter?.published) {
+    return <Reader story={chapter.published} chapterId={chapter.id} chapterVersion={chapter.version} novels={novels} onOpenNovel={openRecommendedNovel} onBack={() => setView("novel")} onComplete={() => setView("outro")} />;
+  }
+  if (view === "outro" && novel?.published && chapter?.published) {
+    return <><ChapterOutro novel={novel} chapter={chapter} nextChapter={nextChapter} onBack={() => setView("novel")} onNext={() => {
+      if (!nextChapter) return;
+      setChapterId(nextChapter.id);
+      setView("cover");
+    }} />{guide}</>;
+  }
+  return <><main className="app-shell">{busy && <div className="loading-bar" aria-label="加载中" />}<Library novels={novels} onOpen={(selected) => {
+    setNovelId(selected.id);
+    setView("novel");
+  }} /></main>{guide}</>;
 }
 
-function Brand() { return <div className="brand"><span className="brand-mark">雾</span><span>雾页</span></div>; }
-
-function Library({ chapters, onRead, onAdmin }: { chapters: ChapterRecord[]; onRead: (c: ChapterRecord) => void; onAdmin: () => void }) {
-  return <div className="library">
-    <header className="topbar"><Brand /><button className="ghost" onClick={onAdmin}>创作后台 ↗</button></header>
-    <section className="hero"><p className="eyebrow">INTERACTIVE FICTION</p><h1>有些故事，<br />会在选择中醒来。</h1><p className="hero-copy">在每一次迟疑与决定之间，找到只属于你的那条叙事支流。</p><div className="scroll-cue"><span>向下探索</span><i /></div></section>
-    <section className="shelf"><div className="section-heading"><div><span>01</span><p>正在连载</p></div><h2>故事档案</h2></div>
-      <div className="chapter-grid">{chapters.map((chapter, index) => <article className="chapter-card" key={chapter.id}>
-        <div className={`cover cover-${index % 3}`} style={chapter.coverUrl ? { backgroundImage: `linear-gradient(180deg, transparent, rgba(10,12,12,.8)), url(${chapter.coverUrl})` } : undefined}><span>NO.{String(index + 1).padStart(2, "0")}</span><div className="cover-art"><i /><b>霧</b></div><small>{chapter.version > 1 ? `第 ${chapter.version} 版` : "全新篇章"}</small></div>
-        <div className="card-copy"><p>约 5 分钟 · 多重结局</p><h3>{chapter.title}</h3><p>{chapter.summary}</p><button onClick={() => onRead(chapter)}>开始阅读 <span>→</span></button></div>
+function Library({ novels, onOpen }: { novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
+  return <div className="library fantasy-library">
+    <header className="topbar"><Brand /><div className="topbar-actions"><a className="ghost link-button" href="/login">登录</a><a className="ghost link-button" href="/studio">作者工作台 ↗</a></div></header>
+    <section className="hero"><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="portal-orbit" aria-hidden="true"><i /><i /><b>F</b></div><div className="scroll-cue"><span>探索书架</span><i /></div></section>
+    <section className="shelf"><div className="section-heading"><div><span>01</span><p>已发布世界</p></div><h2>幻界书架</h2></div>
+      <div className="novel-shelf-grid">{novels.map((novel) => <article className="novel-card" key={novel.id}>
+        <Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || "小说封面"} presentation={novel.published?.coverPresentation} />
+        <div className="card-copy"><p>{novel.chapters.length} 个已发布章节</p><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><button onClick={() => onOpen(novel)}>进入小说 <span>→</span></button></div>
       </article>)}</div>
-      {chapters.length === 0 && <div className="empty"><b>故事正在雾中酝酿</b><p>管理员发布章节后，会在这里出现。</p></div>}
+      {novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与章节发布后，会在这里出现。</p></div>}
     </section>
-    <footer><Brand /><p>你的选择，构成故事。</p><button className="text-button" onClick={onAdmin}>进入创作后台</button></footer>
+    <footer><Brand /><p>你的选择，构成世界。</p><a className="text-button" href="/studio">进入作者工作台</a></footer>
   </div>;
 }
 
-function Reader({ story, chapterId, onBack, preview = false }: { story: StoryDocument; chapterId: string; onBack: () => void; preview?: boolean }) {
+function NovelHome({ novel, onBack, onRead }: { novel: PublicNovel; onBack: () => void; onRead: (chapter: PublicChapter) => void }) {
+  const data = novel.published!;
+  return <main className="novel-home">
+    <header className="topbar"><Brand /><button className="ghost" onClick={onBack}>← 返回书架</button></header>
+    <section className="novel-hero">
+      <div className="novel-home-cover"><Artwork src={data.coverUrl} alt={data.coverAlt || data.name} presentation={data.coverPresentation} priority /></div>
+      <div className="novel-home-copy"><p>FANTASY ARCHIVE / {String(novel.sortOrder).slice(-4)}</p><h1>{data.name}</h1><span>{data.summary}</span><small>{novel.chapters.length} CHAPTERS ONLINE</small></div>
+    </section>
+    <section className="chapter-directory"><div className="section-heading"><div><span>02</span><p>章节目录</p></div><h2>选择入口</h2></div>
+      {novel.chapters.map((chapter, index) => <button className="directory-row" key={chapter.id} onClick={() => onRead(chapter)}><span>{String(index + 1).padStart(2, "0")}</span><div><b>{chapter.published?.title || chapter.title}</b><small>{chapter.published?.summary || chapter.summary}</small></div><i>→</i></button>)}
+    </section>
+  </main>;
+}
+
+function Artwork({ src, alt, presentation = DEFAULT_COVER_PRESENTATION, priority = false }: {
+  src: string;
+  alt: string;
+  presentation?: ImagePresentation;
+  priority?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { queueMicrotask(() => setFailed(false)); }, [src]);
+  return <div className={`chapter-artwork ${presentation.fit}${!src || failed ? " fallback" : ""}`}>
+    {src && !failed && <Image src={src} alt={alt} fill sizes="100vw" priority={priority} unoptimized onError={() => setFailed(true)} style={{ objectFit: presentation.fit, objectPosition: `${presentation.positionX}% ${presentation.positionY}%` }} />}
+    {(!src || failed) && <span aria-hidden="true">F</span>}
+  </div>;
+}
+
+function ChapterCover({ novel, chapter, onBack, onStart }: { novel: PublicNovel; chapter: PublicChapter; onBack: () => void; onStart: () => void }) {
+  const story = chapter.published!;
+  const novelData = novel.published!;
+  const src = story.openingImageUrl || novelData.coverUrl;
+  const alt = story.openingImageAlt || novelData.coverAlt || `${story.title}开场图`;
+  const presentation = story.openingImageUrl ? story.openingImagePresentation : novelData.coverPresentation;
+  return <main className="chapter-gateway cover-gateway">
+    <Artwork src={src} alt={alt} presentation={presentation} priority />
+    <div className="gateway-shade" />
+    <button className="gateway-back" onClick={onBack} aria-label="返回章节目录">←</button>
+    <section className="gateway-copy"><p>{novelData.name}</p><h1>{story.title}</h1><span>{story.summary}</span><button className="gateway-primary" onClick={onStart}>开始阅读 <i>→</i></button></section>
+  </main>;
+}
+
+function ChapterOutro({ novel, chapter, nextChapter, onBack, onNext }: { novel: PublicNovel; chapter: PublicChapter; nextChapter: PublicChapter | null; onBack: () => void; onNext: () => void }) {
+  const story = chapter.published!;
+  return <ChapterOutroScreen
+    story={story}
+    novelName={novel.published?.name || ""}
+    backLabel="返回章节目录"
+    onBack={onBack}
+    onNext={nextChapter ? onNext : undefined}
+  />;
+}
+
+export function ChapterOutroScreen({ story, novelName, backLabel, onBack, onNext }: {
+  story: StoryDocument;
+  novelName?: string;
+  backLabel: string;
+  onBack: () => void;
+  onNext?: () => void;
+}) {
+  return <main className="chapter-gateway outro-gateway">
+    <Artwork src={story.outroImageUrl} alt={story.outroImageAlt || `${story.title}收尾图`} presentation={story.outroImagePresentation} />
+    <div className="gateway-shade" />
+    <section className="gateway-copy"><p>{novelName}</p><h1>{story.title}</h1><span>本章完</span><div className="outro-actions"><button onClick={onBack}>← {backLabel}</button>{onNext && <button className="gateway-primary" onClick={onNext}>阅读下一章 <i>→</i></button>}</div></section>
+  </main>;
+}
+
+const transitionDuration: Record<TransitionPreset, number> = {
+  none: 0, fade: 420, fog: 760, ripple: 680, push: 520, flash: 430,
+};
+const interactionDuration = {
+  none: 350, glow: 480, ripple: 680, shake: 420, flash: 360, glitch: 560, push: 520,
+} as const;
+
+type ReaderPhase = "beforeImage" | "transitionVideo" | "transitionEffect" | "content" | "afterImage";
+
+export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplete, preview = false, initialNodeId, novels = [], onOpenNovel }: {
+  story: StoryDocument;
+  chapterId: string;
+  chapterVersion?: number;
+  onBack: () => void;
+  onComplete?: () => void;
+  preview?: boolean;
+  initialNodeId?: string;
+  novels?: PublicNovel[];
+  onOpenNovel?: (id: string) => void;
+}) {
+  const startingNodeId = story.nodes.some((node) => node.id === initialNodeId) ? initialNodeId! : story.startNodeId;
   const storageKey = `mist-page-progress:${chapterId}`;
-  const [nodeId, setNodeId] = useState(story.startNodeId);
+  const initialNode = story.nodes.find((item) => item.id === startingNodeId);
+  const initialPhase: ReaderPhase = initialNode?.displayImagePosition === "before"
+    ? "beforeImage"
+    : initialNode?.videoMode === "transition" && initialNode.videoUrl
+      ? "transitionVideo"
+      : "content";
+  const [nodeId, setNodeId] = useState(startingNodeId);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [phase, setPhase] = useState<ReaderPhase>(initialPhase);
+  const [afterImageDone, setAfterImageDone] = useState(false);
+  const [incomingChoice, setIncomingChoice] = useState<StoryChoice | null>(null);
+  const [transitionVideoDone, setTransitionVideoDone] = useState(false);
   const [muted, setMuted] = useState(false);
-  const audio = useRef<HTMLAudioElement>(null);
+  const [needsPlay, setNeedsPlay] = useState(false);
+  const [activeTransition, setActiveTransition] = useState<TransitionPreset | null>(null);
+  const [choiceLocked, setChoiceLocked] = useState(false);
+  const [choiceFeedback, setChoiceFeedback] = useState<StoryChoice | null>(null);
+  const [terminalEventIds, setTerminalEventIds] = useState<string[]>([]);
+  const [terminalPlayback, setTerminalPlayback] = useState<TerminalPlayback | null>(null);
+  const [terminalDucking, setTerminalDucking] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [progressReady, setProgressReady] = useState(preview);
+  const [activeCueName, setActiveCueName] = useState("");
+  const audioA = useRef<HTMLAudioElement>(null);
+  const audioB = useRef<HTMLAudioElement>(null);
+  const sfxAudio = useRef<HTMLAudioElement>(null);
+  const activeSfxVolume = useRef(0.8);
+  const activeAudioSlot = useRef<0 | 1>(0);
+  const activeCue = useRef<StoryMusicCue | null>(null);
+  const audioFade = useRef<number | null>(null);
+  const pausedForVideo = useRef(false);
+  const transitionVideo = useRef<HTMLVideoElement>(null);
+  const transitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sfxStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const choiceFeedbackFinish = useRef<(() => void) | null>(null);
+  const terminalCompletion = useRef<() => void>(() => {});
+  const choiceLock = useRef(false);
+  const storyPanel = useRef<HTMLElement>(null);
   const node = story.nodes.find((item) => item.id === nodeId) || story.nodes[0];
-  useEffect(() => { if (!preview) { const saved = localStorage.getItem(storageKey); if (saved && story.nodes.some((n) => n.id === saved)) setNodeId(saved); } }, [preview, storageKey, story.nodes]);
-  useEffect(() => { if (!preview) localStorage.setItem(storageKey, nodeId); }, [nodeId, preview, storageKey]);
-  useEffect(() => { if (!audio.current) return; audio.current.pause(); if (node?.audioUrl && !muted) { audio.current.src = node.audioUrl; audio.current.play().catch(() => {}); } }, [node?.audioUrl, muted]);
+  const pages = useMemo(() => paginateStoryBody(node?.body || ""), [node?.body]);
+  const terminalTaskResult = useMemo(() => applyTerminalTaskEvents(story, terminalEventIds), [story, terminalEventIds]);
+  const activePageIndex = Math.min(pageIndex, Math.max(0, pages.length - 1));
+  const isLastPage = activePageIndex === pages.length - 1;
+  const hasTransitionVideo = Boolean(node?.videoMode === "transition" && node.videoUrl && !reducedMotion);
+  const firstPhaseForNode = useCallback((target: typeof node) => {
+    if (target?.displayImagePosition === "before") return "beforeImage" as const;
+    if (target?.videoMode === "transition" && target.videoUrl && !reducedMotion) return "transitionVideo" as const;
+    return "content" as const;
+  }, [reducedMotion]);
+
+  const fadeAudio = useCallback((from: HTMLAudioElement | null, to: HTMLAudioElement | null, cue: StoryMusicCue | null, stopOnly = false) => {
+    if (audioFade.current) cancelAnimationFrame(audioFade.current);
+    const rawDuration = cue?.fadeMs ?? activeCue.current?.fadeMs ?? 500;
+    const duration = Number.isFinite(rawDuration) ? Math.max(0, Math.min(5000, rawDuration)) : 500;
+    const fromStart = clampMediaVolume(from?.volume ?? 0);
+    const target = muted || stopOnly ? 0 : clampMediaVolume(cue?.volume ?? 0.55, 0.55) * (terminalDucking ? 0.25 : 1);
+    const startedAt = performance.now();
+    const tick = (now: number) => {
+      const frame = calculateAudioFadeFrame(fromStart, target, startedAt, now, duration);
+      if (from) from.volume = frame.fromVolume;
+      if (to) to.volume = frame.toVolume;
+      if (frame.progress < 1) audioFade.current = requestAnimationFrame(tick);
+      else {
+        if (from) { from.pause(); if (!stopOnly) from.removeAttribute("src"); }
+        audioFade.current = null;
+      }
+    };
+    audioFade.current = requestAnimationFrame(tick);
+  }, [muted, terminalDucking]);
+
+  const stopMusic = useCallback(() => {
+    const current = activeAudioSlot.current === 0 ? audioA.current : audioB.current;
+    fadeAudio(current, null, activeCue.current, true);
+    activeCue.current = null;
+    setActiveCueName("");
+  }, [fadeAudio]);
+
+  const startMusic = useCallback((cue: StoryMusicCue) => {
+    if (activeCue.current?.id === cue.id) return;
+    const from = activeAudioSlot.current === 0 ? audioA.current : audioB.current;
+    const nextSlot: 0 | 1 = activeAudioSlot.current === 0 ? 1 : 0;
+    const to = nextSlot === 0 ? audioA.current : audioB.current;
+    if (!to || !cue.url) return;
+    to.src = cue.url;
+    to.loop = cue.loop;
+    to.volume = clampMediaVolume(0);
+    to.currentTime = 0;
+    to.play().catch(() => {});
+    fadeAudio(from, to, cue);
+    activeAudioSlot.current = nextSlot;
+    activeCue.current = cue;
+    setActiveCueName(cue.name);
+  }, [fadeAudio]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => () => {
+    if (transitionTimer.current) clearTimeout(transitionTimer.current);
+    if (sfxStopTimer.current) clearTimeout(sfxStopTimer.current);
+    if (audioFade.current) cancelAnimationFrame(audioFade.current);
+    audioA.current?.pause();
+    audioB.current?.pause();
+    sfxAudio.current?.pause();
+  }, []);
+  useEffect(() => {
+    if (preview) return;
+    let cancelled = false;
+    const local = parseReadingProgress(localStorage.getItem(storageKey), story.startNodeId);
+    const apply = (progress: typeof local) => {
+      if (cancelled) return;
+      const restartFromBeginning = Boolean(progress.completedAt)
+        || (typeof progress.version === "number" && progress.version !== chapterVersion);
+      const target = restartFromBeginning
+        ? story.nodes.find((item) => item.id === story.startNodeId)
+        : story.nodes.find((item) => item.id === progress.nodeId);
+      if (!target) return;
+      setNodeId(target.id);
+      setPageIndex(restartFromBeginning ? 0 : progress.pageIndex);
+      setTerminalEventIds(restartFromBeginning ? [] : progress.terminalEventIds ?? []);
+      setAfterImageDone(false);
+      setIncomingChoice(null);
+      setTransitionVideoDone(false);
+      setPhase(firstPhaseForNode(target));
+    };
+    apply(local);
+    fetch(`/api/account/progress?chapterId=${encodeURIComponent(chapterId)}`).then(async (response) => {
+      if (!response.ok) return null;
+      const data = await response.json() as { progress?: { nodeId: string; pageIndex: number; terminalEventIds?: string[]; version?: number; updatedAt: string; completedAt?: string | null } | null };
+      return data.progress || null;
+    }).then((remote) => {
+      if (remote && (!local.updatedAt || Date.parse(remote.updatedAt) > Date.parse(local.updatedAt))) apply(remote);
+    }).catch(() => {}).finally(() => { if (!cancelled) setProgressReady(true); });
+    return () => { cancelled = true; };
+  }, [chapterId, chapterVersion, firstPhaseForNode, preview, storageKey, story.nodes, story.startNodeId]);
+  useEffect(() => {
+    if (preview || !progressReady) return;
+    const progress = { nodeId, pageIndex: activePageIndex, terminalEventIds, version: chapterVersion, updatedAt: new Date().toISOString(), completedAt: null };
+    localStorage.setItem(storageKey, JSON.stringify(progress));
+    fetch("/api/account/progress", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ chapterId, ...progress, completed: false }) }).catch(() => {});
+  }, [activePageIndex, chapterId, chapterVersion, nodeId, preview, progressReady, storageKey, terminalEventIds]);
+  useEffect(() => {
+    if (pageIndex !== activePageIndex) queueMicrotask(() => setPageIndex(activePageIndex));
+  }, [activePageIndex, pageIndex]);
+  useEffect(() => {
+    const starts = story.musicCues.filter((cue) => cue.startNodeId === nodeId);
+    if (starts[0]) startMusic(starts[0]);
+  }, [nodeId, startMusic, story.musicCues]);
+  useEffect(() => {
+    const current = activeAudioSlot.current === 0 ? audioA.current : audioB.current;
+    if (current && activeCue.current) current.volume = muted ? 0 : clampMediaVolume(activeCue.current.volume, 0.55) * (terminalDucking ? 0.25 : 1);
+    if (sfxAudio.current) sfxAudio.current.volume = muted ? 0 : activeSfxVolume.current;
+  }, [muted, terminalDucking]);
+  useEffect(() => {
+    const imagePreloads = node.choices.filter((choice) => choice.feedbackImageUrl).map((choice) => {
+      const image = new window.Image();
+      image.src = choice.feedbackImageUrl;
+      return image;
+    });
+    const audioPreloads = node.choices.flatMap((choice) => [choice.sfxUrl, choice.terminalVoiceUrl].filter(Boolean)).map((url) => {
+      const audio = new Audio();
+      audio.preload = "auto";
+      audio.src = url;
+      return audio;
+    });
+    return () => {
+      imagePreloads.forEach((image) => { image.src = ""; });
+      audioPreloads.forEach((audio) => { audio.pause(); audio.removeAttribute("src"); });
+    };
+  }, [node.choices]);
+  useEffect(() => {
+    const current = activeAudioSlot.current === 0 ? audioA.current : audioB.current;
+    if (phase === "transitionVideo" && current && !current.paused) {
+      current.pause();
+      pausedForVideo.current = true;
+    } else if (phase !== "transitionVideo" && current && pausedForVideo.current) {
+      current.play().catch(() => {});
+      pausedForVideo.current = false;
+    }
+  }, [muted, phase]);
+  useEffect(() => {
+    if (phase !== "transitionVideo" || !transitionVideo.current) return;
+    transitionVideo.current.play().catch(() => setNeedsPlay(true));
+  }, [nodeId, phase]);
+  useEffect(() => {
+    choiceLock.current = false;
+    queueMicrotask(() => setChoiceLocked(false));
+  }, [nodeId]);
+
+  const goToNode = (targetId: string, choice: StoryChoice | null, nextPhase?: ReaderPhase) => {
+    const target = story.nodes.find((item) => item.id === targetId);
+    if (!target) return;
+    setNeedsPlay(false);
+    setPageIndex(0);
+    setAfterImageDone(false);
+    setIncomingChoice(choice);
+    setTransitionVideoDone(false);
+    setNodeId(targetId);
+    setPhase(nextPhase || firstPhaseForNode(target));
+  };
+  const showOverlay = (preset: TransitionPreset, after?: () => void) => {
+    if (preset === "none" || reducedMotion) { after?.(); return; }
+    setActiveTransition(preset);
+    if (transitionTimer.current) clearTimeout(transitionTimer.current);
+    transitionTimer.current = setTimeout(() => {
+      setActiveTransition(null);
+      after?.();
+    }, transitionDuration[preset]);
+  };
+  const updateMusicForNavigation = (targetId: string) => {
+    const action = resolveMusicCueAction(story, node.id, targetId, activeCue.current?.id || null);
+    if (action.startCue) startMusic(action.startCue);
+    else if (action.stopActive) stopMusic();
+  };
+  const finishTerminalPlayback = useCallback(() => terminalCompletion.current(), []);
+  const choose = (choice: StoryChoice) => {
+    if (activeTransition || choiceLock.current) return;
+    choiceLock.current = true;
+    setChoiceLocked(true);
+    const target = story.nodes.find((item) => item.id === choice.targetId);
+    if (!target) { choiceLock.current = false; setChoiceLocked(false); return; }
+    if (sfxStopTimer.current) clearTimeout(sfxStopTimer.current);
+    if (sfxAudio.current) {
+      sfxAudio.current.pause();
+      sfxAudio.current.removeAttribute("src");
+    }
+    if (choice.sfxUrl && sfxAudio.current) {
+      activeSfxVolume.current = clampMediaVolume(choice.sfxVolume, 0.8);
+      sfxAudio.current.src = choice.sfxUrl;
+      sfxAudio.current.currentTime = 0;
+      sfxAudio.current.volume = muted ? 0 : activeSfxVolume.current;
+      sfxAudio.current.play().catch(() => {});
+      const maximum = normalizeChoiceSfxMaxDuration(choice.sfxMaxDurationMs);
+      if (maximum > 0) sfxStopTimer.current = setTimeout(() => {
+        sfxAudio.current?.pause();
+        sfxStopTimer.current = null;
+      }, maximum);
+    }
+    if (choice.terminalFeedbackEnabled) {
+      const nextTaskResult = applyTerminalTaskEvents(story, [...terminalEventIds, ...choice.terminalTaskActions.map((action) => action.id)]);
+      setTerminalEventIds(nextTaskResult.appliedIds);
+      terminalCompletion.current = () => {
+        setTerminalPlayback(null);
+        updateMusicForNavigation(choice.targetId);
+        goToNode(choice.targetId, null);
+      };
+      setTerminalPlayback({
+        id: `${node.id}:${choice.id}`,
+        message: choice.terminalMessage,
+        speak: choice.terminalSpeak,
+        voiceUrl: choice.terminalVoiceUrl,
+        interactionPreset: choice.interactionPreset,
+        imageUrl: choice.feedbackImageUrl,
+        imageAlt: choice.feedbackImageAlt,
+        imagePresentation: choice.feedbackImagePresentation,
+        task: nextTaskResult.task,
+      });
+      return;
+    }
+    setChoiceFeedback(choice);
+    const hasImage = Boolean(choice.feedbackImageUrl);
+    const duration = hasImage
+      ? normalizeChoiceImageDuration(choice.feedbackImageDurationMs)
+      : reducedMotion ? 140 : interactionDuration[choice.interactionPreset];
+    const finishFeedback = () => {
+      choiceFeedbackFinish.current = null;
+      setChoiceFeedback(null);
+      updateMusicForNavigation(choice.targetId);
+      goToNode(choice.targetId, null);
+    };
+    choiceFeedbackFinish.current = finishFeedback;
+    if (transitionTimer.current) clearTimeout(transitionTimer.current);
+    transitionTimer.current = setTimeout(finishFeedback, duration);
+  };
+  const handleChoiceImageError = () => {
+    if (!choiceFeedbackFinish.current) return;
+    if (transitionTimer.current) clearTimeout(transitionTimer.current);
+    const fallbackDuration = reducedMotion ? 140 : interactionDuration[choiceFeedback?.interactionPreset || "none"];
+    transitionTimer.current = setTimeout(() => choiceFeedbackFinish.current?.(), fallbackDuration);
+  };
+  const advanceAfterTransitionVideo = () => {
+    setNeedsPlay(false);
+    setTransitionVideoDone(true);
+    if (incomingChoice?.transitionPosition === "afterSource" && node.displayImagePosition === "before") setPhase("beforeImage");
+    else if (incomingChoice?.transitionPosition === "beforeTarget") {
+      setPhase("transitionEffect");
+      showOverlay(incomingChoice.transitionPreset, () => setPhase("content"));
+    } else setPhase("content");
+  };
+  const continueFromBeforeImage = () => {
+    if (hasTransitionVideo && !transitionVideoDone) setPhase("transitionVideo");
+    else if (incomingChoice?.transitionPosition === "beforeTarget") {
+      setPhase("transitionEffect");
+      showOverlay(incomingChoice.transitionPreset, () => setPhase("content"));
+    } else setPhase("content");
+  };
+  const completeChapter = () => {
+    stopMusic();
+    if (sfxStopTimer.current) clearTimeout(sfxStopTimer.current);
+    sfxAudio.current?.pause();
+    setTerminalPlayback(null);
+    setTerminalDucking(false);
+    const updatedAt = new Date().toISOString();
+    const progress = { nodeId, pageIndex: activePageIndex, terminalEventIds, version: chapterVersion, updatedAt, completedAt: updatedAt };
+    if (!preview) {
+      localStorage.setItem(storageKey, JSON.stringify(progress));
+      fetch("/api/account/progress", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chapterId, ...progress, completed: true }),
+      }).catch(() => {});
+    }
+    (onComplete || onBack)();
+  };
+  const goToPage = (nextPage: number) => {
+    setPageIndex(Math.max(0, Math.min(nextPage, pages.length - 1)));
+    storyPanel.current?.scrollTo({ top: 0 });
+  };
   if (!node) return <div className="reader"><button onClick={onBack}>返回</button><p>章节内容为空。</p></div>;
-  return <section className={`reader animation-${node.animation}`} style={node.imageUrl ? { backgroundImage: `linear-gradient(180deg, rgba(7,10,10,.12), rgba(7,10,10,.86)), url(${node.imageUrl})` } : undefined}>
-    <audio ref={audio} loop />
-    <header className="reader-nav"><button onClick={onBack} aria-label="返回">←</button><div><span>{story.title}</span><i /></div><button onClick={() => setMuted((v) => !v)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
-    <div className="reader-atmosphere"><span className="moon" /><span className="mist mist-a" /><span className="mist mist-b" /><span className="shore" /></div>
-    <article className="story-panel"><p className="node-kicker">{node.type === "ending" ? "THE END" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body">{node.body}</p>
-      <div className="choices">{node.choices.map((choice) => <button key={choice.id} onClick={() => setNodeId(choice.targetId)}><span>{choice.label}</span><i>→</i></button>)}
-      {node.type === "ending" && <button onClick={() => { setNodeId(story.startNodeId); localStorage.removeItem(storageKey); }}><span>重新开始</span><i>↻</i></button>}</div>
-    </article>
+  const showTransitionVideo = phase === "transitionVideo" && hasTransitionVideo;
+  const showNodeImage = phase === "beforeImage" || phase === "afterImage";
+  const needsAfterImage = node.displayImagePosition === "after" && !afterImageDone;
+  const terminalEvent = node.terminalEvent?.trigger === "beforeContent" && activePageIndex === 0
+    || node.terminalEvent?.trigger === "afterContent" && isLastPage
+    ? node.terminalEvent
+    : undefined;
+  const terminalSuppressed = phase !== "content" || Boolean(activeTransition) || choiceLocked || Boolean(choiceFeedback);
+
+  return <section className={`reader animation-${node.animation}`}>
+    <audio ref={audioA} />
+    <audio ref={audioB} />
+    <audio ref={sfxAudio} />
+    {node.imageUrl && <div className="scene-image-layer"><Image src={node.imageUrl} alt={node.imageAlt} fill unoptimized sizes="100vw" style={{ objectFit: node.imagePresentation.fit, objectPosition: `${node.imagePresentation.positionX}% ${node.imagePresentation.positionY}%` }} /></div>}
+    <div className="reader-shade" />
+    {activeTransition && <div className={`choice-transition transition-${activeTransition}`} aria-label="剧情转场"><i /><i /></div>}
+    {choiceFeedback && <ChoiceFeedback choice={choiceFeedback} reducedMotion={reducedMotion} onImageError={handleChoiceImageError} />}
+    {node.videoMode === "background" && node.videoUrl && <video className="scene-video" src={node.videoUrl} poster={node.imageUrl || undefined} autoPlay muted loop playsInline onError={(event) => { event.currentTarget.style.display = "none"; }} />}
+    {showTransitionVideo && <div className="transition-video"><video ref={transitionVideo} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={!needsPlay} onEnded={advanceAfterTransitionVideo} onError={() => { setPhase("transitionEffect"); showOverlay(incomingChoice?.transitionPreset || "none", () => setPhase("content")); }} />{needsPlay && <button onClick={() => { transitionVideo.current?.play(); setNeedsPlay(false); }}>点击播放</button>}<button className="skip-video" onClick={advanceAfterTransitionVideo}>跳过动画 →</button></div>}
+    <header className="reader-nav"><button onClick={onBack} aria-label="返回章节目录">←</button><div><span>{story.title}</span>{activeCueName && <small>♫ {activeCueName}</small>}</div><button onClick={() => setMuted((value) => !value)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
+    {showNodeImage && <NodeDisplayImage node={node} onContinue={() => {
+      if (phase === "beforeImage") continueFromBeforeImage();
+      else { setAfterImageDone(true); setPhase("content"); }
+    }} />}
+    {phase === "content" && <article className="story-panel" ref={storyPanel}><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${activePageIndex}`} aria-live="polite">{pages[activePageIndex]}</p>
+      {pages.length > 1 && <nav className="story-pagination" aria-label="正文分页"><button disabled={activePageIndex === 0 || Boolean(activeTransition) || choiceLocked} onClick={() => goToPage(activePageIndex - 1)}>← 上一页</button><span>{activePageIndex + 1} / {pages.length}</span><button disabled={isLastPage || Boolean(activeTransition) || choiceLocked} onClick={() => goToPage(activePageIndex + 1)}>下一页 →</button></nav>}
+      {isLastPage && needsAfterImage && <div className="choices"><button disabled={Boolean(activeTransition) || choiceLocked} onClick={() => setPhase("afterImage")}><span>查看节点图片</span><i>→</i></button></div>}
+      {isLastPage && !needsAfterImage && <div className="choices">{node.choices.map((choice) => <button className={choiceFeedback?.id === choice.id ? "choice-active" : ""} key={choice.id} disabled={Boolean(activeTransition) || choiceLocked} onClick={() => choose(choice)}><span>{choice.label}</span><i>→</i></button>)}{node.canEndChapter && <button className="end-chapter-choice" disabled={Boolean(activeTransition) || choiceLocked} onClick={completeChapter}><span>结束本章</span><i>→</i></button>}</div>}
+    </article>}
+    <FantasyTerminal
+      novels={novels}
+      onOpenNovel={onOpenNovel}
+      config={story.terminal}
+      event={terminalEvent}
+      eventKey={`${chapterId}:${node.id}:${node.terminalEvent?.trigger || "none"}`}
+      task={terminalTaskResult.task}
+      playback={terminalPlayback}
+      muted={muted}
+      reducedMotion={reducedMotion}
+      suppressed={terminalSuppressed}
+      preview={preview}
+      onPlaybackComplete={finishTerminalPlayback}
+      onDuckingChange={setTerminalDucking}
+    />
   </section>;
 }
 
-function Admin({ chapters, onBack, onEdit, onAction }: { chapters: ChapterRecord[]; onBack: () => void; onEdit: (c: ChapterRecord) => void; onAction: (a: string, id?: string, e?: Record<string, unknown>) => Promise<unknown> }) {
-  return <div className="studio"><aside><Brand /><nav><button className="active">▦ 章节管理</button><button disabled>◇ 素材库</button><button disabled>◎ 发布记录</button></nav><div className="aside-bottom"><button onClick={onBack}>← 查看读者端</button><a href="/signout-with-chatgpt?return_to=%2F">退出登录</a></div></aside>
-    <section className="studio-main"><header><div><p>STORY STUDIO</p><h1>章节管理</h1></div><button className="primary" onClick={() => onAction("create").then(() => {})}>＋ 新建章节</button></header>
-      <div className="stats"><div><span>全部章节</span><b>{chapters.length}</b></div><div><span>已发布</span><b>{chapters.filter((c) => c.status === "published").length}</b></div><div><span>草稿</span><b>{chapters.filter((c) => c.status === "draft").length}</b></div></div>
-      <div className="chapter-list"><div className="list-head"><span>章节</span><span>状态</span><span>版本</span><span>最后更新</span><span /></div>{chapters.map((chapter, i) => <div className="list-row" key={chapter.id}><div className="chapter-name"><div>{String(i + 1).padStart(2, "0")}</div><span><b>{chapter.title}</b><small>/{chapter.slug}</small></span></div><span className={`status ${chapter.status}`}>{chapter.status === "published" ? "已发布" : chapter.status === "offline" ? "已下线" : "草稿"}</span><span>v{chapter.version}</span><span>{new Date(chapter.updatedAt).toLocaleDateString("zh-CN")}</span><div className="row-actions"><button onClick={() => onEdit(chapter)}>编辑</button><button title="复制" onClick={() => onAction("duplicate", chapter.id)}>⧉</button>{chapter.status === "published" && <button title="下线" onClick={() => onAction("offline", chapter.id)}>↓</button>}{chapter.status === "draft" && <button title="删除" onClick={() => { if (confirm("确定删除这个草稿吗？")) onAction("delete", chapter.id); }}>×</button>}</div></div>)}</div>
-    </section>
-  </div>;
+function ChoiceFeedback({ choice, reducedMotion, onImageError }: { choice: StoryChoice; reducedMotion: boolean; onImageError: () => void }) {
+  const [failed, setFailed] = useState(false);
+  const hasImage = Boolean(choice.feedbackImageUrl) && !failed;
+  return <section className={`choice-feedback interaction-${reducedMotion ? "reduced" : choice.interactionPreset}${hasImage ? " has-image" : ""}`} aria-label={`选择反馈：${choice.label}`}>
+    {hasImage && <Image src={choice.feedbackImageUrl} alt={choice.feedbackImageAlt} fill sizes="100vw" unoptimized onError={() => { setFailed(true); onImageError(); }} style={{ objectFit: choice.feedbackImagePresentation.fit, objectPosition: `${choice.feedbackImagePresentation.positionX}% ${choice.feedbackImagePresentation.positionY}%` }} />}
+    <div className="choice-feedback-shade" />
+    <div className="choice-feedback-effect"><i /><i /><i /></div>
+    <p>{choice.label}</p>
+  </section>;
 }
 
-function Editor({ chapter, story, setStory, assets, onBack, onPreview, onSave, onPublish, onRollback, onUpload }: { chapter: ChapterRecord; story: StoryDocument; setStory: (s: StoryDocument) => void; assets: Asset[]; onBack: () => void; onPreview: () => void; onSave: () => void; onPublish: () => void; onRollback: (v: number) => void; onUpload: (f: FormData) => void }) {
-  const [selectedId, setSelectedId] = useState(story.startNodeId);
-  const [tab, setTab] = useState<"content" | "assets" | "versions">("content");
-  const [versions, setVersions] = useState<{ version: number; createdAt: string }[]>([]);
-  useEffect(() => { fetch(`/api/chapters/versions?chapterId=${chapter.id}`).then((r) => r.json()).then((d) => setVersions(d.versions || [])); }, [chapter.id]);
-  const errors = useMemo(() => validateStory(story), [story]);
-  const selected = story.nodes.find((n) => n.id === selectedId) || story.nodes[0];
-  const updateNode = (patch: Partial<StoryNode>) => setStory({ ...story, nodes: story.nodes.map((n) => n.id === selected.id ? { ...n, ...patch } : n) });
-  const addNode = () => { const node = emptyNode(); setStory({ ...story, nodes: [...story.nodes, node] }); setSelectedId(node.id); };
-  const removeNode = () => { if (story.nodes.length <= 1 || selected.id === story.startNodeId) return; setStory({ ...story, nodes: story.nodes.filter((n) => n.id !== selected.id).map((n) => ({ ...n, choices: n.choices.filter((c) => c.targetId !== selected.id) })) }); setSelectedId(story.startNodeId); };
-  if (!selected) return null;
-  return <div className="editor"><header className="editor-top"><button className="back" onClick={onBack}>←</button><div><small>正在编辑</small><input value={story.title} onChange={(e) => setStory({ ...story, title: e.target.value })} /></div><span className="save-state">● 草稿自动保护</span><button className="ghost" onClick={onPreview}>预览</button><button className="ghost" onClick={onSave}>保存草稿</button><button className="primary" disabled={errors.length > 0} onClick={onPublish}>发布章节</button></header>
-    <div className="editor-body"><aside className="node-list"><div className="node-head"><b>剧情节点</b><button onClick={addNode}>＋</button></div>{story.nodes.map((node, index) => <button className={selected.id === node.id ? "selected" : ""} key={node.id} onClick={() => setSelectedId(node.id)}><i>{node.type === "ending" ? "◆" : "◇"}</i><span><b>{node.title || "未命名"}</b><small>{node.id}</small></span><em>{index + 1}</em></button>)}</aside>
-      <section className="edit-form"><div className="tabs"><button className={tab === "content" ? "active" : ""} onClick={() => setTab("content")}>内容编辑</button><button className={tab === "assets" ? "active" : ""} onClick={() => setTab("assets")}>素材库</button><button className={tab === "versions" ? "active" : ""} onClick={() => setTab("versions")}>发布记录</button></div>
-      {tab === "content" ? <><div className="chapter-settings"><p>章节信息</p><label>章节简介<textarea rows={2} value={story.summary} onChange={(e) => setStory({ ...story, summary: e.target.value })} /></label><div className="two-col"><label>章节封面<select value={story.coverUrl} onChange={(e) => setStory({ ...story, coverUrl: e.target.value })}><option value="">使用默认封面</option>{assets.filter((a) => a.type === "image").map((a) => <option key={a.id} value={a.url}>{a.name}</option>)}</select></label><label>起始节点<select value={story.startNodeId} onChange={(e) => setStory({ ...story, startNodeId: e.target.value })}>{story.nodes.map((n) => <option key={n.id} value={n.id}>{n.title} · {n.id}</option>)}</select></label></div></div><div className="form-intro"><div><p>NODE / {selected.id.toUpperCase()}</p><h2>{selected.title}</h2></div><button className="danger" disabled={selected.id === story.startNodeId} onClick={removeNode}>删除节点</button></div>
-        <label>节点标题<input value={selected.title} onChange={(e) => updateNode({ title: e.target.value })} /></label><label>节点 ID<input value={selected.id} disabled /></label><label>正文<textarea rows={7} value={selected.body} onChange={(e) => updateNode({ body: e.target.value })} /></label>
-        <div className="two-col"><label>节点类型<select value={selected.type} onChange={(e) => updateNode({ type: e.target.value as StoryNode["type"], choices: e.target.value === "ending" ? [] : selected.choices })}><option value="scene">剧情场景</option><option value="ending">结局</option></select></label><label>过场动画<select value={selected.animation} onChange={(e) => updateNode({ animation: e.target.value as StoryNode["animation"] })}><option value="none">无</option><option value="fade">淡入</option><option value="rise">上浮</option><option value="flash">闪白</option></select></label></div>
-        <div className="two-col"><label>场景插图<select value={selected.imageUrl} onChange={(e) => updateNode({ imageUrl: e.target.value })}><option value="">无插图</option>{assets.filter((a) => a.type === "image").map((a) => <option value={a.url} key={a.id}>{a.name}</option>)}</select></label><label>背景音乐<select value={selected.audioUrl} onChange={(e) => updateNode({ audioUrl: e.target.value })}><option value="">无音乐</option>{assets.filter((a) => a.type === "audio").map((a) => <option value={a.url} key={a.id}>{a.name}</option>)}</select></label></div>
-        {selected.type === "scene" && <div className="choice-editor"><div><h3>选项与跳转</h3><button onClick={() => updateNode({ choices: [...selected.choices, { id: crypto.randomUUID(), label: "新的选择", targetId: story.startNodeId }] })}>＋ 添加选项</button></div>{selected.choices.map((choice) => <div className="choice-row" key={choice.id}><input value={choice.label} onChange={(e) => updateNode({ choices: selected.choices.map((c) => c.id === choice.id ? { ...c, label: e.target.value } : c) })} /><span>→</span><select value={choice.targetId} onChange={(e) => updateNode({ choices: selected.choices.map((c) => c.id === choice.id ? { ...c, targetId: e.target.value } : c) })}>{story.nodes.filter((n) => n.id !== selected.id).map((n) => <option value={n.id} key={n.id}>{n.title} · {n.id}</option>)}</select><button onClick={() => updateNode({ choices: selected.choices.filter((c) => c.id !== choice.id) })}>×</button></div>)}</div>}
-        <div className={`validation ${errors.length ? "has-errors" : "valid"}`}><b>{errors.length ? `发现 ${errors.length} 个发布问题` : "故事结构检查通过"}</b>{errors.map((e) => <p key={e}>• {e}</p>)}</div>
-      </> : tab === "assets" ? <AssetPanel assets={assets} onUpload={onUpload} /> : <div className="version-panel"><h2>发布记录</h2><p>每次发布都会保存固定快照，可随时恢复为线上版本。</p>{versions.map((item) => <div key={item.version}><span><b>版本 v{item.version}</b><small>{new Date(item.createdAt).toLocaleString("zh-CN")}</small></span>{item.version === chapter.version ? <em>当前版本</em> : <button onClick={() => { if (confirm(`确定恢复版本 v${item.version} 吗？`)) onRollback(item.version); }}>恢复此版本</button>}</div>)}</div>}</section>
-    </div></div>;
-}
-
-function AssetPanel({ assets, onUpload }: { assets: Asset[]; onUpload: (f: FormData) => void }) {
-  const input = useRef<HTMLInputElement>(null);
-  return <div className="asset-panel"><div className="upload-zone" onClick={() => input.current?.click()}><input ref={input} type="file" accept="image/*,audio/*" hidden onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; const form = new FormData(); form.append("file", file); onUpload(form); }} /><b>＋ 上传素材</b><p>图片最大 8MB，音频最大 20MB</p></div><div className="asset-grid">{assets.map((asset) => <div key={asset.id}>{asset.type === "image" ? <img src={asset.url} alt={asset.alt || asset.name} /> : <div className="audio-icon">♫</div>}<b>{asset.name}</b><small>{(asset.size / 1024 / 1024).toFixed(1)} MB</small></div>)}</div></div>;
+function NodeDisplayImage({ node, onContinue }: { node: StoryDocument["nodes"][number]; onContinue: () => void }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { queueMicrotask(() => setFailed(false)); }, [node.displayImageUrl]);
+  return <section className="node-image-page" aria-label={`${node.title}独立图片页`}>
+    <div className={`node-image-artwork ${node.displayImagePresentation.fit}${!node.displayImageUrl || failed ? " fallback" : ""}`}>
+      {node.displayImageUrl && !failed && <Image src={node.displayImageUrl} alt={node.displayImageAlt} fill sizes="100vw" unoptimized onError={() => setFailed(true)} style={{ objectFit: node.displayImagePresentation.fit, objectPosition: `${node.displayImagePresentation.positionX}% ${node.displayImagePresentation.positionY}%` }} />}
+      {(!node.displayImageUrl || failed) && <div><span aria-hidden="true">F</span><p>{node.displayImageAlt || "图片暂时无法显示"}</p></div>}
+    </div>
+    <div className="node-image-shade" />
+    <div className="node-image-copy"><p>{node.displayImagePosition === "before" ? "BEFORE THE SCENE" : "AFTER THE SCENE"}</p><h2>{node.title}</h2><button onClick={onContinue}>继续 <i>→</i></button></div>
+  </section>;
 }

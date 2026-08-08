@@ -1,0 +1,32 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="110" y1="40" x2="1080" y2="610" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#071127"/>
+      <stop offset=".55" stop-color="#050918"/>
+      <stop offset="1" stop-color="#170B38"/>
+    </linearGradient>
+    <linearGradient id="portal" x1="740" y1="110" x2="1020" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#55F5FF"/>
+      <stop offset="1" stop-color="#A46CFF"/>
+    </linearGradient>
+    <pattern id="grid" width="42" height="42" patternUnits="userSpaceOnUse">
+      <path d="M42 0H0V42" stroke="#55F5FF" stroke-opacity=".07"/>
+    </pattern>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="13" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <circle cx="916" cy="305" r="176" stroke="url(#portal)" stroke-opacity=".45" stroke-width="2"/>
+  <ellipse cx="916" cy="305" rx="216" ry="76" transform="rotate(31 916 305)" stroke="#55F5FF" stroke-opacity=".32" stroke-width="2"/>
+  <ellipse cx="916" cy="305" rx="216" ry="76" transform="rotate(-44 916 305)" stroke="#A46CFF" stroke-opacity=".3" stroke-width="2"/>
+  <path d="M916 144 1050 223V387L916 466 782 387V223L916 144Z" stroke="url(#portal)" stroke-width="5" filter="url(#glow)"/>
+  <path d="M865 220H1002L979 268H920V308H971L949 356H920V421H865V220Z" fill="url(#portal)" filter="url(#glow)"/>
+  <path d="M1014 181 982 242 1043 218 1007 270 1072 260" stroke="#A46CFF" stroke-width="6" stroke-linecap="round"/>
+  <text x="104" y="196" fill="#55F5FF" font-family="Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="8">INTERACTIVE FICTION UNIVERSE</text>
+  <text x="100" y="323" fill="#F3FBFF" font-family="'PingFang SC','Noto Sans SC',Arial,sans-serif" font-size="88" font-weight="700" letter-spacing="8">幻界</text>
+  <text x="104" y="397" fill="#A8C1D9" font-family="Arial, sans-serif" font-size="45" font-weight="700" letter-spacing="18">FANTASY</text>
+  <text x="104" y="494" fill="#9BB0C8" font-family="'PingFang SC','Noto Sans SC',Arial,sans-serif" font-size="27" letter-spacing="4">穿过裂隙，抵达你的故事宇宙。</text>
+</svg>

@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mist-page-fiction",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "vars": {
+    "SFX_PROVIDER": "elevenlabs"
+  },
+  "routes": [
+    {
+      "pattern": "fantasy.bytesucceed.com",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mist-page-fiction-db",
+      "database_id": "7ee4bac3-6a43-459b-868a-bf5321144c04",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ASSET_BUCKET",
+      "bucket_name": "mist-page-fiction-assets"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

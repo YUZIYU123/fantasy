@@ -1,12 +1,13 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
-export const chapters = sqliteTable("chapters", {
+export const novels = sqliteTable("novels", {
   id: text("id").primaryKey(),
   slug: text("slug").notNull().unique(),
-  title: text("title").notNull(),
-  summary: text("summary").notNull().default(""),
-  coverUrl: text("cover_url").notNull().default(""),
+  ownerId: text("owner_id"),
+  draftStatus: text("draft_status", { enum: ["draft", "submitted"] }).notNull().default("draft"),
+  submittedAt: text("submitted_at"),
+  reviewNote: text("review_note").notNull().default(""),
   sortOrder: integer("sort_order").notNull().default(0),
   status: text("status", { enum: ["draft", "published", "offline"] }).notNull().default("draft"),
   draftJson: text("draft_json").notNull(),
@@ -14,7 +15,43 @@ export const chapters = sqliteTable("chapters", {
   version: integer("version").notNull().default(0),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  index("novels_owner_status_idx").on(table.ownerId, table.status),
+  index("novels_status_sort_idx").on(table.status, table.sortOrder),
+]);
+
+export const novelVersions = sqliteTable("novel_versions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  novelId: text("novel_id").notNull(),
+  version: integer("version").notNull(),
+  snapshotJson: text("snapshot_json").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("novel_versions_novel_version_unique").on(table.novelId, table.version),
+]);
+
+export const chapters = sqliteTable("chapters", {
+  id: text("id").primaryKey(),
+  novelId: text("novel_id").notNull().default("legacy-global"),
+  slug: text("slug").notNull().unique(),
+  title: text("title").notNull(),
+  summary: text("summary").notNull().default(""),
+  coverUrl: text("cover_url").notNull().default(""),
+  ownerId: text("owner_id"),
+  draftStatus: text("draft_status", { enum: ["draft", "submitted"] }).notNull().default("draft"),
+  submittedAt: text("submitted_at"),
+  reviewNote: text("review_note").notNull().default(""),
+  sortOrder: integer("sort_order").notNull().default(0),
+  status: text("status", { enum: ["draft", "published", "offline"] }).notNull().default("draft"),
+  draftJson: text("draft_json").notNull(),
+  publishedJson: text("published_json"),
+  version: integer("version").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("chapters_novel_status_sort_idx").on(table.novelId, table.status, table.sortOrder),
+  index("chapters_owner_novel_idx").on(table.ownerId, table.novelId),
+]);
 
 export const chapterVersions = sqliteTable("chapter_versions", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -27,10 +64,87 @@ export const chapterVersions = sqliteTable("chapter_versions", {
 export const assets = sqliteTable("assets", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  type: text("type", { enum: ["image", "audio"] }).notNull(),
+  type: text("type", { enum: ["image", "audio", "video"] }).notNull(),
   url: text("url").notNull(),
+  storageKey: text("storage_key").notNull().default(""),
+  folderId: text("folder_id"),
+  ownerId: text("owner_id"),
   mimeType: text("mime_type").notNull(),
   size: integer("size").notNull(),
+  duration: integer("duration").notNull().default(0),
   alt: text("alt").notNull().default(""),
+  status: text("status", { enum: ["ready", "deleting", "delete_failed"] }).notNull().default("ready"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const assetFolders = sqliteTable("asset_folders", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  ownerId: text("owner_id"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  displayName: text("display_name").notNull(),
+  passwordHash: text("password_hash").notNull().default(""),
+  role: text("role", { enum: ["reader", "author", "admin"] }).notNull().default("reader"),
+  status: text("status", { enum: ["pending", "active", "disabled"] }).notNull().default("pending"),
+  emailVerifiedAt: text("email_verified_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("users_email_unique").on(table.email),
+  index("users_role_status_idx").on(table.role, table.status),
+]);
+
+export const sessions = sqliteTable("sessions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("sessions_token_hash_unique").on(table.tokenHash),
+  index("sessions_user_idx").on(table.userId),
+]);
+
+export const authTokens = sqliteTable("auth_tokens", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  type: text("type", { enum: ["verify_email", "reset_password"] }).notNull(),
+  expiresAt: text("expires_at").notNull(),
+  usedAt: text("used_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("auth_tokens_hash_unique").on(table.tokenHash),
+  index("auth_tokens_user_type_idx").on(table.userId, table.type),
+]);
+
+export const readingProgress = sqliteTable("reading_progress", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  chapterId: text("chapter_id").notNull(),
+  chapterVersion: integer("chapter_version").notNull().default(0),
+  nodeId: text("node_id").notNull(),
+  pageIndex: integer("page_index").notNull().default(0),
+  terminalEventIdsJson: text("terminal_event_ids_json").notNull().default("[]"),
+  completedAt: text("completed_at"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("reading_progress_user_chapter_unique").on(table.userId, table.chapterId),
+]);
+
+export const authAttempts = sqliteTable("auth_attempts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  key: text("key").notNull(),
+  action: text("action").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("auth_attempts_key_action_time_idx").on(table.key, table.action, table.createdAt),
+]);

@@ -1,11 +1,10 @@
 import { desc, eq } from "drizzle-orm";
-import { chapterVersions } from "../../../../db/schema";
-import { ensureSchema, getDb } from "../../../../db";
+import { chapterVersions } from "../../../../../db/schema";
+import { ensureSchema, getDb } from "../../../../../db";
+import { adminAuthResponse, requireAdmin } from "../../../../../lib/admin-auth";
 
 export async function GET(request: Request) {
-  const email = request.headers.get("oai-authenticated-user-email");
-  const host = new URL(request.url).hostname;
-  if (!email && host !== "localhost" && host !== "127.0.0.1") return Response.json({ error: "未登录" }, { status: 401 });
+  try { await requireAdmin(request); } catch (error) { return adminAuthResponse(error); }
   const chapterId = new URL(request.url).searchParams.get("chapterId");
   if (!chapterId) return Response.json({ versions: [] });
   await ensureSchema();

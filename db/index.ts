@@ -5,7 +5,7 @@ import * as schema from "./schema";
 export function getDb() {
   if (!env.DB) {
     throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database."
+      "Cloudflare D1 binding `DB` is unavailable. Configure the binding in wrangler.jsonc before using the database."
     );
   }
 
@@ -18,37 +18,23 @@ export function ensureSchema() {
   if (schemaReady) return schemaReady;
   const d1 = env.DB;
   schemaReady = d1.batch([
-    d1.prepare(`CREATE TABLE IF NOT EXISTS chapters (
-      id text PRIMARY KEY NOT NULL,
-      slug text NOT NULL UNIQUE,
-      title text NOT NULL,
-      summary text DEFAULT '' NOT NULL,
-      cover_url text DEFAULT '' NOT NULL,
-      sort_order integer DEFAULT 0 NOT NULL,
-      status text DEFAULT 'draft' NOT NULL,
-      draft_json text NOT NULL,
-      published_json text,
-      version integer DEFAULT 0 NOT NULL,
-      created_at text DEFAULT CURRENT_TIMESTAMP NOT NULL,
-      updated_at text DEFAULT CURRENT_TIMESTAMP NOT NULL
-    )`),
-    d1.prepare(`CREATE TABLE IF NOT EXISTS chapter_versions (
-      id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-      chapter_id text NOT NULL,
-      version integer NOT NULL,
-      snapshot_json text NOT NULL,
-      created_at text DEFAULT CURRENT_TIMESTAMP NOT NULL
-    )`),
-    d1.prepare(`CREATE TABLE IF NOT EXISTS assets (
-      id text PRIMARY KEY NOT NULL,
-      name text NOT NULL,
-      type text NOT NULL,
-      url text NOT NULL,
-      mime_type text NOT NULL,
-      size integer NOT NULL,
-      alt text DEFAULT '' NOT NULL,
-      created_at text DEFAULT CURRENT_TIMESTAMP NOT NULL
-    )`),
-  ]).catch((error) => { schemaReady = null; throw error; });
+    d1.prepare("SELECT id FROM novels LIMIT 0"),
+    d1.prepare("SELECT id FROM novel_versions LIMIT 0"),
+    d1.prepare("SELECT id FROM chapters LIMIT 0"),
+    d1.prepare("SELECT novel_id FROM chapters LIMIT 0"),
+    d1.prepare("SELECT id FROM chapter_versions LIMIT 0"),
+    d1.prepare("SELECT storage_key, folder_id, duration, status, updated_at FROM assets LIMIT 0"),
+    d1.prepare("SELECT owner_id FROM asset_folders LIMIT 0"),
+    d1.prepare("SELECT owner_id, draft_status, submitted_at, review_note FROM chapters LIMIT 0"),
+    d1.prepare("SELECT owner_id FROM assets LIMIT 0"),
+    d1.prepare("SELECT id FROM users LIMIT 0"),
+    d1.prepare("SELECT id FROM sessions LIMIT 0"),
+    d1.prepare("SELECT id FROM auth_tokens LIMIT 0"),
+    d1.prepare("SELECT id, terminal_event_ids_json FROM reading_progress LIMIT 0"),
+    d1.prepare("SELECT id FROM auth_attempts LIMIT 0"),
+  ]).catch((error: unknown) => {
+    schemaReady = null;
+    throw new Error("D1 结构尚未迁移，请先运行 pnpm db:migrate:local 或 pnpm db:migrate:remote", { cause: error });
+  });
   return schemaReady;
 }

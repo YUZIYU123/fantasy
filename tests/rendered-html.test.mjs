@@ -1,91 +1,295 @@
 import assert from "node:assert/strict";
-import { access, readFile, readdir } from "node:fs/promises";
-import test from "node:test";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { after, before, test } from "node:test";
+import { storyFixture } from "./story-fixture.mjs";
 
-const developmentPreviewMeta =
-  /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
-const templateRoot = new URL("../", import.meta.url);
-const previewRoot = new URL("../app/_sites-preview/", import.meta.url);
+const projectRoot = fileURLToPath(new URL("../", import.meta.url));
+const port = 43100 + (process.pid % 500);
+const origin = `http://localhost:${port}`;
+let server;
+let serverOutput = "";
+let persistencePath;
+let testWranglerPath;
+let adminCookie = "";
+let adminNovelId = "";
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
+async function waitForServer() {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (server?.exitCode !== null) throw new Error(`开发服务器提前退出：\n${serverOutput}`);
+    try {
+      const response = await fetch(`${origin}/api/chapters`);
+      if (response.ok) return;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`等待开发服务器超时：\n${serverOutput}`);
 }
 
-test("server-renders the starter loading skeleton", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
-  const html = await response.text();
-  assert.match(html, developmentPreviewMeta);
-  assert.match(html, /<title>Your site is taking shape<\/title>/i);
-  assert.match(html, /Building your site/);
-  assert.match(html, /Your site is taking shape/);
-  assert.match(
-    html,
-    /Your first version will appear here automatically when it’s ready\./,
-  );
-  assert.doesNotMatch(html, /Codex/);
-  assert.match(html, /react-loading-skeleton/);
-  assert.match(html, /role="status"/);
+before(async () => {
+  persistencePath = await mkdtemp(join(tmpdir(), "mist-page-d1-test-"));
+  testWranglerPath = join(persistencePath, "wrangler.test.json");
+  const wranglerConfig = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+  delete wranglerConfig.$schema;
+  wranglerConfig.main = join(projectRoot, "worker/index.ts");
+  wranglerConfig.vars = {
+    CREATOR_PASSWORD_HASH: createHash("sha256").update("test-creator-password").digest("hex"),
+    CREATOR_SESSION_SECRET: "test-session-secret-that-is-at-least-32-characters",
+    LOCAL_ADMIN_BYPASS: "false",
+    LOCAL_AUTH_BYPASS: "true",
+  };
+  wranglerConfig.d1_databases = wranglerConfig.d1_databases.map((database) => ({
+    ...database,
+    migrations_dir: join(projectRoot, "drizzle"),
+  }));
+  await writeFile(testWranglerPath, JSON.stringify(wranglerConfig));
+  const migration = spawnSync("pnpm", ["exec", "wrangler", "d1", "migrations", "apply", "mist-page-fiction-db", "--local", "--persist-to", persistencePath], {
+    cwd: projectRoot,
+    env: process.env,
+    encoding: "utf8",
+  });
+  assert.equal(migration.status, 0, `本地 D1 迁移失败：\n${migration.stdout}\n${migration.stderr}`);
+  server = spawn("pnpm", ["exec", "vinext", "dev", "--port", String(port)], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      WRANGLER_LOG_PATH: ".wrangler/test.log",
+      CLOUDFLARE_PERSIST_PATH: persistencePath,
+      CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: testWranglerPath,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const collect = (chunk) => { serverOutput = `${serverOutput}${chunk}`.slice(-20_000); };
+  server.stdout.on("data", collect);
+  server.stderr.on("data", collect);
+  await waitForServer();
 });
 
-test("keeps the loading skeleton scoped and disposable", async () => {
-  const [preview, css, page, layout, packageJson, files] = await Promise.all([
-    readFile(new URL("SkeletonPreview.tsx", previewRoot), "utf8"),
-    readFile(new URL("preview.css", previewRoot), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+after(async () => {
+  if (server && server.exitCode === null) {
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 2_000);
+      server.once("exit", () => { clearTimeout(timeout); resolve(); });
+      server.kill("SIGTERM");
+    });
+  }
+  if (persistencePath) await rm(persistencePath, { recursive: true, force: true });
+});
+
+test("公开页面与后台页面由 Vinext Worker 正常渲染", async () => {
+  const [home, admin] = await Promise.all([fetch(`${origin}/`), fetch(`${origin}/admin`)]);
+  assert.equal(home.status, 200);
+  assert.equal(admin.status, 200);
+  assert.match(home.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.match(admin.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.match(await home.text(), /幻界|Fantasy/i);
+  assert.match(await admin.text(), /创作后台/);
+});
+
+test("公开 API 只返回已发布内容，创作者登录后才能访问管理员 API", async () => {
+  const published = await fetch(`${origin}/api/chapters`);
+  assert.equal(published.status, 200);
+  const payload = await published.json();
+  assert.ok(payload.chapters.every((chapter) => chapter.status === "published" && chapter.published && !("draft" in chapter)));
+
+  const publicWrite = await fetch(`${origin}/api/chapters`, { method: "POST" });
+  assert.equal(publicWrite.status, 405);
+  const adminRead = await fetch(`${origin}/admin/api/chapters`);
+  assert.equal(adminRead.status, 401);
+  assert.match((await adminRead.json()).error, /创作者账号/);
+  const login = await fetch(`${origin}/admin/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ password: "test-creator-password" }),
+  });
+  assert.equal(login.status, 200);
+  adminCookie = login.headers.get("set-cookie")?.split(";")[0] || "";
+  assert.match(adminCookie, /^fantasy_creator_session=v1\./);
+  const session = await fetch(`${origin}/admin/api/session`, { headers: { cookie: adminCookie } });
+  assert.equal(session.status, 200);
+  assert.deepEqual(await session.json(), {
+    authenticated: true,
+    role: "admin",
+    email: "creator",
+  });
+  const createdNovel = await fetch(`${origin}/admin/api/novels`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin, cookie: adminCookie },
+    body: JSON.stringify({ action: "create" }),
+  });
+  assert.equal(createdNovel.status, 201);
+  adminNovelId = (await createdNovel.json()).id;
+  const novelRows = (await (await fetch(`${origin}/admin/api/novels`, { headers: { cookie: adminCookie } })).json()).novels;
+  const novelDraft = structuredClone(novelRows[0].draft);
+  novelDraft.name = "测试小说";
+  novelDraft.summary = "测试小说简介";
+  novelDraft.coverAssetId = "";
+  novelDraft.coverUrl = "https://example.com/novel-cover.jpg";
+  novelDraft.coverAlt = "测试小说封面";
+  const publishNovel = await fetch(`${origin}/admin/api/novels`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin, cookie: adminCookie },
+    body: JSON.stringify({ action: "publish", id: adminNovelId, novel: novelDraft }),
+  });
+  assert.equal(publishNovel.status, 200, await publishNovel.text());
+  const created = await fetch(`${origin}/admin/api/chapters`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin, cookie: adminCookie },
+    body: JSON.stringify({ action: "create", meta: { novelId: adminNovelId } }),
+  });
+  assert.equal(created.status, 201);
+  const chapters = (await (await fetch(`${origin}/admin/api/chapters`, { headers: { cookie: adminCookie } })).json()).chapters;
+  assert.equal(chapters.length, 1);
+  assert.equal(chapters[0].title, "未命名章节");
+  assert.equal(chapters[0].draft.nodes.length, 1);
+  assert.equal(chapters[0].draft.nodes[0].body, "");
+});
+
+test("读者注册验证登录后可访问云端进度，管理员可升级为作者", async () => {
+  const email = `reader-${process.pid}@example.com`;
+  const register = await fetch(`${origin}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ email, displayName: "测试读者", password: "test-password-123", turnstileToken: "" }),
+  });
+  assert.equal(register.status, 201);
+  const registration = await register.json();
+  assert.ok(registration.developmentToken);
+  const verify = await fetch(`${origin}/api/auth/verify-email`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ token: registration.developmentToken }),
+  });
+  assert.equal(verify.status, 200);
+  const login = await fetch(`${origin}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ email, password: "test-password-123" }),
+  });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get("set-cookie");
+  assert.match(cookie ?? "", /^mist_session=/);
+  assert.match(cookie ?? "", /HttpOnly/);
+  assert.match(cookie ?? "", /SameSite=Lax/);
+  const me = await fetch(`${origin}/api/auth/me`, { headers: { cookie: cookie.split(";")[0] } });
+  assert.equal((await me.json()).user.role, "reader");
+  const sessionCookie = cookie.split(";")[0];
+  const progress = await fetch(`${origin}/api/account/progress`, { headers: { cookie: sessionCookie } });
+  assert.equal(progress.status, 200);
+  assert.deepEqual((await progress.json()).progress, []);
+  const adminChapters = (await (await fetch(`${origin}/admin/api/chapters`, { headers: { cookie: adminCookie } })).json()).chapters;
+  const publishedStory = structuredClone(storyFixture());
+  publishedStory.coverAssetId = "";
+  publishedStory.coverUrl = "https://example.com/test-cover.jpg";
+  publishedStory.openingImageAssetId = "";
+  publishedStory.openingImageUrl = "https://example.com/test-cover.jpg";
+  publishedStory.openingImageAlt = "测试开场图";
+  publishedStory.outroImageAssetId = "";
+  publishedStory.outroImageUrl = "https://example.com/test-outro.jpg";
+  publishedStory.nodes[0].choices[0].terminalFeedbackEnabled = true;
+  publishedStory.nodes[0].choices[0].terminalMessage = "任务状态已更新";
+  publishedStory.nodes[0].choices[0].terminalSpeak = false;
+  publishedStory.nodes[0].choices[0].terminalTaskActions = [{ id: "task-status-active", type: "setTaskStatus", task: null, objective: null, objectiveId: "", status: "active" }];
+  const publish = await fetch(`${origin}/admin/api/chapters`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin, cookie: adminCookie },
+    body: JSON.stringify({ action: "publish", id: adminChapters[0].id, story: publishedStory }),
+  });
+  assert.equal(publish.status, 200, await publish.text());
+  const baseTime = Date.now() - 10_000;
+  const putProgress = (body) => fetch(`${origin}/api/account/progress`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", origin, cookie: sessionCookie },
+    body: JSON.stringify({ chapterId: adminChapters[0].id, ...body }),
+  });
+  assert.equal((await putProgress({ nodeId: "branch-a", pageIndex: 0, terminalEventIds: ["task-status-active", "unknown"], updatedAt: new Date(baseTime).toISOString(), completed: false })).status, 200);
+  const taskProgress = await (await fetch(`${origin}/api/account/progress?chapterId=${adminChapters[0].id}`, { headers: { cookie: sessionCookie } })).json();
+  assert.deepEqual(taskProgress.progress.terminalEventIds, ["task-status-active"]);
+  const completedAt = new Date(baseTime + 2_000).toISOString();
+  assert.equal((await putProgress({ nodeId: "ending-a", pageIndex: 0, updatedAt: completedAt, completed: true })).status, 200);
+  assert.equal((await putProgress({ nodeId: "branch-b", pageIndex: 0, updatedAt: new Date(baseTime + 1_000).toISOString(), completed: false })).status, 200);
+  const completedRecord = await (await fetch(`${origin}/api/account/progress?chapterId=${adminChapters[0].id}`, { headers: { cookie: sessionCookie } })).json();
+  assert.equal(completedRecord.progress.nodeId, "ending-a");
+  assert.equal(completedRecord.progress.completedAt, completedAt);
+  const pendingAfterCompletion = await (await fetch(`${origin}/api/account/progress`, { headers: { cookie: sessionCookie } })).json();
+  assert.deepEqual(pendingAfterCompletion.progress, []);
+  assert.equal((await putProgress({ nodeId: "start", pageIndex: 0, updatedAt: new Date(baseTime + 3_000).toISOString(), completed: false })).status, 200);
+  const restarted = await (await fetch(`${origin}/api/account/progress`, { headers: { cookie: sessionCookie } })).json();
+  assert.equal(restarted.progress[0].nodeId, "start");
+  assert.equal(restarted.progress[0].completedAt, null);
+  const users = (await (await fetch(`${origin}/admin/api/users`, { headers: { cookie: adminCookie } })).json()).users;
+  const reader = users.find((user) => user.email === email);
+  assert.ok(reader);
+  const promote = await fetch(`${origin}/admin/api/users`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", origin, cookie: adminCookie },
+    body: JSON.stringify({ id: reader.id, role: "author" }),
+  });
+  assert.equal(promote.status, 200);
+  const authorChapters = await fetch(`${origin}/studio/api/chapters`, {
+    headers: { cookie: cookie.split(";")[0] },
+  });
+  assert.equal(authorChapters.status, 200);
+  assert.deepEqual((await authorChapters.json()).chapters, []);
+  const logout = await fetch(`${origin}/api/auth/logout`, {
+    method: "POST",
+    headers: { cookie: cookie.split(";")[0], origin },
+  });
+  assert.equal(logout.status, 200);
+  assert.match(logout.headers.get("set-cookie") ?? "", /Max-Age=0/);
+});
+
+test("未配置 AI 提供商密钥时明确拒绝生成且不回退本地合成", async () => {
+  const generated = await fetch(`${origin}/admin/api/assets/sfx`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin, cookie: adminCookie },
+    body: JSON.stringify({ choiceText: "启动跃迁", interactionPreset: "glitch", prompt: "短促的数字故障声", generationDurationSeconds: 1.2 }),
+  });
+  assert.equal(generated.status, 503);
+  const payload = await generated.json();
+  assert.match(payload.error, /ELEVENLABS_API_KEY/);
+  assert.equal(payload.code, "SFX_NOT_CONFIGURED");
+});
+
+test("素材读取接口对缺失对象安全返回 404", async () => {
+  const response = await fetch(`${origin}/api/assets/not-present`);
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("x-content-type-options"), null);
+});
+
+test("旧章节会补齐流程位置和视频字段，结构校验能发现循环与孤立节点", async () => {
+  const { normalizeStory, validateStory } = await import("../lib/story.ts");
+  const legacy = structuredClone(storyFixture());
+  delete legacy.nodes[0].position;
+  delete legacy.nodes[0].videoMode;
+  const normalized = normalizeStory(legacy);
+  assert.deepEqual(normalized.nodes[0].position, { x: 0, y: 0 });
+  assert.equal(normalized.nodes[0].videoMode, "none");
+  assert.deepEqual(validateStory(normalized), []);
+
+  normalized.nodes[3].choices = [{ id: "cycle", label: "返回", targetId: normalized.startNodeId }];
+  normalized.nodes.push({ ...structuredClone(normalized.nodes[4]), id: "orphan", title: "孤立结局", position: { x: 900, y: 500 } });
+  const errors = validateStory(normalized).join("；");
+  assert.match(errors, /循环路径/);
+  assert.match(errors, /无法从开头到达/);
+});
+
+test("部署配置只保留 Cloudflare Workers、D1 与 R2", async () => {
+  const [wrangler, vite, packageJson] = await Promise.all([
+    readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readdir(previewRoot),
   ]);
-
-  assert.deepEqual(files.sort(), ["SkeletonPreview.tsx", "preview.css"]);
-  assert.match(preview, /from "react-loading-skeleton"/);
-  assert.match(preview, /baseColor="#eceae7"/);
-  assert.match(preview, /highlightColor="#f9f8f6"/);
-  assert.match(preview, /duration=\{2\.8\}/);
-  assert.match(preview, /sites-skeleton-search-placeholder/);
-  assert.match(packageJson, /"react-loading-skeleton": "3\.5\.0"/);
-
-  const shellIndex = preview.indexOf('className="sites-skeleton-shell"');
-  const statusIndex = preview.indexOf('className="sites-skeleton-status"');
-  assert.ok(shellIndex >= 0 && statusIndex > shellIndex);
-  assert.match(css, /position:\s*fixed/);
-  assert.match(css, /inset:\s*0/);
-  assert.match(css, /opacity:\s*0\.52/);
-  assert.match(css, /prefers-reduced-motion:\s*reduce/);
-  assert.doesNotMatch(css, /#020617|canvas|pets|progress/i);
-  assert.doesNotMatch(
-    preview,
-    /loading-spinner|status-mark|status-progress|canvas|cookie|random/i,
-  );
-
-  assert.match(page, /export const metadata:\s*Metadata/);
-  assert.match(page, /"codex-preview": "development"/);
-  assert.match(page, /<SkeletonPreview \/>/);
-  assert.match(layout, /title:\s*"Starter Project"/);
-  assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
-  assert.doesNotMatch(css, /(^|\s)(html|body)\s*\{/m);
-
-  await assert.rejects(
-    access(new URL("public/_sites-preview", templateRoot)),
-  );
+  assert.match(wrangler, /"main": "\.\/worker\/index\.ts"/);
+  assert.match(wrangler, /"binding": "DB"/);
+  assert.match(wrangler, /"binding": "ASSET_BUCKET"/);
+  assert.match(vite, /@cloudflare\/vite-plugin/);
+  assert.doesNotMatch(vite, /sites|hosting\.json/i);
+  assert.doesNotMatch(packageJson, /sites/i);
+  await assert.rejects(access(new URL("../.openai/hosting.json", import.meta.url)));
 });

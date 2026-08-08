@@ -1,0 +1,1 @@
+ALTER TABLE `reading_progress` ADD `terminal_event_ids_json` text DEFAULT '[]' NOT NULL;

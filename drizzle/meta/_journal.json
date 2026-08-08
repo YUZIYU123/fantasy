@@ -8,6 +8,41 @@
       "when": 1784729333433,
       "tag": "0000_broad_talisman",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784766484949,
+      "tag": "0001_calm_epoch",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785227034171,
+      "tag": "0002_thin_jamie_braddock",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785239942330,
+      "tag": "0003_harsh_xorn",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1785321273721,
+      "tag": "0004_brown_gravity",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785828418553,
+      "tag": "0005_groovy_moon_knight",
+      "breakpoints": true
     }
   ]
 }
