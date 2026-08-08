@@ -82,6 +82,20 @@ export type ReadingSessionInput = {
   now?: () => string;
 };
 
+export function observeReadingSession(story: StoryDocument, state: ReadingState) {
+  const node = story.nodes.find((item) => item.id === state.nodeId);
+  const pages = paginateStoryBody(node?.body || "");
+  const pageIndex = Math.min(state.pageIndex, Math.max(0, pages.length - 1));
+  const isLastPage = pageIndex === pages.length - 1;
+  const terminalEvent = node && (node.terminalEvent?.trigger === "beforeContent" && pageIndex === 0
+    || node.terminalEvent?.trigger === "afterContent" && isLastPage) ? node.terminalEvent : undefined;
+  return {
+    terminalEvent,
+    terminalTask: applyTerminalTaskEvents(story, state.terminalEventIds).task,
+    terminalSuppressed: state.phase !== "content" || state.choiceLocked && !state.terminalPlayback,
+  };
+}
+
 const interactionDuration = { none: 350, glow: 480, ripple: 680, shake: 420, flash: 360, glitch: 560, push: 520 } as const;
 
 function chooseProgress(input: ReadingSessionInput) {

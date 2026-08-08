@@ -2,9 +2,8 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createReadingSession, type ReadingEffect, type ReadingEvent, type ReadingState } from "../lib/reading-session";
+import { createReadingSession, observeReadingSession, type ReadingEffect, type ReadingEvent, type ReadingState } from "../lib/reading-session";
 import {
-  applyTerminalTaskEvents,
   clampMediaVolume,
   normalizeChoiceSfxMaxDuration,
   paginateStoryBody,
@@ -166,9 +165,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   const pageIndex = Math.min(state.pageIndex, Math.max(0, pages.length - 1));
   const isLastPage = pageIndex === pages.length - 1;
   const needsAfterImage = node.displayImagePosition === "after" && !state.afterImageDone;
-  const task = applyTerminalTaskEvents(story, state.terminalEventIds).task;
-  const terminalEvent = node.terminalEvent?.trigger === "beforeContent" && pageIndex === 0
-    || node.terminalEvent?.trigger === "afterContent" && isLastPage ? node.terminalEvent : undefined;
+  const sessionView = observeReadingSession(story, state);
 
   return <section className={`reader animation-${node.animation}`}>
     <audio ref={music} /><audio ref={sfx} />
@@ -189,13 +186,13 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
       novels={novels}
       onOpenNovel={onOpenNovel}
       config={story.terminal}
-      event={terminalEvent}
+      event={sessionView.terminalEvent}
       eventKey={`${chapterId}:${node.id}:${node.terminalEvent?.trigger || "none"}`}
-      task={task}
+      task={sessionView.terminalTask}
       playback={state.terminalPlayback}
       muted={muted}
       reducedMotion={reducedMotion}
-      suppressed={state.phase !== "content" || state.choiceLocked && !state.terminalPlayback}
+      suppressed={sessionView.terminalSuppressed}
       preview={preview}
       onPlaybackComplete={() => dispatch({ type: "terminal-complete" })}
       onDuckingChange={setTerminalDucking}

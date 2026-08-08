@@ -27,7 +27,6 @@ function commandFor(action: string, request: Request, body: Record<string, unkno
   if (action === "verify-email") return { action, request, token: String(body.token || "") };
   if (action === "forgot-password") return { action, request, email: String(body.email || ""), turnstileToken: String(body.turnstileToken || "") };
   if (action === "reset-password") return { action, request, token: String(body.token || ""), password: String(body.password || "") };
-  if (action === "profile") return { action, request, displayName: String(body.displayName || "") };
   return null;
 }
 
@@ -38,6 +37,11 @@ export async function POST(request: Request, context: Context) {
     if (action === "logout") {
       const result = await accountLifecycle.execute({ action, request });
       return Response.json(result.body, { headers: { "set-cookie": clearSessionCookie(request) } });
+    }
+    if (action === "profile") {
+      const body = await request.json() as Record<string, unknown>;
+      const actor = await sessionAuthorization.require(request);
+      return accountLifecycle.execute({ action, actorId: actor.id, displayName: String(body.displayName || "") }).then(accountLifecycleResponse);
     }
     const command = commandFor(action, request, await request.json() as Record<string, unknown>);
     if (!command) return Response.json({ error: "不支持的账号操作" }, { status: 404 });

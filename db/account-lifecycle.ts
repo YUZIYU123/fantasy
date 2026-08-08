@@ -18,7 +18,6 @@ import {
   type UserRole,
   type UserStatus,
 } from "../lib/auth";
-import { sessionAuthorization } from "../lib/session-authorization";
 
 export interface TurnstileVerifier {
   verify(request: Request, token: string, action: string): Promise<void>;
@@ -56,7 +55,7 @@ export type AccountCommand =
   | { action: "login"; request: Request; email: string; password: string }
   | { action: "forgot-password"; request: Request; email: string; turnstileToken: string }
   | { action: "reset-password"; request: Request; token: string; password: string }
-  | { action: "profile"; request: Request; displayName: string }
+  | { action: "profile"; actorId: string; displayName: string }
   | { action: "logout"; request: Request }
   | { action: "list-users" }
   | { action: "update-user"; id: string; role?: UserRole; status?: Extract<UserStatus, "active" | "disabled"> };
@@ -170,10 +169,9 @@ export function createAccountLifecycle({
       return { body: { ok: true } };
     }
     if (command.action === "profile") {
-      const identity = await sessionAuthorization.require(command.request);
       const displayName = command.displayName.trim();
       if (!displayName || displayName.length > 40) throw new AuthError("昵称需要为 1–40 个字符");
-      await db.update(users).set({ displayName, updatedAt: new Date().toISOString() }).where(eq(users.id, identity.id));
+      await db.update(users).set({ displayName, updatedAt: new Date().toISOString() }).where(eq(users.id, command.actorId));
       return { body: { ok: true } };
     }
     if (command.action === "logout") {
