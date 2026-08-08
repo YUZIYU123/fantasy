@@ -1,16 +1,14 @@
-import { desc, eq } from "drizzle-orm";
-import { ensureSchema, getDb } from "../../../../../db";
-import { novelVersions } from "../../../../../db/schema";
+import { creationLifecycle, creationLifecycleErrorResponse } from "../../../../../db/creation-lifecycle";
 import { adminAuthResponse, requireAdmin } from "../../../../../lib/admin-auth";
 
 export async function GET(request: Request) {
-  try { await requireAdmin(request); } catch (error) { return adminAuthResponse(error); }
-  await ensureSchema();
-  const novelId = new URL(request.url).searchParams.get("novelId");
-  if (!novelId) return Response.json({ versions: [] });
-  const rows = await getDb().select({
-    version: novelVersions.version,
-    createdAt: novelVersions.createdAt,
-  }).from(novelVersions).where(eq(novelVersions.novelId, novelId)).orderBy(desc(novelVersions.version));
-  return Response.json({ versions: rows });
+  try {
+    await requireAdmin(request);
+    const novelId = new URL(request.url).searchParams.get("novelId");
+    if (!novelId) return Response.json({ versions: [] });
+    const versions = await creationLifecycle.listVersions({ kind: "administrator" }, "novel", novelId);
+    return Response.json({ versions });
+  } catch (error) {
+    return creationLifecycleErrorResponse(error) ?? adminAuthResponse(error);
+  }
 }
