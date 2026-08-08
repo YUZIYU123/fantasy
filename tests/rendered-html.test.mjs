@@ -30,6 +30,19 @@ async function requestJson(path, { method = "GET", cookie = "", body } = {}) {
   return { response, payload: await response.json() };
 }
 
+async function uploadAsset(path, cookie, { name, type, bytes = "asset", duration = 0, folderId = "" }) {
+  const form = new FormData();
+  form.set("file", new File([bytes], name, { type }));
+  form.set("duration", String(duration));
+  if (folderId) form.set("folderId", folderId);
+  const response = await fetch(`${origin}${path}`, {
+    method: "POST",
+    headers: { origin, cookie },
+    body: form,
+  });
+  return { response, payload: await response.json() };
+}
+
 function publishableStory(title = "测试章节") {
   const story = structuredClone(storyFixture());
   story.title = title;
@@ -542,6 +555,142 @@ test("创作者与管理员的小说章节生命周期保持兼容", async (t) =
     publicChapters = (await requestJson(`/api/chapters?novelId=${novelId}`)).payload.chapters;
     assert.ok(publicChapters.some((chapter) => chapter.id === chapterId));
   });
+});
+
+test("平台与作者素材的归属、整理和历史引用保护保持兼容", async () => {
+  const authorA = await createAuthorAccount("素材作者甲");
+  const authorB = await createAuthorAccount("素材作者乙");
+  const patchAssets = (cookie, body) => requestJson("/studio/api/assets", { method: "PATCH", cookie, body });
+
+  const platformUpload = await uploadAsset("/admin/api/assets", adminCookie, {
+    name: "platform-cover.png",
+    type: "image/png",
+  });
+  assert.equal(platformUpload.response.status, 201);
+  assert.equal(platformUpload.payload.asset.ownerId, null);
+
+  const folderA = await patchAssets(authorA.cookie, { action: "create-folder", name: "作者甲素材" });
+  const folderB = await patchAssets(authorB.cookie, { action: "create-folder", name: "作者乙素材" });
+  assert.equal(folderA.response.status, 201);
+  assert.equal(folderB.response.status, 201);
+  const authorUpload = await uploadAsset("/studio/api/assets", authorA.cookie, {
+    name: "author-cover.png",
+    type: "image/png",
+    folderId: folderA.payload.folder.id,
+  });
+  assert.equal(authorUpload.response.status, 201);
+  assert.equal(authorUpload.payload.asset.ownerId, authorA.id);
+
+  const visibleToA = (await requestJson("/studio/api/assets", { cookie: authorA.cookie })).payload;
+  assert.equal(visibleToA.assets.find((asset) => asset.id === platformUpload.payload.asset.id).canManage, false);
+  assert.equal(visibleToA.assets.find((asset) => asset.id === authorUpload.payload.asset.id).canManage, true);
+  assert.ok(visibleToA.folders.some((folder) => folder.id === folderA.payload.folder.id));
+  const visibleToB = (await requestJson("/studio/api/assets", { cookie: authorB.cookie })).payload;
+  assert.ok(!visibleToB.assets.some((asset) => asset.id === authorUpload.payload.asset.id));
+  assert.ok(!visibleToB.folders.some((folder) => folder.id === folderA.payload.folder.id));
+
+  const managePlatform = await patchAssets(authorA.cookie, {
+    action: "update-asset",
+    id: platformUpload.payload.asset.id,
+    name: "越权改名",
+  });
+  assert.equal(managePlatform.response.status, 403);
+  assert.equal(managePlatform.payload.error, "只能整理自己的素材");
+  const useOtherFolder = await uploadAsset("/studio/api/assets", authorA.cookie, {
+    name: "wrong-folder.png",
+    type: "image/png",
+    folderId: folderB.payload.folder.id,
+  });
+  assert.equal(useOtherFolder.response.status, 404);
+  assert.equal(useOtherFolder.payload.error, "素材文件夹不存在");
+  const longVideo = await uploadAsset("/studio/api/assets", authorA.cookie, {
+    name: "too-long.mp4",
+    type: "video/mp4",
+    duration: 61,
+  });
+  assert.equal(longVideo.response.status, 400);
+  assert.equal(longVideo.payload.error, "视频不能超过 60 秒");
+
+  const deletePlatform = await requestJson(`/studio/api/assets?id=${platformUpload.payload.asset.id}`, {
+    method: "DELETE",
+    cookie: authorA.cookie,
+  });
+  assert.equal(deletePlatform.response.status, 403);
+  assert.equal(deletePlatform.payload.error, "只能删除自己的素材");
+
+  const novelCreated = await requestJson("/studio/api/novels", {
+    method: "POST",
+    cookie: authorA.cookie,
+    body: { action: "create" },
+  });
+  const novelId = novelCreated.payload.id;
+  const novel = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels.find((item) => item.id === novelId);
+  const novelWithAsset = structuredClone(novel.draft);
+  novelWithAsset.name = "素材历史小说";
+  novelWithAsset.summary = "用于确认旧发布版本仍然保护素材引用。";
+  novelWithAsset.coverAssetId = authorUpload.payload.asset.id;
+  novelWithAsset.coverUrl = authorUpload.payload.asset.url;
+  novelWithAsset.coverAlt = "素材历史小说封面";
+  assert.equal((await requestJson("/studio/api/novels", {
+    method: "POST", cookie: authorA.cookie, body: { action: "save", id: novelId, novel: novelWithAsset },
+  })).response.status, 200);
+  assert.equal((await requestJson("/admin/api/novels", {
+    method: "POST", cookie: adminCookie, body: { action: "publish", id: novelId, novel: novelWithAsset },
+  })).response.status, 200);
+  const novelWithoutAsset = structuredClone(novelWithAsset);
+  novelWithoutAsset.coverAssetId = "";
+  novelWithoutAsset.coverUrl = "https://example.com/history-cover.jpg";
+  assert.equal((await requestJson("/admin/api/novels", {
+    method: "POST", cookie: adminCookie, body: { action: "publish", id: novelId, novel: novelWithoutAsset },
+  })).response.status, 200);
+
+  const chapterCreated = await requestJson("/studio/api/chapters", {
+    method: "POST",
+    cookie: authorA.cookie,
+    body: { action: "create", meta: { novelId } },
+  });
+  const chapterId = chapterCreated.payload.id;
+  const storyWithAsset = publishableStory("素材历史章节");
+  storyWithAsset.coverAssetId = authorUpload.payload.asset.id;
+  storyWithAsset.coverUrl = authorUpload.payload.asset.url;
+  storyWithAsset.openingImageAssetId = authorUpload.payload.asset.id;
+  storyWithAsset.openingImageUrl = authorUpload.payload.asset.url;
+  assert.equal((await requestJson("/admin/api/chapters", {
+    method: "POST", cookie: adminCookie, body: { action: "publish", id: chapterId, story: storyWithAsset },
+  })).response.status, 200);
+  const storyWithoutAsset = structuredClone(storyWithAsset);
+  storyWithoutAsset.coverAssetId = "";
+  storyWithoutAsset.coverUrl = "https://example.com/history-chapter.jpg";
+  storyWithoutAsset.openingImageAssetId = "";
+  storyWithoutAsset.openingImageUrl = "https://example.com/history-opening.jpg";
+  assert.equal((await requestJson("/admin/api/chapters", {
+    method: "POST", cookie: adminCookie, body: { action: "publish", id: chapterId, story: storyWithoutAsset },
+  })).response.status, 200);
+
+  const referencedDelete = await requestJson(`/studio/api/assets?id=${authorUpload.payload.asset.id}`, {
+    method: "DELETE",
+    cookie: authorA.cookie,
+  });
+  assert.equal(referencedDelete.response.status, 409);
+  assert.equal(referencedDelete.payload.error, "素材仍被章节引用");
+  assert.ok(referencedDelete.payload.references.some((reference) => reference.chapterId === novelId && reference.version === "v1"));
+  assert.ok(referencedDelete.payload.references.some((reference) => reference.chapterId === chapterId && reference.version === "v1"));
+
+  const spareUpload = await uploadAsset("/studio/api/assets", authorA.cookie, {
+    name: "spare.png",
+    type: "image/png",
+  });
+  const firstDelete = await requestJson(`/studio/api/assets?id=${spareUpload.payload.asset.id}`, {
+    method: "DELETE",
+    cookie: authorA.cookie,
+  });
+  assert.equal(firstDelete.response.status, 200);
+  const repeatedDelete = await requestJson(`/studio/api/assets?id=${spareUpload.payload.asset.id}`, {
+    method: "DELETE",
+    cookie: authorA.cookie,
+  });
+  assert.equal(repeatedDelete.response.status, 404);
+  assert.equal(repeatedDelete.payload.error, "素材不存在");
 });
 
 test("未配置 AI 提供商密钥时明确拒绝生成且不回退本地合成", async () => {
