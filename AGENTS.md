@@ -15,6 +15,14 @@
 - `tests/`：自动化测试；`public/`：静态资源。
 - 页面专用代码就近放置；仅将跨页面复用或与框架无关的逻辑抽为公共模块。避免重复抽象和无意义拆分。
 
+## 深模块与 seam
+
+- 业务规则必须集中在拥有该规则的深模块中：创作状态、审核、发布与版本属于 `CreationLifecycle`；素材归属、生成、引用、删除与频控属于 `AssetLifecycle`；阅读推进、分页、媒体时序、终端反馈与进度属于 `ReadingSession`；账号安全流程属于 `AccountLifecycle`；请求身份与即时权限属于 `SessionAuthorization`。
+- HTTP route 只能解析请求、获取 actor、调用模块 interface 并映射响应。不得在 route 中编排业务状态转换、Drizzle 查询或事务、所有权判断、校验组合、版本分配、重试或失败补偿。
+- React 只能渲染 state、发送 event、执行 effect 并将成功、失败或超时结果回送模块。不得在 hooks 中编排剧情推进、选择锁定、媒体恢复、进度冲突或音乐时序。
+- 新增功能时，先通过对应模块的 interface 编写失败测试，再实现模块，最后修改 HTTP 或 React adapter，并删除被替代的旧逻辑与过时测试；生产调用方和测试必须穿过同一个 interface。
+- 交付前执行 deletion test：删除模块后，复杂度应重新散回多个调用方；若复杂度直接消失，该模块可能只是浅层转发。业务规则必须只有一个实现来源，修改规则不应要求同步修改 route、React 和模块。
+
 ## 修改原则
 
 - 保持改动最小，沿用严格 TypeScript 和现有代码风格；不要覆盖或清理无关的未提交修改。
