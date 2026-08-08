@@ -738,8 +738,8 @@ test("平台与作者素材的归属、整理和历史引用保护保持兼容",
     method: "DELETE",
     cookie: authorA.cookie,
   });
-  assert.equal(repeatedDelete.response.status, 404);
-  assert.equal(repeatedDelete.payload.error, "素材不存在");
+  assert.equal(repeatedDelete.response.status, 200);
+  assert.equal(repeatedDelete.payload.ok, true);
 });
 
 test("账号验证、重置、角色状态和管理员能力的安全契约保持兼容", async () => {

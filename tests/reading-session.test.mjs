@@ -64,3 +64,17 @@ test("正式完成产生完成进度和完成 effect", () => {
   assert.equal(progress.progress.completedAt, progress.progress.updatedAt);
   assert.ok(result.effects.some((effect) => effect.kind === "complete"));
 });
+
+test("转场视频 effect 失败后进入可继续的正文状态", () => {
+  const current = story();
+  current.nodes[0].videoMode = "transition";
+  current.nodes[0].videoUrl = "https://example.com/fail.mp4";
+  const session = createReadingSession({
+    story: current, chapterId: "video", chapterVersion: 1, preview: true, reducedMotion: false,
+  });
+  const video = session.initialEffects.find((effect) => effect.kind === "video");
+  assert.ok(video);
+  const failed = session.dispatch({ type: "effect-result", id: video.id, outcome: "failure" });
+  assert.equal(failed.state.phase, "content");
+  assert.equal(failed.state.choiceLocked, false);
+});
