@@ -2,13 +2,14 @@ import {
   creationLifecycle,
 } from "../../../../db/creation-lifecycle";
 import { creationLifecycleErrorResponse, creationLifecycleResponse, parseCreationCommand } from "../../../_creation-lifecycle-http";
-import { adminAuthResponse, AdminAuthError, requireAdmin } from "../../../../lib/admin-auth";
+import { adminAuthResponse, AdminAuthError } from "../../../../lib/admin-auth";
+import { administratorCapability } from "../../../../lib/session-authorization";
 
 const actor = { kind: "administrator" } as const;
 
 export async function GET(request: Request) {
   try {
-    await requireAdmin(request);
+    await administratorCapability.require(request);
     return Response.json({ novels: await creationLifecycle.list(actor, "novel") });
   } catch (error) {
     const response = creationLifecycleErrorResponse(error);
@@ -20,7 +21,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    await requireAdmin(request);
+    await administratorCapability.require(request);
     const command = parseCreationCommand("novel", await request.json());
     return creationLifecycleResponse(await creationLifecycle.execute(actor, command));
   } catch (error) {

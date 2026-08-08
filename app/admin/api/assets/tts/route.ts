@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
-import { adminAuthResponse, AdminAuthError, requireAdmin } from "../../../../../lib/admin-auth";
+import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
+import { administratorCapability } from "../../../../../lib/session-authorization";
 import { AuthError, enforceRateLimit } from "../../../../../lib/auth";
 import { ElevenLabsTerminalSpeechProvider, TerminalSpeechError } from "../../../../../lib/tts";
 
@@ -13,7 +14,7 @@ function provider() {
 
 export async function GET(request: Request) {
   try {
-    await requireAdmin(request);
+    await administratorCapability.require(request);
     return Response.json({ voices: await provider().listVoices() });
   } catch (error) {
     if (error instanceof TerminalSpeechError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
@@ -24,7 +25,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const identity = await requireAdmin(request);
+    const identity = await administratorCapability.require(request);
     const body = await request.json() as { text?: string; voiceId?: string; voiceName?: string };
     await enforceRateLimit(request, "tts-generation-minute", identity.email, 5, 1);
     await enforceRateLimit(request, "tts-generation-day", identity.email, 50, 1_440);

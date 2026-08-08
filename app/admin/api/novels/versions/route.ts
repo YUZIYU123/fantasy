@@ -1,10 +1,11 @@
 import { creationLifecycle } from "../../../../../db/creation-lifecycle";
 import { creationLifecycleErrorResponse } from "../../../../_creation-lifecycle-http";
-import { adminAuthResponse, AdminAuthError, requireAdmin } from "../../../../../lib/admin-auth";
+import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
+import { administratorCapability } from "../../../../../lib/session-authorization";
 
 export async function GET(request: Request) {
   try {
-    await requireAdmin(request);
+    await administratorCapability.require(request);
     const novelId = new URL(request.url).searchParams.get("novelId");
     if (!novelId) return Response.json({ versions: [] });
     const versions = await creationLifecycle.listVersions({ kind: "administrator" }, "novel", novelId);

@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
-import { assertSameOrigin, authErrorResponse, enforceRateLimit, requireRole } from "../../../../../lib/auth";
+import { assertSameOrigin, authErrorResponse, enforceRateLimit } from "../../../../../lib/auth";
+import { sessionAuthorization } from "../../../../../lib/session-authorization";
 import { createSoundEffectProvider, SoundEffectError } from "../../../../../lib/sfx";
 
 type SfxEnvironment = { SFX_PROVIDER?: string; ELEVENLABS_API_KEY?: string };
@@ -9,7 +10,7 @@ type SfxEnvironment = { SFX_PROVIDER?: string; ELEVENLABS_API_KEY?: string };
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const identity = await requireRole(request, ["author"]);
+    const identity = await sessionAuthorization.requireRole(request, ["author"]);
     const body = await request.json() as { choiceText?: string; interactionPreset?: string; prompt?: string; generationDurationSeconds?: number };
     const sfxEnv = env as unknown as SfxEnvironment;
     const provider = createSoundEffectProvider({ providerId: sfxEnv.SFX_PROVIDER, elevenLabsApiKey: sfxEnv.ELEVENLABS_API_KEY });

@@ -1,13 +1,14 @@
 import { and, eq, isNull, lt } from "drizzle-orm";
 import { ensureSchema, getDb } from "../../../../db";
 import { chapters, readingProgress } from "../../../../db/schema";
-import { assertSameOrigin, authErrorResponse, AuthError, requireSession } from "../../../../lib/auth";
+import { assertSameOrigin, authErrorResponse, AuthError } from "../../../../lib/auth";
+import { sessionAuthorization } from "../../../../lib/session-authorization";
 import { applyTerminalTaskEvents, normalizeStory } from "../../../../lib/story";
 
 export async function GET(request: Request) {
   try {
     await ensureSchema();
-    const identity = await requireSession(request);
+    const identity = await sessionAuthorization.require(request);
     const chapterId = new URL(request.url).searchParams.get("chapterId");
     const rows = chapterId
       ? await getDb().select().from(readingProgress).where(and(eq(readingProgress.userId, identity.id), eq(readingProgress.chapterId, chapterId))).limit(1)
@@ -33,7 +34,7 @@ export async function PUT(request: Request) {
   try {
     await ensureSchema();
     assertSameOrigin(request);
-    const identity = await requireSession(request);
+    const identity = await sessionAuthorization.require(request);
     const body = await request.json() as {
       chapterId?: string;
       nodeId?: string;
