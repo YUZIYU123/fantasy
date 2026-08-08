@@ -1,5 +1,6 @@
-import { creationLifecycle, creationLifecycleErrorResponse } from "../../../../../db/creation-lifecycle";
-import { adminAuthResponse, requireAdmin } from "../../../../../lib/admin-auth";
+import { creationLifecycle } from "../../../../../db/creation-lifecycle";
+import { creationLifecycleErrorResponse } from "../../../../_creation-lifecycle-http";
+import { adminAuthResponse, AdminAuthError, requireAdmin } from "../../../../../lib/admin-auth";
 
 export async function GET(request: Request) {
   try {
@@ -9,6 +10,9 @@ export async function GET(request: Request) {
     const versions = await creationLifecycle.listVersions({ kind: "administrator" }, "novel", novelId);
     return Response.json({ versions });
   } catch (error) {
-    return creationLifecycleErrorResponse(error) ?? adminAuthResponse(error);
+    const response = creationLifecycleErrorResponse(error);
+    if (response) return response;
+    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    throw error;
   }
 }

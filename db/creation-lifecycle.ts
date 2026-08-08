@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { getDb } from ".";
 import { ensureSeed, rowToChapter } from "./chapters";
 import { rowToNovel } from "./novels";
@@ -24,15 +24,26 @@ export type CreationActor =
   | { kind: "administrator" }
   | { kind: "author"; id: string };
 
-export type CreationCommand = {
-  entity: "novel" | "chapter";
-  action: string;
-  id?: string;
-  novel?: NovelDocument;
-  story?: StoryDocument;
-  meta?: Partial<NovelRecord & ChapterRecord> & { reviewNote?: string };
-  version?: number;
-};
+type NovelMeta = Pick<Partial<NovelRecord>, "slug" | "sortOrder"> & { reviewNote?: string };
+type ChapterMeta = Pick<Partial<ChapterRecord>, "slug" | "sortOrder" | "novelId"> & { reviewNote?: string };
+
+type NovelCommand =
+  | { entity: "novel"; action: "create" }
+  | { entity: "novel"; action: "duplicate"; id?: string }
+  | { entity: "novel"; action: "save" | "submit" | "publish"; id: string; novel: NovelDocument; meta?: NovelMeta }
+  | { entity: "novel"; action: "withdraw" | "offline" | "delete"; id: string }
+  | { entity: "novel"; action: "reject"; id: string; meta: NovelMeta }
+  | { entity: "novel"; action: "rollback"; id: string; version: number };
+
+type ChapterCommand =
+  | { entity: "chapter"; action: "create"; meta: ChapterMeta }
+  | { entity: "chapter"; action: "duplicate"; id?: string }
+  | { entity: "chapter"; action: "save" | "submit" | "publish"; id: string; story: StoryDocument; meta?: ChapterMeta }
+  | { entity: "chapter"; action: "withdraw" | "offline" | "delete"; id: string }
+  | { entity: "chapter"; action: "reject"; id: string; meta: ChapterMeta }
+  | { entity: "chapter"; action: "rollback"; id: string; version: number };
+
+export type CreationCommand = NovelCommand | ChapterCommand;
 
 export type CreationResult =
   | { kind: "created"; id: string }
@@ -95,7 +106,41 @@ async function availableAssets(actor: CreationActor) {
     : db.select(selection).from(assets);
 }
 
-async function executeNovel(actor: CreationActor, command: CreationCommand): Promise<CreationResult> {
+async function publishNovelSnapshot(id: string, snapshot: string) {
+  const db = getDb();
+  await db.batch([
+    db.insert(novelVersions).select(sql`SELECT NULL, ${id}, max(
+        (SELECT version FROM novels WHERE id = ${id}),
+        coalesce((SELECT max(version) FROM novel_versions WHERE novel_id = ${id}), 0)
+      ) + 1, ${snapshot}, CURRENT_TIMESTAMP`),
+    db.update(novels).set({
+      status: "published", draftStatus: "draft", submittedAt: null, reviewNote: "",
+      draftJson: snapshot, publishedJson: snapshot,
+      version: sql`(SELECT max(version) FROM novel_versions WHERE novel_id = ${id})`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(novels.id, id)),
+  ]);
+}
+
+async function publishChapterSnapshot(id: string, story: StoryDocument) {
+  const db = getDb();
+  const snapshot = JSON.stringify(story);
+  await db.batch([
+    db.insert(chapterVersions).select(sql`SELECT NULL, ${id}, max(
+        (SELECT version FROM chapters WHERE id = ${id}),
+        coalesce((SELECT max(version) FROM chapter_versions WHERE chapter_id = ${id}), 0)
+      ) + 1, ${snapshot}, CURRENT_TIMESTAMP`),
+    db.update(chapters).set({
+      title: story.title, summary: story.summary, coverUrl: story.openingImageUrl,
+      status: "published", draftStatus: "draft", submittedAt: null, reviewNote: "",
+      draftJson: snapshot, publishedJson: snapshot,
+      version: sql`(SELECT max(version) FROM chapter_versions WHERE chapter_id = ${id})`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(chapters.id, id)),
+  ]);
+}
+
+async function executeNovel(actor: CreationActor, command: NovelCommand): Promise<CreationResult> {
   const db = getDb();
   if (command.action === "create" || command.action === "duplicate") {
     let novel = createBlankNovel();
@@ -150,17 +195,7 @@ async function executeNovel(actor: CreationActor, command: CreationCommand): Pro
     const novel = normalizeNovel(command.novel);
     const errors = [...validateNovel(novel), ...validateNovelAssetReferences(novel, await availableAssets(actor))];
     if (errors.length) fail("发布校验失败", 400, errors);
-    const latest = await db.select({ version: novelVersions.version }).from(novelVersions)
-      .where(eq(novelVersions.novelId, current.id)).orderBy(desc(novelVersions.version)).limit(1);
-    const version = Math.max(current.version, latest[0]?.version ?? 0) + 1;
-    const snapshot = JSON.stringify(novel);
-    await db.batch([
-      db.update(novels).set({
-        status: "published", draftStatus: "draft", submittedAt: null, reviewNote: "",
-        draftJson: snapshot, publishedJson: snapshot, version, updatedAt: new Date().toISOString(),
-      }).where(eq(novels.id, current.id)),
-      db.insert(novelVersions).values({ novelId: current.id, version, snapshotJson: snapshot }),
-    ]);
+    await publishNovelSnapshot(current.id, JSON.stringify(novel));
   } else if (actor.kind === "administrator" && command.action === "offline") {
     await db.update(novels).set({ status: "offline", updatedAt: new Date().toISOString() }).where(eq(novels.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "reject") {
@@ -183,21 +218,14 @@ async function executeNovel(actor: CreationActor, command: CreationCommand): Pro
     )).limit(1);
     if (!versions[0]) fail("版本不存在", 404);
     const snapshot = JSON.stringify(normalizeNovel(JSON.parse(versions[0].snapshotJson)));
-    const latest = await db.select({ version: novelVersions.version }).from(novelVersions)
-      .where(eq(novelVersions.novelId, current.id)).orderBy(desc(novelVersions.version)).limit(1);
-    const version = Math.max(current.version, latest[0]?.version ?? 0) + 1;
-    await db.batch([
-      db.update(novels).set({ draftJson: snapshot, publishedJson: snapshot, status: "published", version, updatedAt: new Date().toISOString() })
-        .where(eq(novels.id, current.id)),
-      db.insert(novelVersions).values({ novelId: current.id, version, snapshotJson: snapshot }),
-    ]);
+    await publishNovelSnapshot(current.id, snapshot);
   } else {
     fail("不支持的小说操作");
   }
   return { kind: "ok" };
 }
 
-async function executeChapter(actor: CreationActor, command: CreationCommand): Promise<CreationResult> {
+async function executeChapter(actor: CreationActor, command: ChapterCommand): Promise<CreationResult> {
   const db = getDb();
   if (command.action === "create" || command.action === "duplicate") {
     let story = createBlankStory();
@@ -267,18 +295,7 @@ async function executeChapter(actor: CreationActor, command: CreationCommand): P
     const story = normalizeStory(command.story);
     const errors = [...validateStory(story), ...validateStoryMedia(story), ...validateStoryAssetReferences(story, await availableAssets(actor))];
     if (errors.length) fail("发布校验失败", 400, errors);
-    const latest = await db.select({ version: chapterVersions.version }).from(chapterVersions)
-      .where(eq(chapterVersions.chapterId, current.id)).orderBy(desc(chapterVersions.version)).limit(1);
-    const version = Math.max(current.version, latest[0]?.version ?? 0) + 1;
-    const snapshot = JSON.stringify(story);
-    await db.batch([
-      db.update(chapters).set({
-        title: story.title, summary: story.summary, coverUrl: story.openingImageUrl,
-        status: "published", draftStatus: "draft", submittedAt: null, reviewNote: "",
-        draftJson: snapshot, publishedJson: snapshot, version, updatedAt: new Date().toISOString(),
-      }).where(eq(chapters.id, current.id)),
-      db.insert(chapterVersions).values({ chapterId: current.id, version, snapshotJson: snapshot }),
-    ]);
+    await publishChapterSnapshot(current.id, story);
   } else if (actor.kind === "administrator" && command.action === "offline") {
     await db.update(chapters).set({ status: "offline", updatedAt: new Date().toISOString() }).where(eq(chapters.id, current.id));
   } else if (actor.kind === "administrator" && command.action === "reject") {
@@ -298,18 +315,8 @@ async function executeChapter(actor: CreationActor, command: CreationCommand): P
       eq(chapterVersions.chapterId, current.id), eq(chapterVersions.version, command.version),
     )).limit(1);
     if (!versionRows[0]) fail("版本不存在", 404);
-    const snapshot = JSON.stringify(normalizeStory(JSON.parse(versionRows[0].snapshotJson)));
-    const latest = await db.select({ version: chapterVersions.version }).from(chapterVersions)
-      .where(eq(chapterVersions.chapterId, current.id)).orderBy(desc(chapterVersions.version)).limit(1);
-    const version = Math.max(current.version, latest[0]?.version ?? 0) + 1;
-    await db.batch([
-      db.update(chapters).set({
-        title: JSON.parse(snapshot).title, summary: JSON.parse(snapshot).summary,
-        coverUrl: JSON.parse(snapshot).openingImageUrl, draftJson: snapshot, publishedJson: snapshot,
-        status: "published", version, updatedAt: new Date().toISOString(),
-      }).where(eq(chapters.id, current.id)),
-      db.insert(chapterVersions).values({ chapterId: current.id, version, snapshotJson: snapshot }),
-    ]);
+    const story = normalizeStory(JSON.parse(versionRows[0].snapshotJson));
+    await publishChapterSnapshot(current.id, story);
   } else {
     fail("不支持的章节操作");
   }
@@ -322,16 +329,3 @@ async function execute(actor: CreationActor, command: CreationCommand) {
 }
 
 export const creationLifecycle = { list, listVersions, execute };
-
-export function creationLifecycleResponse(result: CreationResult) {
-  return result.kind === "created"
-    ? Response.json({ id: result.id }, { status: 201 })
-    : Response.json({ ok: true, ...(result.updatedAt ? { updatedAt: result.updatedAt } : {}) });
-}
-
-export function creationLifecycleErrorResponse(error: unknown) {
-  if (error instanceof CreationLifecycleError) {
-    return Response.json({ error: error.message, ...(error.errors ? { errors: error.errors } : {}) }, { status: error.status });
-  }
-  return null;
-}

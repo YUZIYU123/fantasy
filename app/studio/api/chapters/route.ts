@@ -1,9 +1,7 @@
 import {
   creationLifecycle,
-  creationLifecycleErrorResponse,
-  creationLifecycleResponse,
-  type CreationCommand,
 } from "../../../../db/creation-lifecycle";
+import { creationLifecycleErrorResponse, creationLifecycleResponse, parseCreationCommand } from "../../../_creation-lifecycle-http";
 import { assertSameOrigin, authErrorResponse, requireRole } from "../../../../lib/auth";
 
 export async function GET(request: Request) {
@@ -20,9 +18,9 @@ export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
     const identity = await requireRole(request, ["author"]);
-    const payload = await request.json() as Omit<CreationCommand, "entity">;
+    const command = parseCreationCommand("chapter", await request.json());
     const actor = { kind: "author", id: identity.id } as const;
-    return creationLifecycleResponse(await creationLifecycle.execute(actor, { ...payload, entity: "chapter" }));
+    return creationLifecycleResponse(await creationLifecycle.execute(actor, command));
   } catch (error) {
     return creationLifecycleErrorResponse(error) ?? authErrorResponse(error);
   }

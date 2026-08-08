@@ -1,4 +1,5 @@
-import { creationLifecycle, creationLifecycleErrorResponse } from "../../../../../db/creation-lifecycle";
+import { creationLifecycle } from "../../../../../db/creation-lifecycle";
+import { creationLifecycleErrorResponse } from "../../../../_creation-lifecycle-http";
 import { authErrorResponse, requireRole } from "../../../../../lib/auth";
 
 export async function GET(request: Request) {
