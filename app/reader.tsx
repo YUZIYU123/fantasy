@@ -92,7 +92,11 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
           .then(() => dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "success" }))
           .catch(() => {
             setNeedsPlay(true);
-            dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "failure" });
+            const timeoutId = `${effect.id}:timeout`;
+            timers.current.set(timeoutId, setTimeout(() => {
+              timers.current.delete(timeoutId);
+              dispatchRef.current({ type: "effect-result", id: effect.id, outcome: "timeout" });
+            }, 30_000));
           }));
       } else if (effect.kind === "complete") {
         (onComplete || onBack)();

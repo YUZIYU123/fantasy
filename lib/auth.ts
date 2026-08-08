@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { and, count, eq, gt } from "drizzle-orm";
 import { getDb } from "../db";
-import { authAttempts, authTokens, sessions, users } from "../db/schema";
+import { authAttempts, authTokens, sessions } from "../db/schema";
 
 export type UserRole = "reader" | "author" | "admin";
 export type UserStatus = "pending" | "active" | "disabled";
@@ -90,35 +90,6 @@ function cookieValue(request: Request, name: string) {
     if (key === name) return decodeURIComponent(rest.join("="));
   }
   return "";
-}
-
-export async function optionalSession(request: Request): Promise<SessionIdentity | null> {
-  const token = cookieValue(request, SESSION_COOKIE);
-  if (!token) return null;
-  const tokenHash = await hashToken(token);
-  const rows = await getDb().select({
-    id: users.id,
-    email: users.email,
-    displayName: users.displayName,
-    role: users.role,
-    status: users.status,
-    expiresAt: sessions.expiresAt,
-  }).from(sessions).innerJoin(users, eq(sessions.userId, users.id)).where(eq(sessions.tokenHash, tokenHash)).limit(1);
-  const row = rows[0];
-  if (!row || row.status !== "active" || new Date(row.expiresAt).getTime() <= Date.now()) return null;
-  return { id: row.id, email: row.email, displayName: row.displayName, role: row.role, status: row.status };
-}
-
-export async function requireSession(request: Request) {
-  const identity = await optionalSession(request);
-  if (!identity) throw new AuthError("请先登录", 401);
-  return identity;
-}
-
-export async function requireRole(request: Request, allowed: UserRole[]) {
-  const identity = await requireSession(request);
-  if (!allowed.includes(identity.role)) throw new AuthError("当前账号没有此操作权限", 403);
-  return identity;
 }
 
 export async function createSession(userId: string, request: Request) {

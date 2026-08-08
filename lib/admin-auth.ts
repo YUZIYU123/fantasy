@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { optionalSession } from "./auth";
+import { optionalSessionIdentity } from "./session-identity";
 
 type AdminEnv = {
   CREATOR_PASSWORD_HASH?: string;
@@ -123,7 +123,7 @@ export async function requireAdmin(request: Request): Promise<AdminIdentity> {
     return { role: "admin", email: "creator" };
   }
 
-  const account = await optionalSession(request);
+  const account = await optionalSessionIdentity(request);
   if (account?.role === "admin") {
     assertAdminOrigin(request);
     return { role: "admin", email: account.email };

@@ -223,6 +223,8 @@ export function createReadingSession(input: ReadingSessionInput) {
         };
         effects.push({ kind: "wait", id: `choice:${choice.id}`, milliseconds: duration });
       }
+    } else if (event.type === "effect-result" && event.id.startsWith("video:") && event.outcome !== "success") {
+      state = { ...state, transitionVideoDone: true, phase: "content", choiceLocked: false };
     } else if (event.type === "wait-complete" || event.type === "effect-result" && event.id.startsWith("choice:")) {
       const choice = state.incomingChoice;
       if (choice && event.id === `choice:${choice.id}`) effects.push(...enter(choice.targetId, null));

@@ -1,7 +1,4 @@
-import { eq } from "drizzle-orm";
-import { getDb } from "../db";
-import { sessions, users } from "../db/schema";
-import { AuthError, hashToken, type SessionIdentity, type UserRole } from "./auth";
+import type { UserRole } from "./auth";
 import {
   AdminAuthError,
   clearCreatorSessionCookie,
@@ -10,42 +7,13 @@ import {
   requireAdmin,
   verifyCreatorPassword,
 } from "./admin-auth";
-
-function sessionToken(request: Request) {
-  const cookie = request.headers.get("cookie") || "";
-  for (const part of cookie.split(";")) {
-    const [key, ...rest] = part.trim().split("=");
-    if (key === "mist_session") return decodeURIComponent(rest.join("="));
-  }
-  return "";
-}
-
-async function optional(request: Request): Promise<SessionIdentity | null> {
-  const token = sessionToken(request);
-  if (!token) return null;
-  const rows = await getDb().select({
-    id: users.id, email: users.email, displayName: users.displayName, role: users.role,
-    status: users.status, expiresAt: sessions.expiresAt,
-  }).from(sessions).innerJoin(users, eq(sessions.userId, users.id))
-    .where(eq(sessions.tokenHash, await hashToken(token))).limit(1);
-  const row = rows[0];
-  if (!row || row.status !== "active" || new Date(row.expiresAt).getTime() <= Date.now()) return null;
-  return { id: row.id, email: row.email, displayName: row.displayName, role: row.role, status: row.status };
-}
-
-async function requireIdentity(request: Request) {
-  const identity = await optional(request);
-  if (!identity) throw new AuthError("请先登录", 401);
-  return identity;
-}
+import { optionalSessionIdentity, requireSessionIdentity, requireSessionRole } from "./session-identity";
 
 export const sessionAuthorization = {
-  optional,
-  require: requireIdentity,
+  optional: optionalSessionIdentity,
+  require: requireSessionIdentity,
   async requireRole(request: Request, roles: UserRole[]) {
-    const identity = await requireIdentity(request);
-    if (!roles.includes(identity.role)) throw new AuthError("当前账号没有此操作权限", 403);
-    return identity;
+    return requireSessionRole(request, roles);
   },
 };
 

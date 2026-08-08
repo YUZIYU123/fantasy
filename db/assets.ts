@@ -226,7 +226,9 @@ async function referencesFor(asset: typeof assets.$inferSelect) {
 
 async function remove(actor: AssetActor, command: Extract<AssetCommand, { action: "delete" }>): Promise<AssetLifecycleResult> {
   if (!command.id) fail("缺少素材 ID");
-  const asset = await assertAsset(actor, command.id, actor.kind === "author" ? "只能删除自己的素材" : "只能删除平台素材");
+  const asset = (await getDb().select().from(assets).where(eq(assets.id, command.id)).limit(1))[0];
+  if (!asset) return { kind: "ok" };
+  if (asset.ownerId !== ownerIdFor(actor)) fail(actor.kind === "author" ? "只能删除自己的素材" : "只能删除平台素材", 403);
   const references = await referencesFor(asset);
   if (references.length) fail("素材仍被章节引用", 409, references);
   const db = getDb();
