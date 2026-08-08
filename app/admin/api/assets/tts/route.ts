@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
-import { ensureSchema } from "../../../../../db";
-import { createGeneratedTerminalSpeech } from "../../../../../db/assets";
+import { assetLifecycle } from "../../../../../db/assets";
+import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
 import { adminAuthResponse, AdminAuthError, requireAdmin } from "../../../../../lib/admin-auth";
 import { AuthError, enforceRateLimit } from "../../../../../lib/auth";
 import { ElevenLabsTerminalSpeechProvider, TerminalSpeechError } from "../../../../../lib/tts";
@@ -8,8 +8,7 @@ import { ElevenLabsTerminalSpeechProvider, TerminalSpeechError } from "../../../
 type TtsEnvironment = { ELEVENLABS_API_KEY?: string };
 
 function provider() {
-  const ttsEnv = env as unknown as TtsEnvironment;
-  return new ElevenLabsTerminalSpeechProvider({ apiKey: ttsEnv.ELEVENLABS_API_KEY || "" });
+  return new ElevenLabsTerminalSpeechProvider({ apiKey: ((env as unknown as TtsEnvironment).ELEVENLABS_API_KEY || "") });
 }
 
 export async function GET(request: Request) {
@@ -26,20 +25,16 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const identity = await requireAdmin(request);
-    await ensureSchema();
     const body = await request.json() as { text?: string; voiceId?: string; voiceName?: string };
     await enforceRateLimit(request, "tts-generation-minute", identity.email, 5, 1);
     await enforceRateLimit(request, "tts-generation-day", identity.email, 50, 1_440);
-    const result = await createGeneratedTerminalSpeech({
-      bucket: env.ASSET_BUCKET,
-      ownerId: null,
-      text: String(body.text || ""),
-      voiceId: String(body.voiceId || ""),
-      voiceName: String(body.voiceName || ""),
-      provider: provider(),
-    });
-    return Response.json(result, { status: 201 });
+    return assetLifecycleResponse(await assetLifecycle.execute({ kind: "administrator" }, {
+      action: "generate-tts", bucket: env.ASSET_BUCKET, provider: provider(),
+      text: String(body.text || ""), voiceId: String(body.voiceId || ""), voiceName: String(body.voiceName || ""),
+    }));
   } catch (error) {
+    const lifecycleResponse = assetLifecycleErrorResponse(error);
+    if (lifecycleResponse) return lifecycleResponse;
     if (error instanceof TerminalSpeechError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
     if (error instanceof AuthError) return Response.json({ error: error.message }, { status: error.status });
     if (error instanceof AdminAuthError) return adminAuthResponse(error);

@@ -19,6 +19,11 @@ export type GeneratedTerminalSpeech = {
   sourceKey: string;
 };
 
+export interface TerminalSpeechProvider {
+  listVoices(): Promise<TerminalVoiceOption[]>;
+  generate(input: { voiceId: string; text: string }): Promise<GeneratedTerminalSpeech>;
+}
+
 export class TerminalSpeechError extends Error {
   readonly status: number;
   readonly code: string;
@@ -48,7 +53,7 @@ function normalizeSpeechText(value: unknown) {
 
 type ElevenLabsSpeechOptions = { apiKey: string; fetcher?: typeof fetch; timeoutMs?: number };
 
-export class ElevenLabsTerminalSpeechProvider {
+export class ElevenLabsTerminalSpeechProvider implements TerminalSpeechProvider {
   private readonly apiKey: string;
   private readonly fetcher: typeof fetch;
   private readonly timeoutMs: number;
