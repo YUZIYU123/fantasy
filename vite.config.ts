@@ -22,6 +22,9 @@ export default defineConfig(async () => {
       vinext(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+        ...(process.env.CLOUDFLARE_DISABLE_INSPECTOR === "true"
+          ? { inspectorPort: false }
+          : {}),
         ...(process.env.CLOUDFLARE_PERSIST_PATH
           ? { persistState: { path: process.env.CLOUDFLARE_PERSIST_PATH } }
           : {}),

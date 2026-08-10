@@ -75,7 +75,12 @@ export function assertSameOrigin(request: Request) {
 }
 
 export class AuthError extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
+  readonly status: number;
+
+  constructor(message: string, status = 400) {
+    super(message);
+    this.status = status;
+  }
 }
 
 export function authErrorResponse(error: unknown) {

@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
-import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
-import { sessionAuthorization } from "../../../../../lib/session-authorization";
+import { SessionAuthorizationError, sessionAuthorization } from "../../../../../lib/session-authorization";
+import { sessionAuthorizationResponse } from "../../../../_session-authorization-http";
 import { AuthError } from "../../../../../lib/auth";
 import { createSoundEffectProvider, SoundEffectError } from "../../../../../lib/sfx";
 
@@ -24,8 +24,8 @@ export async function POST(request: Request) {
     const lifecycleResponse = assetLifecycleErrorResponse(error);
     if (lifecycleResponse) return lifecycleResponse;
     if (error instanceof SoundEffectError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     if (error instanceof AuthError) return Response.json({ error: error.message }, { status: error.status });
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
     return Response.json({ error: "AI 音效保存失败，请稍后重试" }, { status: 500 });
   }
 }

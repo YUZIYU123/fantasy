@@ -1,0 +1,5 @@
+# 仅对 localhost 和 127.0.0.1 生效，不会绕过线上管理员鉴权。
+LOCAL_ADMIN_BYPASS=true
+
+# 本地调试注册、邮箱验证和密码找回时使用；生产环境不要设置。
+LOCAL_AUTH_BYPASS=true

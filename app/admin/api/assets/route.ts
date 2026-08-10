@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse, parseAssetMutation } from "../../../_asset-lifecycle-http";
-import { adminAuthResponse, AdminAuthError } from "../../../../lib/admin-auth";
-import { sessionAuthorization } from "../../../../lib/session-authorization";
+import { SessionAuthorizationError, sessionAuthorization } from "../../../../lib/session-authorization";
+import { sessionAuthorizationResponse } from "../../../_session-authorization-http";
 
 const actor = { kind: "administrator" } as const;
 
@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const response = assetLifecycleErrorResponse(error);
     if (response) return response;
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     throw error;
   }
 }
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const response = assetLifecycleErrorResponse(error);
     if (response) return response;
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     throw error;
   }
 }
@@ -46,7 +46,7 @@ export async function PATCH(request: Request) {
   } catch (error) {
     const response = assetLifecycleErrorResponse(error);
     if (response) return response;
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     throw error;
   }
 }
@@ -60,7 +60,7 @@ export async function DELETE(request: Request) {
   } catch (error) {
     const response = assetLifecycleErrorResponse(error);
     if (response) return response;
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     throw error;
   }
 }

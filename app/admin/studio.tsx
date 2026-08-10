@@ -20,6 +20,15 @@ import {
 } from "../../lib/story";
 import { SFX_GENERATION_DEFAULT_SECONDS, suggestChoiceSfxPrompt } from "../../lib/sfx";
 import type { TerminalVoiceOption } from "../../lib/tts";
+import type {
+  AdministratorSource,
+  CreatorAccessDecision,
+} from "../../lib/session-authorization-module";
+import {
+  advanceCreatorWorkspaceAccess,
+  resumeCreatorWorkspaceAccess,
+  startCreatorWorkspaceAccess,
+} from "../../lib/session-authorization-module";
 import { Brand } from "../brand";
 import { FantasyTerminal, type TerminalPlayback } from "../fantasy-terminal";
 import { ChapterOutroScreen, Reader } from "../story-studio";
@@ -27,8 +36,17 @@ import { ChapterOutroScreen, Reader } from "../story-studio";
 type StudioScope = "admin" | "author";
 type View = "novels" | "novel-settings" | "chapters" | "settings" | "editor" | "preview" | "assets" | "users";
 type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string; duration: number };
+type ReconcileOperationAccess = (status: number) => Promise<boolean>;
 
-export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
+const navigateWindow = (to: string) => window.location.replace(to);
+
+export function AdminStudio({
+  scope = "admin",
+  navigate = navigateWindow,
+}: {
+  scope?: StudioScope;
+  navigate?: (to: string) => void;
+}) {
   const apiBase = scope === "admin" ? "/admin/api" : "/studio/api";
   const [view, setView] = useState<View>("novels");
   const [novels, setNovels] = useState<NovelRecord[]>([]);
@@ -42,35 +60,126 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("");
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [entryReason, setEntryReason] = useState<CreatorAccessDecision["reason"]>("signed_out");
+  const [adminSource, setAdminSource] = useState<AdministratorSource | null>(null);
+  const [emergencyCredentialEnabled, setEmergencyCredentialEnabled] = useState(false);
+  const [accessFailed, setAccessFailed] = useState(false);
+  const [contentLoaded, setContentLoaded] = useState(false);
   const [pendingOpenId, setPendingOpenId] = useState("");
   const [pendingNovelId, setPendingNovelId] = useState("");
   const [assetReturnView, setAssetReturnView] = useState<View>("novels");
   const [previewReturnView, setPreviewReturnView] = useState<View>("editor");
   const [previewNodeId, setPreviewNodeId] = useState("");
+  const accessEpoch = useRef(0);
 
-  const load = useCallback(async () => {
-    setBusy(true);
-    const [novelResponse, chapterResponse, assetResponse] = await Promise.all([
-      fetch(`${apiBase}/novels`),
-      fetch(`${apiBase}/chapters`),
-      fetch(`${apiBase}/assets`),
-    ]);
-    if ([novelResponse.status, chapterResponse.status, assetResponse.status].some((status) => status === 401 || status === 403 || status === 503)) {
-      setAuthenticated(false); setMessage(""); setBusy(false); return;
+  const loadContent = useCallback(async (isCurrent: () => boolean): Promise<"loaded" | "access_stale" | "failed"> => {
+    if (isCurrent()) setBusy(true);
+    try {
+      const [novelResponse, chapterResponse, assetResponse] = await Promise.all([
+        fetch(`${apiBase}/novels`),
+        fetch(`${apiBase}/chapters`),
+        fetch(`${apiBase}/assets`),
+      ]);
+      const responses = [novelResponse, chapterResponse, assetResponse];
+      if (responses.some((response) => response.status === 401 || response.status === 403)) return "access_stale";
+      if (!responses.every((response) => response.ok)) return "failed";
+      const [novelData, chapterData, assetData] = await Promise.all([
+        novelResponse.json() as Promise<{ novels?: NovelRecord[] }>,
+        chapterResponse.json() as Promise<{ chapters?: ChapterRecord[] }>,
+        assetResponse.json() as Promise<{ assets?: AssetRecord[]; folders?: AssetFolder[] }>,
+      ]);
+      if (!isCurrent()) return "failed";
+      setNovels(novelData.novels || []);
+      setChapters(chapterData.chapters || []);
+      setAssets(assetData.assets || []);
+      setFolders(assetData.folders || []);
+      setContentLoaded(true);
+      return "loaded";
+    } catch {
+      return "failed";
+    } finally {
+      if (isCurrent()) setBusy(false);
     }
-    const [novelData, chapterData, assetData] = await Promise.all([
-      novelResponse.json() as Promise<{ novels?: NovelRecord[] }>,
-      chapterResponse.json() as Promise<{ chapters?: ChapterRecord[] }>,
-      assetResponse.json() as Promise<{ assets?: AssetRecord[]; folders?: AssetFolder[] }>,
-    ]);
-    setAuthenticated(true);
-    setNovels(novelData.novels || []);
-    setChapters(chapterData.chapters || []);
-    setAssets(assetData.assets || []);
-    setFolders(assetData.folders || []);
-    setBusy(false);
   }, [apiBase]);
-  useEffect(() => { queueMicrotask(() => load().catch(() => { setMessage("后台加载失败"); setBusy(false); })); }, [load]);
+  const executeAccess = useCallback(async (initialAccess = startCreatorWorkspaceAccess()) => {
+    const epoch = ++accessEpoch.current;
+    const isCurrent = () => accessEpoch.current === epoch;
+    setBusy(true);
+    setAccessFailed(false);
+    let access = initialAccess;
+    if (access.status === "resolving") setAuthenticated(null);
+    while (access.effect) {
+      if (!isCurrent()) return;
+      if (access.effect.type === "navigate") {
+        navigate(access.effect.to);
+        return;
+      }
+      if (access.effect.type === "check_access") {
+        try {
+          const response = await fetch(`${apiBase}/session`, { cache: "no-store" });
+          if (!response.ok) throw new Error("无法确认创作权限");
+          const decision = await response.json() as CreatorAccessDecision & { authenticated: boolean };
+          if (!isCurrent()) return;
+          access = advanceCreatorWorkspaceAccess(access, { type: "access_resolved", decision });
+        } catch {
+          if (!isCurrent()) return;
+          access = advanceCreatorWorkspaceAccess(access, { type: "access_failed" });
+        }
+        continue;
+      }
+      access = advanceCreatorWorkspaceAccess(access, {
+        type: "content_resolved",
+        result: await loadContent(isCurrent),
+      });
+    }
+    if (!isCurrent()) return;
+    if (access.decision) {
+      setEntryReason(access.decision.reason);
+      setEmergencyCredentialEnabled(access.decision.recoveryAvailable);
+      setAdminSource(access.decision.source);
+    }
+    if (access.status === "ready") {
+      setAuthenticated(true);
+      setBusy(false);
+      return;
+    }
+    if (access.status === "denied") {
+      setAuthenticated(false);
+      setBusy(false);
+      return;
+    }
+    if (access.status === "content_error") {
+      setAuthenticated(true);
+      setContentLoaded(false);
+      setMessage("后台内容加载失败，请重试");
+      setBusy(false);
+      return;
+    }
+    if (access.status === "access_error") {
+      setAccessFailed(true);
+      setAuthenticated(false);
+      setBusy(false);
+    }
+  }, [apiBase, loadContent, navigate]);
+  const resolveAccess = useCallback(() => executeAccess(startCreatorWorkspaceAccess()), [executeAccess]);
+  const reconcileOperationAccess = useCallback(async (status: number) => {
+    const access = resumeCreatorWorkspaceAccess(
+      status === 401 || status === 403 ? "access_stale" : "loaded",
+    );
+    if (access.status === "ready") return false;
+    await executeAccess(access);
+    return true;
+  }, [executeAccess]);
+  const refreshContent = useCallback(async () => {
+    await executeAccess(startCreatorWorkspaceAccess());
+  }, [executeAccess]);
+  useEffect(() => {
+    queueMicrotask(() => resolveAccess().catch(() => {
+      setAuthenticated(false);
+      setMessage("无法确认创作权限");
+      setBusy(false);
+    }));
+  }, [resolveAccess]);
   useEffect(() => {
     if (!pendingOpenId) return;
     const created = chapters.find((chapter) => chapter.id === pendingOpenId);
@@ -122,10 +231,11 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
     setBusy(true);
     const response = await fetch(`${apiBase}/chapters`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, id, ...extra }) });
     const data = await response.json() as { id?: string; errors?: string[]; error?: string }; setBusy(false);
+    if (await reconcileOperationAccess(response.status)) return false;
     if (!response.ok) { setMessage(data.errors?.join("；") || data.error || "操作失败"); return false; }
     setMessage(action === "publish" ? "章节已发布" : action === "submit" ? "已提交管理员审核" : action === "save" ? "草稿已保存" : "操作完成");
     if (action === "create" && data.id) setPendingOpenId(data.id);
-    await load(); return data;
+    await refreshContent(); return data;
   }
 
   async function novelAction(action: string, id?: string, extra: Record<string, unknown> = {}) {
@@ -137,13 +247,14 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
     });
     const data = await response.json() as { id?: string; errors?: string[]; error?: string };
     setBusy(false);
+    if (await reconcileOperationAccess(response.status)) return false;
     if (!response.ok) {
       setMessage(data.errors?.join("；") || data.error || "操作失败");
       return false;
     }
     setMessage(action === "publish" ? "小说资料已发布" : action === "submit" ? "小说资料已提交审核" : action === "save" ? "小说资料已保存" : "操作完成");
     if (action === "create" && data.id) setPendingNovelId(data.id);
-    await load();
+    await refreshContent();
     return data;
   }
 
@@ -159,13 +270,16 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
       }),
     });
     const data = await response.json() as { updatedAt?: string; errors?: string[]; error?: string };
+    if (await reconcileOperationAccess(response.status)) {
+      throw new Error("创作权限已失效，请重新登录");
+    }
     if (!response.ok) throw new Error(data.errors?.join("；") || data.error || "自动保存失败");
     const updatedAt = data.updatedAt || new Date().toISOString();
     const updated = { ...chapter, draft: snapshot, title: snapshot.title, summary: snapshot.summary, coverUrl: snapshot.openingImageUrl, updatedAt };
     setChapters((current) => current.map((item) => item.id === chapter.id ? updated : item));
     setActive((current) => current?.id === chapter.id ? updated : current);
     return { updatedAt };
-  }, [apiBase]);
+  }, [apiBase, reconcileOperationAccess]);
 
   async function logout() {
     if (scope === "author") {
@@ -176,7 +290,7 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
         fetch("/api/auth/logout", { method: "POST" }),
       ]);
     }
-    setAuthenticated(false); setNovels([]); setChapters([]); setAssets([]); setFolders([]); setActiveNovel(null); setActive(null); setView("novels");
+    setAuthenticated(false); setContentLoaded(false); setNovels([]); setChapters([]); setAssets([]); setFolders([]); setActiveNovel(null); setActive(null); setView("novels");
   }
 
   const openNovel = (novel: NovelRecord, destination: "novel-settings" | "chapters") => {
@@ -196,17 +310,26 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
     setAssetReturnView(returnView);
     setView("assets");
   };
-  if (authenticated === false) return <StudioGate scope={scope} onRetry={load} />;
+  if (authenticated === null) return <StudioAccessResolving />;
+  if (accessFailed) return <StudioAccessError onRetry={resolveAccess} />;
+  if (authenticated === false) return <StudioGate
+    scope={scope}
+    reason={entryReason}
+    emergencyCredentialEnabled={emergencyCredentialEnabled}
+    onRetry={resolveAccess}
+  />;
+  if (!contentLoaded) return <StudioContentError busy={busy} onRetry={refreshContent} />;
   return <main className="admin-shell">
     {busy && <div className="loading-bar" aria-label="加载中" />}{message && <div className="toast" role="status">{message}</div>}
-    {authenticated && view !== "preview" && <button className="creator-logout" onClick={logout}>{scope === "author" ? "退出登录" : "退出创作"}</button>}
+    {scope === "admin" && adminSource === "local_bypass" && view !== "preview" && <span className="local-admin-badge">本地管理员模式</span>}
+    {authenticated && view !== "preview" && adminSource !== "local_bypass" && <button className="creator-logout" onClick={logout}>{scope === "author" ? "退出登录" : "退出创作"}</button>}
     {view === "novels" && <NovelDashboard scope={scope} novels={novels} onOpen={(novel) => openNovel(novel, "novel-settings")} onChapters={(novel) => openNovel(novel, "chapters")} onAssets={() => openAssets("novels")} onUsers={() => setView("users")} onAction={novelAction} />}
     {view === "novel-settings" && activeNovel && novelDraft && <NovelSettings scope={scope} novel={activeNovel} draft={novelDraft} setDraft={setNovelDraft} assets={assets} folders={folders} onBack={() => setView("novels")} onChapters={() => setView("chapters")} onAssets={() => openAssets("novel-settings")} onSave={() => novelAction("save", activeNovel.id, { novel: novelDraft, meta: { slug: activeNovel.slug, sortOrder: activeNovel.sortOrder } })} onSubmit={() => novelAction(scope === "admin" ? "publish" : "submit", activeNovel.id, { novel: novelDraft })} />}
     {view === "chapters" && activeNovel && <ChapterDashboard scope={scope} novel={activeNovel} chapters={chapters.filter((chapter) => chapter.novelId === activeNovel.id)} onNovels={() => setView("novels")} onSettings={(chapter) => openChapter(chapter, "settings")} onEdit={(chapter) => openChapter(chapter, "editor")} onAssets={() => openAssets("chapters")} onUsers={() => setView("users")} onAction={(action, id, extra = {}) => chapterAction(action, id, action === "create" ? { ...extra, meta: { novelId: activeNovel.id } } : extra)} />}
     {view === "settings" && active && <ChapterSettings scope={scope} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onBack={() => setView("chapters")} onAssets={() => openAssets("settings")} onEdit={() => setView("editor")} onPreview={() => { setPreviewNodeId(story.startNodeId); setPreviewReturnView("settings"); setView("preview"); }} onSave={() => chapterAction("save", active.id, { story, meta: { slug: active.slug, sortOrder: active.sortOrder } })} />}
-    {view === "assets" && <AssetManager scope={scope} apiBase={apiBase} assets={assets} folders={folders} onBack={() => setView(assetReturnView)} onReload={load} onMessage={setMessage} />}
-    {view === "users" && scope === "admin" && <UserManager onBack={() => setView("novels")} onAssets={() => openAssets("users")} />}
-    {view === "editor" && active && <StoryEditor key={active.id} scope={scope} apiBase={apiBase} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onAssetCreated={(asset) => setAssets((current) => [asset, ...current.filter((item) => item.id !== asset.id)])} onBack={() => setView("chapters")} onSettings={() => setView("settings")} onAssets={() => openAssets("editor")} onPreview={(nodeId) => { setPreviewNodeId(nodeId); setPreviewReturnView("editor"); setView("preview"); }} onSave={saveChapterDraft} onPublish={() => chapterAction(scope === "admin" ? "publish" : "submit", active.id, { story })} onRollback={async (version) => { if (scope === "admin" && await chapterAction("rollback", active.id, { version })) setView("chapters"); }} />}
+    {view === "assets" && <AssetManager scope={scope} apiBase={apiBase} assets={assets} folders={folders} onBack={() => setView(assetReturnView)} onReload={refreshContent} onMessage={setMessage} onAccessStatus={reconcileOperationAccess} />}
+    {view === "users" && scope === "admin" && <UserManager onBack={() => setView("novels")} onAssets={() => openAssets("users")} onAccessStatus={reconcileOperationAccess} />}
+    {view === "editor" && active && <StoryEditor key={active.id} scope={scope} apiBase={apiBase} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onAssetCreated={(asset) => setAssets((current) => [asset, ...current.filter((item) => item.id !== asset.id)])} onBack={() => setView("chapters")} onSettings={() => setView("settings")} onAssets={() => openAssets("editor")} onPreview={(nodeId) => { setPreviewNodeId(nodeId); setPreviewReturnView("editor"); setView("preview"); }} onSave={saveChapterDraft} onPublish={() => chapterAction(scope === "admin" ? "publish" : "submit", active.id, { story })} onRollback={async (version) => { if (scope === "admin" && await chapterAction("rollback", active.id, { version })) setView("chapters"); }} onAccessStatus={reconcileOperationAccess} />}
     {view === "preview" && <div className="preview-wrap"><div className="preview-toolbar"><button className="preview-exit" onClick={() => setView(previewReturnView)}>← 返回编辑</button><label>从节点预览<select value={previewNodeId || story.startNodeId} onChange={(event) => setPreviewNodeId(event.target.value)}><option value={story.startNodeId}>章节起点 · {story.nodes.find((node) => node.id === story.startNodeId)?.title}</option>{story.nodes.filter((node) => node.id !== story.startNodeId).map((node) => <option key={node.id} value={node.id}>{node.title} · {node.id}</option>)}</select></label></div><div className="phone-frame"><StoryPreview key={previewNodeId || story.startNodeId} story={story} novelName={activeNovel?.draft.name || ""} initialNodeId={previewNodeId || story.startNodeId} onBack={() => setView(previewReturnView)} /></div></div>}
   </main>;
 }
@@ -236,7 +359,43 @@ function StoryPreview({ story, novelName, initialNodeId, onBack }: {
   />;
 }
 
-function StudioGate({ scope, onRetry }: { scope: StudioScope; onRetry: () => Promise<void> }) {
+function StudioAccessResolving() {
+  return <main className="creator-login"><section>
+    <Brand />
+    <p className="eyebrow">CREATOR ACCESS</p>
+    <h1>创作中心</h1>
+    <p role="status">正在确认创作权限…</p>
+  </section></main>;
+}
+
+function StudioAccessError({ onRetry }: { onRetry: () => Promise<void> }) {
+  return <main className="creator-login"><section>
+    <Brand />
+    <p className="eyebrow">CREATOR ACCESS</p>
+    <h1>暂时无法确认权限</h1>
+    <p role="alert">权限服务暂时不可用，未将你误判为未登录。</p>
+    <button className="primary" onClick={() => void onRetry()}>重新检查权限</button>
+    <Link href="/">← 返回读者端</Link>
+  </section></main>;
+}
+
+function StudioContentError({ busy, onRetry }: { busy: boolean; onRetry: () => void }) {
+  return <main className="creator-login"><section>
+    <Brand />
+    <p className="eyebrow">CREATOR CONTENT</p>
+    <h1>后台内容加载失败</h1>
+    <p role="alert">创作权限已经确认，小说和素材暂时没有加载成功。</p>
+    <button className="primary" disabled={busy} onClick={onRetry}>{busy ? "正在重试…" : "重新加载内容"}</button>
+    <Link href="/">← 返回读者端</Link>
+  </section></main>;
+}
+
+function StudioGate({ scope, reason, emergencyCredentialEnabled, onRetry }: {
+  scope: StudioScope;
+  reason: CreatorAccessDecision["reason"];
+  emergencyCredentialEnabled: boolean;
+  onRetry: () => Promise<void>;
+}) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -257,13 +416,21 @@ function StudioGate({ scope, onRetry }: { scope: StudioScope; onRetry: () => Pro
     <Brand />
     <p className="eyebrow">{scope === "admin" ? "ADMIN ACCESS" : "AUTHOR STUDIO"}</p>
     <h1>{scope === "admin" ? "进入创作后台" : "请以作者账号登录"}</h1>
-    <p>{scope === "admin" ? "使用创作者密码登录，或先以已授权的管理员账号登录。" : "读者账号需要由管理员升级为作者后才能进入工作台。"}</p>
-    {scope === "admin" ? <form onSubmit={creatorLogin}>
-      <label>创作者密码<input autoFocus autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-      {error && <p className="creator-login-error" role="alert">{error}</p>}
-      <button className="primary" disabled={submitting || !password}>{submitting ? "正在验证…" : "以创作者身份登录"}</button>
-    </form> : <Link className="primary auth-link-button" href="/login?next=/studio">登录账号</Link>}
-    {scope === "admin" && <Link className="ghost link-button" href="/login?next=/admin">使用管理员账号登录</Link>}
+    <p>{reason === "reader_account"
+      ? "当前账号是读者账号，需要管理员升级角色后才能进入创作工作台。"
+      : scope === "admin"
+        ? "请使用已授权的管理员账号登录。"
+        : "请使用已升级为作者的账号登录。"}</p>
+    <Link className="primary auth-link-button" href="/login?next=/creator">登录账号</Link>
+    {scope === "admin" && emergencyCredentialEnabled && <details className="emergency-login">
+      <summary>使用应急恢复密钥</summary>
+      <form onSubmit={creatorLogin}>
+        <label>应急恢复密钥<input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {error && <p className="creator-login-error" role="alert">{error}</p>}
+        <button className="ghost" disabled={submitting || !password}>{submitting ? "正在验证…" : "验证应急密钥"}</button>
+      </form>
+    </details>}
+    {scope === "admin" && !emergencyCredentialEnabled && <p className="creator-login-note">当前未配置应急恢复密钥，管理员密码输入已隐藏。</p>}
     <button className="ghost" onClick={() => void onRetry()}>重新检查权限</button>
     <Link href="/">← 返回读者端</Link>
   </section></main>;
@@ -401,15 +568,16 @@ type ManagedUser = {
   createdAt: string;
 };
 
-function UserManager({ onBack, onAssets }: { onBack: () => void; onAssets: () => void }) {
+function UserManager({ onBack, onAssets, onAccessStatus }: { onBack: () => void; onAssets: () => void; onAccessStatus: ReconcileOperationAccess }) {
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [message, setMessage] = useState("");
   const load = useCallback(async () => {
     const response = await fetch("/admin/api/users");
+    if (await onAccessStatus(response.status)) return;
     const data = await response.json() as { users?: ManagedUser[]; error?: string };
     if (!response.ok) { setMessage(data.error || "用户加载失败"); return; }
     setUsers(data.users || []);
-  }, []);
+  }, [onAccessStatus]);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   const update = async (id: string, patch: Partial<Pick<ManagedUser, "role" | "status">>) => {
     const response = await fetch("/admin/api/users", {
@@ -417,6 +585,7 @@ function UserManager({ onBack, onAssets }: { onBack: () => void; onAssets: () =>
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id, ...patch }),
     });
+    if (await onAccessStatus(response.status)) return;
     const data = await response.json() as { error?: string };
     if (!response.ok) { setMessage(data.error || "用户更新失败"); return; }
     setMessage("用户权限已更新");
@@ -425,7 +594,7 @@ function UserManager({ onBack, onAssets }: { onBack: () => void; onAssets: () =>
   return <div className="studio"><StudioAside scope="admin" active="users" onNovels={onBack} onAssets={onAssets} onUsers={() => {}} /><section className="studio-main user-manager"><header><div><button className="back-link" onClick={onBack}>← 小说管理</button><p>ACCESS CONTROL</p><h1>用户与角色</h1></div></header>{message && <p className="inline-message" role="status">{message}</p>}<div className="user-table"><div className="user-row user-head"><span>用户</span><span>邮箱状态</span><span>角色</span><span>账号状态</span></div>{users.map((user) => <div className="user-row" key={user.id}><span><b>{user.displayName}</b><small>{user.email}<br />{new Date(user.createdAt).toLocaleDateString("zh-CN")}</small></span><span>{user.emailVerifiedAt ? "已验证" : "待验证"}</span><select aria-label={`${user.displayName}的角色`} value={user.role} disabled={user.status === "pending"} onChange={(event) => void update(user.id, { role: event.target.value as ManagedUser["role"] })}><option value="reader">读者</option><option value="author">作者</option><option value="admin">管理员</option></select><select aria-label={`${user.displayName}的状态`} value={user.status === "pending" ? "pending" : user.status} disabled={user.status === "pending"} onChange={(event) => void update(user.id, { status: event.target.value as "active" | "disabled" })}><option value="pending" disabled>待验证</option><option value="active">正常</option><option value="disabled">禁用</option></select></div>)}</div></section></div>;
 }
 
-function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders, onAssetCreated, onBack, onSettings, onAssets, onPreview, onSave, onPublish, onRollback }: {
+function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders, onAssetCreated, onBack, onSettings, onAssets, onPreview, onSave, onPublish, onRollback, onAccessStatus }: {
   scope: StudioScope;
   apiBase: string;
   chapter: ChapterRecord;
@@ -441,6 +610,7 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
   onSave: (chapter: ChapterRecord, snapshot: StoryDocument) => Promise<{ updatedAt: string }>;
   onPublish: () => void;
   onRollback: (version: number) => void;
+  onAccessStatus: ReconcileOperationAccess;
 }) {
   const [selectedId, setSelectedId] = useState(story.startNodeId);
   const [tab, setTab] = useState<"content" | "image" | "music" | "terminal" | "versions">("content");
@@ -457,7 +627,16 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
   const runSaveRef = useRef<() => Promise<void>>(async () => {});
   const recoveryKey = `fantasy-studio-draft:${chapter.id}`;
   useEffect(() => { chapterRef.current = chapter; }, [chapter]);
-  useEffect(() => { fetch(`${apiBase}/chapters/versions?chapterId=${chapter.id}`).then((response) => response.json() as Promise<{ versions?: { version: number; createdAt: string }[] }>).then((data) => setVersions(data.versions || [])); }, [apiBase, chapter.id]);
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(async () => {
+      const response = await fetch(`${apiBase}/chapters/versions?chapterId=${chapter.id}`);
+      if (await onAccessStatus(response.status) || !active) return;
+      const data = await response.json() as { versions?: { version: number; createdAt: string }[] };
+      if (active) setVersions(data.versions || []);
+    });
+    return () => { active = false; };
+  }, [apiBase, chapter.id, onAccessStatus]);
   const errors = useMemo(() => validateStory(story), [story]);
   const publishErrors = useMemo(() => [...errors, ...validateStoryMedia(story)], [errors, story]);
   const lengthErrors = useMemo(() => validateStoryBodyLengths(story), [story]);
@@ -600,10 +779,11 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
           assets={assets}
           folders={folders}
           onAssetCreated={onAssetCreated}
+          onAccessStatus={onAccessStatus}
           onChange={(choices) => updateNode({ choices })}
         />
         <div className={`validation ${publishErrors.length ? "has-errors" : warnings.length ? "has-warnings" : "valid"}`}><b>{publishErrors.length ? `发现 ${publishErrors.length} 个发布问题` : warnings.length ? `结构检查通过，另有 ${warnings.length} 条创作建议` : "故事结构与媒体检查通过"}</b>{publishErrors.map((error) => <p key={error}>• {error}</p>)}{warnings.map((warning) => <p key={warning}>⚠ {warning}</p>)}</div>
-      </> : tab === "image" ? <NodeDisplayImageEditor node={selected} assets={assets} folders={folders} onChange={updateNode} /> : tab === "music" ? <MusicCueEditor story={story} assets={assets} folders={folders} setStory={setStory} /> : tab === "terminal" ? <TerminalEditor apiBase={apiBase} story={story} node={selected} assets={assets} folders={folders} onAssetCreated={onAssetCreated} setStory={setStory} onChangeNode={updateNode} /> : <div className="version-panel"><h2>发布记录</h2>{versions.map((item) => <div key={item.version}><span><b>版本 v{item.version}</b><small>{new Date(item.createdAt).toLocaleString("zh-CN")}</small></span>{item.version === chapter.version ? <em>当前版本</em> : scope === "admin" ? <button onClick={() => { if (confirm(`恢复版本 v${item.version}？`)) onRollback(item.version); }}>恢复</button> : null}</div>)}</div>}</section>
+      </> : tab === "image" ? <NodeDisplayImageEditor node={selected} assets={assets} folders={folders} onChange={updateNode} /> : tab === "music" ? <MusicCueEditor story={story} assets={assets} folders={folders} setStory={setStory} /> : tab === "terminal" ? <TerminalEditor apiBase={apiBase} story={story} node={selected} assets={assets} folders={folders} onAssetCreated={onAssetCreated} setStory={setStory} onChangeNode={updateNode} onAccessStatus={onAccessStatus} /> : <div className="version-panel"><h2>发布记录</h2>{versions.map((item) => <div key={item.version}><span><b>版本 v{item.version}</b><small>{new Date(item.createdAt).toLocaleString("zh-CN")}</small></span>{item.version === chapter.version ? <em>当前版本</em> : scope === "admin" ? <button onClick={() => { if (confirm(`恢复版本 v${item.version}？`)) onRollback(item.version); }}>恢复</button> : null}</div>)}</div>}</section>
     </div></div>;
 }
 
@@ -617,13 +797,14 @@ const interactionLabels: Record<InteractionPreset, string> = {
   push: "推进",
 };
 
-function ChoiceEditor({ apiBase, node, story, assets, folders, onAssetCreated, onChange }: {
+function ChoiceEditor({ apiBase, node, story, assets, folders, onAssetCreated, onAccessStatus, onChange }: {
   apiBase: string;
   node: StoryNode;
   story: StoryDocument;
   assets: AssetRecord[];
   folders: AssetFolder[];
   onAssetCreated: (asset: AssetRecord) => void;
+  onAccessStatus: ReconcileOperationAccess;
   onChange: (choices: StoryChoice[]) => void;
 }) {
   const patchChoice = (id: string, patch: Partial<StoryChoice>) => {
@@ -642,6 +823,7 @@ function ChoiceEditor({ apiBase, node, story, assets, folders, onAssetCreated, o
       assets={assets}
       folders={folders}
       onAssetCreated={onAssetCreated}
+      onAccessStatus={onAccessStatus}
       onChange={(patch) => patchChoice(choice.id, patch)}
       onDelete={() => onChange(node.choices.filter((item) => item.id !== choice.id))}
     />)}</div>
@@ -649,7 +831,7 @@ function ChoiceEditor({ apiBase, node, story, assets, folders, onAssetCreated, o
   </section>;
 }
 
-function ChoiceCard({ apiBase, choice, story, index, nodes, assets, folders, onAssetCreated, onChange, onDelete }: {
+function ChoiceCard({ apiBase, choice, story, index, nodes, assets, folders, onAssetCreated, onAccessStatus, onChange, onDelete }: {
   apiBase: string;
   choice: StoryChoice;
   story: StoryDocument;
@@ -658,6 +840,7 @@ function ChoiceCard({ apiBase, choice, story, index, nodes, assets, folders, onA
   assets: AssetRecord[];
   folders: AssetFolder[];
   onAssetCreated: (asset: AssetRecord) => void;
+  onAccessStatus: ReconcileOperationAccess;
   onChange: (patch: Partial<StoryChoice>) => void;
   onDelete: () => void;
 }) {
@@ -688,6 +871,7 @@ function ChoiceCard({ apiBase, choice, story, index, nodes, assets, folders, onA
           generationDurationSeconds,
         }),
       });
+      if (await onAccessStatus(response.status)) return;
       const data = await response.json() as { asset?: AssetRecord; error?: string };
       if (!response.ok || !data.asset) throw new Error(data.error || "音效生成失败");
       onAssetCreated(data.asset);
@@ -710,7 +894,7 @@ function ChoiceCard({ apiBase, choice, story, index, nodes, assets, folders, onA
       {generationError && <p className="field-error" role="alert">{generationError}</p>}
       <AssetSelect label="全屏反馈图片" type="image" value={choice.feedbackImageAssetId || choice.feedbackImageUrl} assets={assets} folders={folders} onChange={(feedbackImageAssetId, feedbackImageUrl) => onChange({ feedbackImageAssetId, feedbackImageUrl })} />
       {(choice.feedbackImageAssetId || choice.feedbackImageUrl) && <><label>反馈图片替代文本<input maxLength={500} value={choice.feedbackImageAlt} placeholder="描述图片内容" onChange={(event) => onChange({ feedbackImageAlt: event.target.value })} /></label><div className="duration-control"><label>图片展示时长 <b>{(choice.feedbackImageDurationMs / 1000).toFixed(1)} 秒</b><input type="range" min="100" max="30000" step="100" value={choice.feedbackImageDurationMs} onChange={(event) => onChange({ feedbackImageDurationMs: Number(event.target.value) })} /></label><input aria-label="反馈图片展示时长（秒）" type="number" min="0.1" max="30" step="0.1" value={choice.feedbackImageDurationMs / 1000} onChange={(event) => onChange({ feedbackImageDurationMs: Math.round(Math.max(0.1, Math.min(30, Number(event.target.value) || 0.1)) * 1000) })} /></div><ImagePresentationEditor value={choice.feedbackImagePresentation} url={choice.feedbackImageUrl} alt={choice.feedbackImageAlt} onChange={(feedbackImagePresentation) => onChange({ feedbackImagePresentation })} /></>}
-      <ChoiceTerminalEditor apiBase={apiBase} choice={choice} story={story} assets={assets} folders={folders} onAssetCreated={onAssetCreated} onChange={onChange} />
+      <ChoiceTerminalEditor apiBase={apiBase} choice={choice} story={story} assets={assets} folders={folders} onAssetCreated={onAssetCreated} onAccessStatus={onAccessStatus} onChange={onChange} />
       <p className="help-copy compact">图片结束后立即进入目标节点；音效可继续跨节点播放，直到自然结束或达到最长时间。</p>
     </div></details>
   </article>;
@@ -722,13 +906,14 @@ const terminalTaskStatusLabels: Record<TerminalTaskStatus, string> = {
   failed: "已失败",
 };
 
-function ChoiceTerminalEditor({ apiBase, choice, story, assets, folders, onAssetCreated, onChange }: {
+function ChoiceTerminalEditor({ apiBase, choice, story, assets, folders, onAssetCreated, onAccessStatus, onChange }: {
   apiBase: string;
   choice: StoryChoice;
   story: StoryDocument;
   assets: AssetRecord[];
   folders: AssetFolder[];
   onAssetCreated: (asset: AssetRecord) => void;
+  onAccessStatus: ReconcileOperationAccess;
   onChange: (patch: Partial<StoryChoice>) => void;
 }) {
   const [generating, setGenerating] = useState(false);
@@ -761,6 +946,7 @@ function ChoiceTerminalEditor({ apiBase, choice, story, assets, folders, onAsset
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: choice.terminalMessage, voiceId: story.terminal.voiceId, voiceName: story.terminal.voiceName }),
       });
+      if (await onAccessStatus(response.status)) return;
       const data = await response.json() as { asset?: AssetRecord; sourceKey?: string; error?: string };
       if (!response.ok || !data.asset || !data.sourceKey) throw new Error(data.error || "AI 语音生成失败");
       onAssetCreated(data.asset);
@@ -853,7 +1039,7 @@ function NodeDisplayImageEditor({ node, assets, folders, onChange }: {
   </div>;
 }
 
-function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated, setStory, onChangeNode }: {
+function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated, setStory, onChangeNode, onAccessStatus }: {
   apiBase: string;
   story: StoryDocument;
   node: StoryNode;
@@ -862,6 +1048,7 @@ function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated,
   onAssetCreated: (asset: AssetRecord) => void;
   setStory: (story: StoryDocument) => void;
   onChangeNode: (patch: Partial<StoryNode>) => void;
+  onAccessStatus: ReconcileOperationAccess;
 }) {
   const [voices, setVoices] = useState<TerminalVoiceOption[]>([]);
   const [voiceQuery, setVoiceQuery] = useState("");
@@ -874,12 +1061,13 @@ function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated,
     setLoadingVoices(true); setVoiceError("");
     try {
       const response = await fetch(`${apiBase}/assets/tts`);
+      if (await onAccessStatus(response.status)) return;
       const data = await response.json() as { voices?: TerminalVoiceOption[]; error?: string };
       if (!response.ok) throw new Error(data.error || "AI 音色加载失败");
       setVoices(data.voices || []);
     } catch (error) { setVoiceError(error instanceof Error ? error.message : "AI 音色加载失败"); }
     finally { setLoadingVoices(false); }
-  }, [apiBase]);
+  }, [apiBase, onAccessStatus]);
   useEffect(() => { queueMicrotask(() => void loadVoices()); }, [loadVoices]);
   const filteredVoices = voices.filter((voice) => `${voice.name} ${Object.values(voice.labels).join(" ")}`.toLowerCase().includes(voiceQuery.toLowerCase()));
   const selectedVoice = voices.find((voice) => voice.id === story.terminal.voiceId);
@@ -889,6 +1077,7 @@ function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated,
     setGenerating(true); setVoiceError("");
     try {
       const response = await fetch(`${apiBase}/assets/tts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: node.terminalEvent.message, voiceId: story.terminal.voiceId, voiceName: story.terminal.voiceName }) });
+      if (await onAccessStatus(response.status)) return;
       const data = await response.json() as { asset?: AssetRecord; sourceKey?: string; error?: string };
       if (!response.ok || !data.asset || !data.sourceKey) throw new Error(data.error || "AI 语音生成失败");
       onAssetCreated(data.asset);
@@ -1221,11 +1410,11 @@ function AssetSelect({ label, type, value, assets, folders, onChange }: { label:
   return <label>{label}<select value={normalizedValue} onChange={(event) => { const asset = assets.find((item) => item.id === event.target.value); onChange(asset?.id || "", asset?.url || ""); }}><option value="">无</option>{folders.map((folder) => <optgroup key={folder.id} label={folder.name}>{assets.filter((asset) => asset.type === type && asset.folderId === folder.id && asset.status === "ready").map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</optgroup>)}<optgroup label="未分类">{assets.filter((asset) => asset.type === type && !asset.folderId && asset.status === "ready").map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</optgroup><optgroup label="全局素材">{assets.filter((asset) => asset.type === type && asset.folderId && !knownFolders.has(asset.folderId) && asset.status === "ready").map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</optgroup></select></label>;
 }
 
-function AssetManager({ scope, apiBase, assets, folders, onBack, onReload, onMessage }: { scope: StudioScope; apiBase: string; assets: AssetRecord[]; folders: AssetFolder[]; onBack: () => void; onReload: () => Promise<void>; onMessage: (message: string) => void }) {
+function AssetManager({ scope, apiBase, assets, folders, onBack, onReload, onMessage, onAccessStatus }: { scope: StudioScope; apiBase: string; assets: AssetRecord[]; folders: AssetFolder[]; onBack: () => void; onReload: () => Promise<void>; onMessage: (message: string) => void; onAccessStatus: ReconcileOperationAccess }) {
   const [folderId, setFolderId] = useState("all"); const [type, setType] = useState<"all" | AssetType>("all"); const [query, setQuery] = useState(""); const [sort, setSort] = useState("newest"); const [uploads, setUploads] = useState<UploadItem[]>([]); const input = useRef<HTMLInputElement>(null);
   const isUploading = uploads.some((item) => item.status === "uploading" || item.status === "queued");
   const visible = useMemo(() => assets.filter((asset) => (folderId === "all" || (folderId === "root" ? !asset.folderId : asset.folderId === folderId)) && (type === "all" || asset.type === type) && asset.name.toLowerCase().includes(query.toLowerCase())).sort((a, b) => sort === "name" ? a.name.localeCompare(b.name, "zh-CN") : sort === "size" ? b.size - a.size : b.updatedAt.localeCompare(a.updatedAt)), [assets, folderId, query, sort, type]);
-  const apiPatch = async (body: Record<string, unknown>) => { const response = await fetch(`${apiBase}/assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); const data = await response.json() as { error?: string }; if (!response.ok) onMessage(data.error || "操作失败"); else await onReload(); };
+  const apiPatch = async (body: Record<string, unknown>) => { const response = await fetch(`${apiBase}/assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); if (await onAccessStatus(response.status)) return; const data = await response.json() as { error?: string }; if (!response.ok) onMessage(data.error || "操作失败"); else await onReload(); };
   const inspectDuration = (file: File) => new Promise<number>((resolve) => { if (!file.type.startsWith("video/")) return resolve(0); const video = document.createElement("video"); const url = URL.createObjectURL(file); video.preload = "metadata"; video.onloadedmetadata = () => { const duration = video.duration; URL.revokeObjectURL(url); resolve(Number.isFinite(duration) ? duration : 0); }; video.onerror = () => { URL.revokeObjectURL(url); resolve(0); }; video.src = url; });
   const chooseFiles = async (files: FileList | null) => {
     if (!files) return; const items: UploadItem[] = [];
@@ -1241,10 +1430,10 @@ function AssetManager({ scope, apiBase, assets, folders, onBack, onReload, onMes
     setUploads((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: "uploading", progress: 0 } : entry));
     const data = new FormData(); data.append("file", item.file); data.append("duration", String(item.duration)); if (folderId !== "all" && folderId !== "root") data.append("folderId", folderId);
     const xhr = new XMLHttpRequest(); xhr.open("POST", `${apiBase}/assets`); xhr.upload.onprogress = (event) => { if (event.lengthComputable) setUploads((current) => current.map((entry) => entry.id === item.id ? { ...entry, progress: Math.round(event.loaded / event.total * 100) } : entry)); };
-    xhr.onload = () => { if (xhr.status >= 200 && xhr.status < 300) { setUploads((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: "done", progress: 100 } : entry)); onReload(); } else { let error = "上传失败"; try { error = JSON.parse(xhr.responseText).error || error; } catch {} setUploads((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: "error", error } : entry)); } };
+    xhr.onload = async () => { if (await onAccessStatus(xhr.status)) return; if (xhr.status >= 200 && xhr.status < 300) { setUploads((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: "done", progress: 100 } : entry)); onReload(); } else { let error = "上传失败"; try { error = JSON.parse(xhr.responseText).error || error; } catch {} setUploads((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: "error", error } : entry)); } };
     xhr.onerror = () => setUploads((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: "error", error: "网络中断" } : entry)); xhr.send(data);
   };
-  const deleteAsset = async (asset: AssetRecord) => { if (!confirm(`删除素材「${asset.name}」？`)) return; const response = await fetch(`${apiBase}/assets?id=${encodeURIComponent(asset.id)}`, { method: "DELETE" }); const data = await response.json() as { error?: string; references?: { chapterTitle: string; nodeTitle: string; field: string; version: string }[] }; if (response.status === 409) { alert(`${data.error}\n${(data.references || []).map((ref) => `${ref.chapterTitle} / ${ref.nodeTitle} / ${ref.field} (${ref.version})`).join("\n")}`); } else if (!response.ok) onMessage(data.error || "删除失败"); else { onMessage("素材已删除"); onReload(); } };
+  const deleteAsset = async (asset: AssetRecord) => { if (!confirm(`删除素材「${asset.name}」？`)) return; const response = await fetch(`${apiBase}/assets?id=${encodeURIComponent(asset.id)}`, { method: "DELETE" }); if (await onAccessStatus(response.status)) return; const data = await response.json() as { error?: string; references?: { chapterTitle: string; nodeTitle: string; field: string; version: string }[] }; if (response.status === 409) { alert(`${data.error}\n${(data.references || []).map((ref) => `${ref.chapterTitle} / ${ref.nodeTitle} / ${ref.field} (${ref.version})`).join("\n")}`); } else if (!response.ok) onMessage(data.error || "删除失败"); else { onMessage("素材已删除"); onReload(); } };
   return <div className="studio"><StudioAside scope={scope} active="assets" onNovels={onBack} onChapters={onBack} onAssets={() => {}} /><section className="studio-main asset-library"><header><div><button className="back-link" onClick={onBack}>← 返回创作页面</button><p>MEDIA LIBRARY</p><h1>素材库</h1></div><button className="primary" disabled={isUploading} onClick={() => input.current?.click()}>{isUploading ? "正在上传…" : "＋ 上传素材"}</button><input ref={input} hidden disabled={isUploading} multiple type="file" accept="image/*,audio/*,video/mp4,video/webm" onChange={(event) => chooseFiles(event.target.files)} /></header>
     <div className="asset-controls"><select value={folderId} onChange={(event) => setFolderId(event.target.value)}><option value="all">全部文件夹</option><option value="root">未分类</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value as typeof type)}><option value="all">全部类型</option><option value="image">图片</option><option value="audio">音频</option><option value="video">视频</option></select><input placeholder="搜索素材" value={query} onChange={(event) => setQuery(event.target.value)} /><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="newest">最近更新</option><option value="name">按名称</option><option value="size">按大小</option></select><button onClick={() => { const name = prompt("新文件夹名称"); if (name) apiPatch({ action: "create-folder", name }); }}>＋ 文件夹</button></div>
     <div className="folder-chips">{folders.map((folder) => <span key={folder.id}><button onClick={() => setFolderId(folder.id)}>{folder.name}</button><button title="重命名" onClick={() => { const name = prompt("文件夹名称", folder.name); if (name) apiPatch({ action: "rename-folder", id: folder.id, name }); }}>✎</button><button title="删除文件夹" onClick={() => { if (confirm("删除文件夹？素材会移到未分类。")) apiPatch({ action: "delete-folder", id: folder.id }); }}>×</button></span>)}</div>

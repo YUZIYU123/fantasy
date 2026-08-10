@@ -1,7 +1,7 @@
 import { creationLifecycle } from "../../../../../db/creation-lifecycle";
 import { creationLifecycleErrorResponse } from "../../../../_creation-lifecycle-http";
-import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
-import { sessionAuthorization } from "../../../../../lib/session-authorization";
+import { SessionAuthorizationError, sessionAuthorization } from "../../../../../lib/session-authorization";
+import { sessionAuthorizationResponse } from "../../../../_session-authorization-http";
 
 export async function GET(request: Request) {
   try {
@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const response = creationLifecycleErrorResponse(error);
     if (response) return response;
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     throw error;
   }
 }

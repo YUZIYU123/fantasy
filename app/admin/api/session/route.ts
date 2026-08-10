@@ -1,14 +1,24 @@
-import { adminAuthResponse } from "../../../../lib/admin-auth";
-import { sessionAuthorization, AdministratorCapabilityError } from "../../../../lib/session-authorization";
+import {
+  sessionAuthorization,
+} from "../../../../lib/session-authorization";
+import { sessionAuthorizationResponse } from "../../../_session-authorization-http";
 
 const noStore = { "cache-control": "no-store" };
 
 export async function GET(request: Request) {
   try {
-    const identity = await sessionAuthorization.requireAdministrator(request);
-    return Response.json({ authenticated: true, role: identity.role, email: identity.email }, { headers: noStore });
+    const decision = await sessionAuthorization.resolveCreatorAccess(request, "admin_workspace");
+    if (decision.outcome === "redirect") {
+      return Response.json({ authenticated: false, ...decision }, { headers: noStore });
+    }
+    if (decision.outcome === "deny") {
+      return Response.json({ authenticated: false, ...decision }, { headers: noStore });
+    }
+    const identity = decision.administrator;
+    if (!identity) return sessionAuthorizationResponse(new Error("管理员身份缺失"));
+    return Response.json({ authenticated: true, ...decision, role: identity.role, email: identity.email }, { headers: noStore });
   } catch (error) {
-    return adminAuthResponse(error);
+    return sessionAuthorizationResponse(error);
   }
 }
 
@@ -24,13 +34,7 @@ export async function POST(request: Request) {
     const cookie = await sessionAuthorization.authenticateSharedCredential(request, password);
     return Response.json({ authenticated: true, role: "admin" }, { headers: { ...noStore, "set-cookie": cookie } });
   } catch (error) {
-    if (error instanceof AdministratorCapabilityError) {
-      return Response.json({ error: error.message }, {
-        status: error.status,
-        headers: { ...noStore, ...(error.retryAfter ? { "retry-after": String(error.retryAfter) } : {}) },
-      });
-    }
-    return adminAuthResponse(error);
+    return sessionAuthorizationResponse(error);
   }
 }
 

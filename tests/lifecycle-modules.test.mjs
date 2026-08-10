@@ -129,7 +129,7 @@ test("SessionAuthorization 每次请求读取最新账号状态", async () => {
   assert.equal(response.status, 200, runtime.output);
   const payload = await response.json();
   assert.equal(payload.before.status, "active");
-  assert.deepEqual(payload.administrator, { role: "admin", email: payload.before.email });
+  assert.deepEqual(payload.administrator, { role: "admin", email: payload.before.email, source: "account" });
   assert.equal(payload.after, null);
 });
 

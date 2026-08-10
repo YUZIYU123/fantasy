@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { SessionAuthorizationError } from "./session-authorization-module";
 
 type AdminEnv = {
   CREATOR_PASSWORD_HASH?: string;
@@ -10,8 +11,6 @@ const SESSION_COOKIE = "fantasy_creator_session";
 const SESSION_VERSION = "v1";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const encoder = new TextEncoder();
-
-export type AdminIdentity = { role: "admin"; email: string };
 
 function values() {
   return env as unknown as AdminEnv;
@@ -84,7 +83,8 @@ export function creatorAuthConfigured() {
 
 export function localAdminBypassEnabled(request: Request) {
   const hostname = new URL(request.url).hostname;
-  return (hostname === "localhost" || hostname === "127.0.0.1") && values().LOCAL_ADMIN_BYPASS === "true";
+  const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+  return isLocal && values().LOCAL_ADMIN_BYPASS === "true";
 }
 
 export async function verifyCreatorPassword(password: string) {
@@ -95,7 +95,7 @@ export async function verifyCreatorPassword(password: string) {
 
 export async function createCreatorSessionCookie(request: Request) {
   const secret = values().CREATOR_SESSION_SECRET;
-  if (!secret || !creatorAuthConfigured()) throw new AdminAuthError("尚未配置创作者登录密钥", 503);
+  if (!secret || !creatorAuthConfigured()) throw new SessionAuthorizationError("尚未配置创作者登录密钥", 503);
   const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const payload = `${SESSION_VERSION}.${expiresAt}`;
   const token = `${payload}.${await signSession(payload, secret)}`;
@@ -104,19 +104,4 @@ export async function createCreatorSessionCookie(request: Request) {
 
 export function clearCreatorSessionCookie(request: Request) {
   return `${SESSION_COOKIE}=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0${cookieSecurity(request)}`;
-}
-
-export class AdminAuthError extends Error {
-  constructor(message: string, readonly status = 401) {
-    super(message);
-  }
-}
-
-export function adminAuthResponse(error: unknown) {
-  const message = error instanceof Error ? error.message : "管理员认证失败";
-  const status = error instanceof AdminAuthError ? error.status : 401;
-  return Response.json({ error: message }, {
-    status,
-    headers: { "cache-control": "no-store" },
-  });
 }

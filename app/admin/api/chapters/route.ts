@@ -2,8 +2,8 @@ import {
   creationLifecycle,
 } from "../../../../db/creation-lifecycle";
 import { creationLifecycleErrorResponse, creationLifecycleResponse, parseCreationCommand } from "../../../_creation-lifecycle-http";
-import { adminAuthResponse, AdminAuthError } from "../../../../lib/admin-auth";
-import { sessionAuthorization } from "../../../../lib/session-authorization";
+import { SessionAuthorizationError, sessionAuthorization } from "../../../../lib/session-authorization";
+import { sessionAuthorizationResponse } from "../../../_session-authorization-http";
 
 const actor = { kind: "administrator" } as const;
 
@@ -14,7 +14,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const response = creationLifecycleErrorResponse(error);
     if (response) return response;
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     throw error;
   }
 }
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const response = creationLifecycleErrorResponse(error);
     if (response) return response;
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     throw error;
   }
 }

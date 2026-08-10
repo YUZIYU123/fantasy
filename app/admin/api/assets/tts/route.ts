@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
-import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
-import { sessionAuthorization } from "../../../../../lib/session-authorization";
+import { SessionAuthorizationError, sessionAuthorization } from "../../../../../lib/session-authorization";
+import { sessionAuthorizationResponse } from "../../../../_session-authorization-http";
 import { AuthError } from "../../../../../lib/auth";
 import { ElevenLabsTerminalSpeechProvider, TerminalSpeechError } from "../../../../../lib/tts";
 
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     return Response.json({ voices: await provider().listVoices() });
   } catch (error) {
     if (error instanceof TerminalSpeechError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     return Response.json({ error: "AI 音色加载失败" }, { status: 500 });
   }
 }
@@ -36,8 +36,8 @@ export async function POST(request: Request) {
     const lifecycleResponse = assetLifecycleErrorResponse(error);
     if (lifecycleResponse) return lifecycleResponse;
     if (error instanceof TerminalSpeechError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+    if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     if (error instanceof AuthError) return Response.json({ error: error.message }, { status: error.status });
-    if (error instanceof AdminAuthError) return adminAuthResponse(error);
     return Response.json({ error: "AI 终端语音保存失败，请稍后重试" }, { status: 500 });
   }
 }
