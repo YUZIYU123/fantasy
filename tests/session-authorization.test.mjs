@@ -20,7 +20,7 @@ function sharedCredentialAdapter(configured = false) {
 test("本地管理员入口在账号存储不可用时仍优先进入管理员后台", async () => {
   let accountLookups = 0;
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => {
+    findSessionAccount: async () => {
       accountLookups += 1;
       throw new Error("D1 unavailable");
     },
@@ -48,12 +48,13 @@ test("本地管理员入口在账号存储不可用时仍优先进入管理员�
 
 test("管理员账号从统一入口进入管理员后台", async () => {
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => ({
+    findSessionAccount: async () => ({
       id: "admin-1",
       email: "admin@example.com",
       displayName: "管理员",
       role: "admin",
       status: "active",
+      expiresAt: "2099-01-01T00:00:00.000Z",
     }),
     localAdministratorEnabled: () => false,
     sharedCredential: sharedCredentialAdapter(),
@@ -76,12 +77,13 @@ test("管理员账号从统一入口进入管理员后台", async () => {
 
 test("作者账号进入作者工作台并从管理员后台纠正回作者工作台", async () => {
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => ({
+    findSessionAccount: async () => ({
       id: "author-1",
       email: "author@example.com",
       displayName: "作者",
       role: "author",
       status: "active",
+      expiresAt: "2099-01-01T00:00:00.000Z",
     }),
     localAdministratorEnabled: () => false,
     sharedCredential: sharedCredentialAdapter(),
@@ -112,12 +114,13 @@ test("作者账号进入作者工作台并从管理员后台纠正回作者工�
 
 test("读者账号被拒绝进入工作台并获得明确的恢复密钥可用状态", async () => {
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => ({
+    findSessionAccount: async () => ({
       id: "reader-1",
       email: "reader@example.com",
       displayName: "读者",
       role: "reader",
       status: "active",
+      expiresAt: "2099-01-01T00:00:00.000Z",
     }),
     localAdministratorEnabled: () => false,
     sharedCredential: sharedCredentialAdapter(true),
@@ -148,7 +151,7 @@ test("读者账号被拒绝进入工作台并获得明确的恢复密钥可用�
 
 test("未登录访问者由统一入口转到登录且管理员工作台明确恢复密钥不可用", async () => {
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => null,
+    findSessionAccount: async () => null,
     localAdministratorEnabled: () => false,
     sharedCredential: sharedCredentialAdapter(false),
   });
@@ -180,7 +183,7 @@ test("有效的应急恢复会话只在管理员工作台授予管理员能力",
   const sharedCredential = sharedCredentialAdapter(true);
   sharedCredential.hasSession = async () => true;
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => null,
+    findSessionAccount: async () => null,
     localAdministratorEnabled: () => false,
     sharedCredential,
   });
@@ -202,7 +205,7 @@ test("有效的应急恢复会话只在管理员工作台授予管理员能力",
 
 test("管理员能力与创作入口复用同一角色优先级", async () => {
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => {
+    findSessionAccount: async () => {
       throw new Error("本地管理员不应查询账号存储");
     },
     localAdministratorEnabled: () => true,
@@ -226,7 +229,7 @@ test("未配置应急恢复密钥时拒绝验证且不调用密钥 adapter", asy
     return true;
   };
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => null,
+    findSessionAccount: async () => null,
     localAdministratorEnabled: () => false,
     sharedCredential,
   });
@@ -246,7 +249,7 @@ test("未配置应急恢复密钥时拒绝验证且不调用密钥 adapter", asy
 
 test("入口决策直接给出完整跳转地址，不要求 React 推断登录规则", async () => {
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => null,
+    findSessionAccount: async () => null,
     localAdministratorEnabled: () => false,
     sharedCredential: sharedCredentialAdapter(false),
   });
@@ -262,7 +265,7 @@ test("入口决策直接给出完整跳转地址，不要求 React 推断登录�
 test("管理员工作台决策一次解析即返回可用管理员身份", async () => {
   let accountLookups = 0;
   const authorization = createSessionAuthorization({
-    resolveAccount: async () => {
+    findSessionAccount: async () => {
       accountLookups += 1;
       return {
         id: "admin-1",
@@ -270,6 +273,7 @@ test("管理员工作台决策一次解析即返回可用管理员身份", async
         displayName: "管理员",
         role: "admin",
         status: "active",
+        expiresAt: "2099-01-01T00:00:00.000Z",
       };
     },
     localAdministratorEnabled: () => false,
@@ -291,7 +295,7 @@ test("管理员工作台决策一次解析即返回可用管理员身份", async
 
 test("管理员接口按 actor 区分未登录与角色拒绝，不把未配置恢复密钥误报为服务故障", async () => {
   const signedOut = createSessionAuthorization({
-    resolveAccount: async () => null,
+    findSessionAccount: async () => null,
     localAdministratorEnabled: () => false,
     sharedCredential: sharedCredentialAdapter(false),
   });
@@ -301,12 +305,13 @@ test("管理员接口按 actor 区分未登录与角色拒绝，不把未配置�
   );
 
   const reader = createSessionAuthorization({
-    resolveAccount: async () => ({
+    findSessionAccount: async () => ({
       id: "reader-1",
       email: "reader@example.com",
       displayName: "读者",
       role: "reader",
       status: "active",
+      expiresAt: "2099-01-01T00:00:00.000Z",
     }),
     localAdministratorEnabled: () => false,
     sharedCredential: sharedCredentialAdapter(true),

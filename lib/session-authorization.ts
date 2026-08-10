@@ -1,5 +1,5 @@
 import { ensureSchema } from "../db";
-import { optionalSessionIdentity } from "../db/session-identity";
+import { findSessionAccountByToken } from "../db/session-identity";
 import {
   clearCreatorSessionCookie,
   createCreatorSessionCookie,
@@ -22,9 +22,10 @@ export type {
 export { SessionAuthorizationError } from "./session-authorization-module";
 
 const authorization = createSessionAuthorization({
-  resolveAccount: async (request) => {
+  findSessionAccount: async (token) => {
+    if (!token) return null;
     await ensureSchema();
-    return optionalSessionIdentity(request);
+    return findSessionAccountByToken(token);
   },
   localAdministratorEnabled: localAdminBypassEnabled,
   sharedCredential: {

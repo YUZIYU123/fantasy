@@ -18,7 +18,52 @@ export type ReadingProgress = {
   completedAt?: string | null;
 };
 
-export type ReadingPhase = "beforeImage" | "transitionVideo" | "content" | "afterImage";
+export type ReadingProgressUpdate = {
+  chapterId?: string;
+  nodeId?: string;
+  pageIndex?: number;
+  updatedAt?: string;
+  completed?: boolean;
+  terminalEventIds?: string[];
+};
+
+export class ReadingSessionError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export function validateReadingProgressUpdate(
+  story: StoryDocument,
+  update: ReadingProgressUpdate,
+  now = Date.now(),
+) {
+  if (!update.chapterId || !update.nodeId) throw new ReadingSessionError("阅读进度数据不完整");
+  const progressNode = story.nodes.find((node) => node.id === update.nodeId);
+  if (!progressNode) throw new ReadingSessionError("阅读节点已失效", 409);
+  if (update.completed && !progressNode.canEndChapter) {
+    throw new ReadingSessionError("只能在允许结束本章的节点完成章节", 409);
+  }
+  const requestedTerminalEventIds = Array.isArray(update.terminalEventIds)
+    ? update.terminalEventIds.filter((id): id is string => typeof id === "string" && id.length <= 100).slice(0, 200)
+    : [];
+  const requestedTime = update.updatedAt && Number.isFinite(Date.parse(update.updatedAt))
+    ? Date.parse(update.updatedAt)
+    : now;
+  const updatedAt = new Date(Math.min(requestedTime, now + 5 * 60 * 1000)).toISOString();
+  return {
+    nodeId: update.nodeId,
+    pageIndex: Math.max(0, Math.floor(Number(update.pageIndex) || 0)),
+    terminalEventIds: applyTerminalTaskEvents(story, requestedTerminalEventIds).appliedIds,
+    completedAt: update.completed ? updatedAt : null,
+    updatedAt,
+  };
+}
+
+export type ReadingPhase = "beforeImage" | "transitionVideo" | "transitionEffect" | "content" | "afterImage";
 
 export type ReadingEffect =
   | { kind: "persist-progress"; progress: ReadingProgress & { completed: boolean } }
@@ -26,7 +71,7 @@ export type ReadingEffect =
   | { kind: "wait"; id: string; milliseconds: number }
   | { kind: "music"; action: "start"; cue: StoryMusicCue }
   | { kind: "music"; action: "stop" | "pause" | "resume" }
-  | { kind: "video"; id: string; action: "play" }
+  | { kind: "video"; id: string; action: "play"; maximumMs: number }
   | { kind: "terminal-feedback"; id: string; playback: SessionTerminalPlayback; maximumMs: number }
   | { kind: "complete" };
 
@@ -93,6 +138,9 @@ export function observeReadingSession(story: StoryDocument, state: ReadingState)
 }
 
 const interactionDuration = { none: 350, glow: 480, ripple: 680, shake: 420, flash: 360, glitch: 560, push: 520 } as const;
+const transitionDuration: Record<TransitionPreset, number> = {
+  none: 0, fade: 420, fog: 760, ripple: 680, push: 520, flash: 430,
+};
 
 function chooseProgress(input: ReadingSessionInput) {
   if (input.preview) return null;
@@ -146,13 +194,32 @@ export function createReadingSession(input: ReadingSessionInput) {
       version: input.chapterVersion, updatedAt: now(), completedAt: completed ? now() : null, completed,
     },
   }];
+  const shouldRunTransition = (choice: StoryChoice, position: StoryChoice["transitionPosition"]) => (
+    !input.reducedMotion && choice.transitionPosition === position && choice.transitionPreset !== "none"
+  );
+  const beginTransition = (choice: StoryChoice) => {
+    state = {
+      ...state,
+      phase: "transitionEffect",
+      activeTransition: choice.transitionPreset,
+      choiceLocked: true,
+      choiceFeedback: null,
+    };
+    return [{
+      kind: "wait" as const,
+      id: `transition:${choice.id}`,
+      milliseconds: transitionDuration[choice.transitionPreset],
+    }];
+  };
   const enter = (targetId: string, choice: StoryChoice | null) => {
     const currentId = state.nodeId;
     const music = resolveMusicCueAction(input.story, currentId, targetId, state.activeCueId);
+    const phase = firstPhase(targetId);
+    const transitionBeforeTarget = Boolean(choice && shouldRunTransition(choice, "beforeTarget"));
     state = {
-      ...state, nodeId: targetId, pageIndex: 0, phase: firstPhase(targetId), afterImageDone: false,
+      ...state, nodeId: targetId, pageIndex: 0, phase, afterImageDone: false,
       incomingChoice: choice, transitionVideoDone: false, activeTransition: null,
-      choiceLocked: false, choiceFeedback: null,
+      choiceLocked: transitionBeforeTarget, choiceFeedback: null,
       activeCueId: music.startCue?.id ?? (music.stopActive ? null : state.activeCueId),
       activeCueName: music.startCue?.name ?? (music.stopActive ? "" : state.activeCueName),
     };
@@ -161,10 +228,24 @@ export function createReadingSession(input: ReadingSessionInput) {
     else if (music.stopActive) effects.push({ kind: "music", action: "stop" });
     if (state.phase === "transitionVideo") {
       if (state.activeCueId) effects.push({ kind: "music", action: "pause" });
-      effects.push({ kind: "video", id: `video:${targetId}`, action: "play" });
+      effects.push({ kind: "video", id: `video:${targetId}`, action: "play", maximumMs: 30_000 });
+    } else if (phase === "content" && transitionBeforeTarget && choice) {
+      effects.push(...beginTransition(choice));
+    } else if (!transitionBeforeTarget) {
+      state = { ...state, incomingChoice: null, choiceLocked: false };
     }
     effects.push(...progressEffect());
     return effects;
+  };
+  const finishChoiceFeedback = (choice: StoryChoice) => {
+    if (shouldRunTransition(choice, "afterSource")) return beginTransition(choice);
+    return enter(choice.targetId, shouldRunTransition(choice, "beforeTarget") ? choice : null);
+  };
+  const finishPreContent = () => {
+    const choice = state.incomingChoice;
+    if (choice && shouldRunTransition(choice, "beforeTarget")) return beginTransition(choice);
+    state = { ...state, phase: "content", incomingChoice: null, choiceLocked: false };
+    return [] as ReadingEffect[];
   };
   const initialEffects: ReadingEffect[] = [];
   const initialCue = input.story.musicCues.find((cue) => cue.startNodeId === state.nodeId);
@@ -174,7 +255,7 @@ export function createReadingSession(input: ReadingSessionInput) {
   }
   if (state.phase === "transitionVideo") {
     if (state.activeCueId) initialEffects.push({ kind: "music", action: "pause" });
-    initialEffects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play" });
+    initialEffects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play", maximumMs: 30_000 });
   }
   initialEffects.push(...progressEffect());
 
@@ -197,7 +278,9 @@ export function createReadingSession(input: ReadingSessionInput) {
         state = { ...state, phase };
         if (phase === "transitionVideo") {
           if (state.activeCueId) effects.push({ kind: "music", action: "pause" });
-          effects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play" });
+          effects.push({ kind: "video", id: `video:${state.nodeId}`, action: "play", maximumMs: 30_000 });
+        } else {
+          effects.push(...finishPreContent());
         }
       }
     } else if (event.type === "choose") {
@@ -225,20 +308,27 @@ export function createReadingSession(input: ReadingSessionInput) {
           : input.reducedMotion ? 140 : interactionDuration[choice.interactionPreset];
         state = {
           ...state, choiceFeedback: choice, incomingChoice: choice,
-          activeTransition: choice.transitionPreset === "none" ? null : choice.transitionPreset,
+          activeTransition: null,
         };
         effects.push({ kind: "wait", id: `choice:${choice.id}`, milliseconds: duration });
       }
     } else if (event.type === "effect-result" && event.id === `video:${state.nodeId}`
       && state.phase === "transitionVideo" && event.outcome !== "success") {
-      state = { ...state, transitionVideoDone: true, phase: "content", choiceLocked: false };
+      state = { ...state, transitionVideoDone: true };
       if (state.activeCueId) effects.push({ kind: "music", action: "resume" });
+      effects.push(...finishPreContent());
     } else if (event.type === "effect-result" && event.id.startsWith("choice:")) {
       const choice = state.incomingChoice;
-      if (choice && event.id === `choice:${choice.id}`) effects.push(...enter(choice.targetId, null));
+      if (choice && event.id === `choice:${choice.id}`) effects.push(...finishChoiceFeedback(choice));
     } else if (event.type === "effect-result" && event.id.startsWith("terminal:")) {
       const choice = state.incomingChoice;
-      if (choice && event.id === `terminal:${node.id}:${choice.id}`) effects.push(...enter(choice.targetId, null));
+      if (choice && event.id === `terminal:${node.id}:${choice.id}`) effects.push(...finishChoiceFeedback(choice));
+    } else if (event.type === "effect-result" && event.id.startsWith("transition:")) {
+      const choice = state.incomingChoice;
+      if (choice && event.id === `transition:${choice.id}`) {
+        if (choice.transitionPosition === "afterSource") effects.push(...enter(choice.targetId, null));
+        else state = { ...state, phase: "content", activeTransition: null, incomingChoice: null, choiceLocked: false };
+      }
     } else if (event.type === "complete") {
       state = { ...state, completed: true, choiceLocked: true, activeCueId: null, activeCueName: "" };
       effects.push({ kind: "music", action: "stop" }, ...progressEffect(true), { kind: "complete" });

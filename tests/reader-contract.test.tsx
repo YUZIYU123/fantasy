@@ -199,6 +199,36 @@ test("转场视频失败后会进入正文", async () => {
   assert.match(container.textContent || "", /起点正文/);
 });
 
+test("转场视频成功开始后超时仍会进入正文", async () => {
+  const story = readerStory();
+  story.nodes[0].videoMode = "transition";
+  story.nodes[0].videoUrl = "https://example.com/stalled.mp4";
+  prefersReducedMotion = false;
+  Object.defineProperty(window.HTMLMediaElement.prototype, "play", {
+    configurable: true,
+    value() { return Promise.resolve(); },
+  });
+  const nativeSetTimeout = globalThis.setTimeout;
+  let videoTimeout: (() => void) | null = null;
+  globalThis.setTimeout = ((callback: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (delay === 30_000 && typeof callback === "function") {
+      videoTimeout = () => callback(...args);
+      return 30_000 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return nativeSetTimeout(callback, delay, ...args);
+  }) as typeof setTimeout;
+  try {
+    await act(async () => root.render(<Reader story={story} chapterId="video-timeout" preview onBack={() => {}} />));
+    await settle();
+    assert.ok(videoTimeout);
+    assert.doesNotMatch(container.textContent || "", /起点正文/);
+    await act(async () => videoTimeout?.());
+    assert.match(container.textContent || "", /起点正文/);
+  } finally {
+    globalThis.setTimeout = nativeSetTimeout;
+  }
+});
+
 test("进入和离开音乐区间会更新当前配乐", async () => {
   const story = readerStory();
   story.musicCues = [{

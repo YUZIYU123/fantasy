@@ -28,6 +28,8 @@ export type SharedCredentialAdapter = {
   clearSessionCookie(request: Request): string;
 };
 
+export type SessionAccountRecord = SessionIdentity & { expiresAt: string };
+
 export type CreatorContentResult = "loaded" | "access_stale" | "failed";
 export type CreatorWorkspaceAccessState = {
   status: "resolving" | "ready" | "denied" | "navigating" | "access_error" | "content_error";
@@ -84,12 +86,12 @@ export class SessionAuthorizationError extends AuthError {
 }
 
 export function createSessionAuthorization({
-  resolveAccount,
+  findSessionAccount,
   localAdministratorEnabled,
   sharedCredential,
   now = Date.now,
 }: {
-  resolveAccount(request: Request): Promise<SessionIdentity | null>;
+  findSessionAccount(token: string): Promise<SessionAccountRecord | null>;
   localAdministratorEnabled(request: Request): boolean;
   sharedCredential: SharedCredentialAdapter;
   now?: () => number;
@@ -97,6 +99,27 @@ export function createSessionAuthorization({
   const attempts = new Map<string, { count: number; resetAt: number }>();
   const attemptWindowMs = 15 * 60 * 1000;
   const attemptLimit = 8;
+
+  function sessionToken(request: Request) {
+    const cookie = request.headers.get("cookie") || "";
+    for (const part of cookie.split(";")) {
+      const [key, ...rest] = part.trim().split("=");
+      if (key === "mist_session") return decodeURIComponent(rest.join("="));
+    }
+    return "";
+  }
+
+  async function resolveAccount(request: Request): Promise<SessionIdentity | null> {
+    const account = await findSessionAccount(sessionToken(request));
+    if (!account || account.status !== "active" || new Date(account.expiresAt).getTime() <= now()) return null;
+    return {
+      id: account.id,
+      email: account.email,
+      displayName: account.displayName,
+      role: account.role,
+      status: account.status,
+    };
+  }
 
   async function resolveCreatorAccess(
     request: Request,
