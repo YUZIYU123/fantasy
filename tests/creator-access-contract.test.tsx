@@ -175,6 +175,28 @@ test("写操作返回 401 时立即重新鉴权并退出失效工作台", async 
   assert.match(container.textContent || "", /当前未配置应急恢复密钥/);
 });
 
+test("用户管理读取返回 403 时也通过统一状态机重新鉴权", async () => {
+  firstAccessAllowed = true;
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    if (String(input) === "/admin/api/users") {
+      return Response.json({ error: "管理员权限已失效" }, { status: 403 });
+    }
+    return baseFetch(input, init);
+  };
+  await act(async () => root.render(<AdminStudio />));
+  await settle();
+  const users = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("用户管理"));
+  assert.ok(users);
+  await act(async () => users.click());
+  await settle();
+  await settle();
+
+  assert.equal(sessionChecks, 2);
+  assert.match(container.textContent || "", /当前未配置应急恢复密钥/);
+  assert.doesNotMatch(container.textContent || "", /管理员权限已失效/);
+});
+
 test("错误工作台按照模块决策只跳转一次", async () => {
   workspaceRedirectTo = "/studio";
   const navigations: string[] = [];
