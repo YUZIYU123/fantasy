@@ -73,6 +73,47 @@ test("ReadingSession 按配置在源节点之后或目标节点之前执行剧�
   }
 });
 
+test("目标节点前的剧情转场等待前置图片和转场视频完成", () => {
+  const current = story();
+  const source = current.nodes.find((node) => node.id === current.startNodeId);
+  const choice = source.choices[0];
+  const target = current.nodes.find((node) => node.id === choice.targetId);
+  choice.transitionPreset = "fade";
+  choice.transitionPosition = "beforeTarget";
+  target.displayImagePosition = "before";
+  target.displayImageUrl = "https://example.com/before.jpg";
+  target.displayImageAlt = "目标前置图片";
+  target.videoMode = "transition";
+  target.videoUrl = "https://example.com/before-target.mp4";
+  const session = createReadingSession({
+    story: current,
+    chapterId: "transition-media-order",
+    chapterVersion: 1,
+    preview: true,
+    reducedMotion: false,
+  });
+
+  const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
+  const feedback = chosen.effects.find((effect) => effect.kind === "wait");
+  const entered = session.dispatch({ type: "effect-result", id: feedback.id, outcome: "timeout" });
+  assert.equal(entered.state.nodeId, target.id);
+  assert.equal(entered.state.phase, "beforeImage");
+  assert.equal(entered.state.activeTransition, null);
+
+  const imageCompleted = session.dispatch({ type: "continue-image" });
+  assert.equal(imageCompleted.state.phase, "transitionVideo");
+  const video = imageCompleted.effects.find((effect) => effect.kind === "video");
+  assert.ok(video);
+  const videoCompleted = session.dispatch({ type: "effect-result", id: video.id, outcome: "complete" });
+  assert.equal(videoCompleted.state.phase, "transitionEffect");
+  assert.equal(videoCompleted.state.activeTransition, "fade");
+  const transition = videoCompleted.effects.find((effect) => effect.id === `transition:${choice.id}`);
+  assert.ok(transition);
+  const completed = session.dispatch({ type: "effect-result", id: transition.id, outcome: "timeout" });
+  assert.equal(completed.state.phase, "content");
+  assert.equal(completed.state.choiceLocked, false);
+});
+
 test("媒体失败回送后会解除选择锁并抵达可继续状态", () => {
   const current = story();
   const choice = current.nodes[0].choices[0];

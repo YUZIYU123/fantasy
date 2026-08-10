@@ -1,4 +1,4 @@
-import type { UserRole } from "./auth";
+import { AuthError, type SessionIdentity, type UserRole } from "./auth";
 import {
   AdminAuthError,
   clearCreatorSessionCookie,
@@ -8,7 +8,7 @@ import {
   localAdminBypassEnabled,
   verifyCreatorPassword,
 } from "./admin-auth";
-import { optionalSessionIdentity, requireSessionIdentity, requireSessionRole } from "../db/session-identity";
+import { findSessionAccountByToken } from "../db/session-identity";
 
 const creatorAttempts = new Map<string, { count: number; resetAt: number }>();
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
@@ -43,6 +43,41 @@ function assertAdministratorOrigin(request: Request) {
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && origin && origin !== new URL(request.url).origin) {
     throw new AdministratorCapabilityError("请求来源无效", 403);
   }
+}
+
+function sessionToken(request: Request) {
+  const cookie = request.headers.get("cookie") || "";
+  for (const part of cookie.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === "mist_session") return decodeURIComponent(rest.join("="));
+  }
+  return "";
+}
+
+async function optionalSessionIdentity(request: Request): Promise<SessionIdentity | null> {
+  const token = sessionToken(request);
+  if (!token) return null;
+  const account = await findSessionAccountByToken(token);
+  if (!account || account.status !== "active" || new Date(account.expiresAt).getTime() <= Date.now()) return null;
+  return {
+    id: account.id,
+    email: account.email,
+    displayName: account.displayName,
+    role: account.role,
+    status: account.status,
+  };
+}
+
+async function requireSessionIdentity(request: Request) {
+  const identity = await optionalSessionIdentity(request);
+  if (!identity) throw new AuthError("请先登录", 401);
+  return identity;
+}
+
+async function requireSessionRole(request: Request, roles: UserRole[]) {
+  const identity = await requireSessionIdentity(request);
+  if (!roles.includes(identity.role)) throw new AuthError("当前账号没有此操作权限", 403);
+  return identity;
 }
 
 async function requireAdministrator(request: Request) {

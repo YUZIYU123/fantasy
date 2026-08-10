@@ -229,9 +229,9 @@ export function createReadingSession(input: ReadingSessionInput) {
     if (state.phase === "transitionVideo") {
       if (state.activeCueId) effects.push({ kind: "music", action: "pause" });
       effects.push({ kind: "video", id: `video:${targetId}`, action: "play", maximumMs: 30_000 });
-    } else if (transitionBeforeTarget && choice) {
+    } else if (phase === "content" && transitionBeforeTarget && choice) {
       effects.push(...beginTransition(choice));
-    } else {
+    } else if (!transitionBeforeTarget) {
       state = { ...state, incomingChoice: null, choiceLocked: false };
     }
     effects.push(...progressEffect());
