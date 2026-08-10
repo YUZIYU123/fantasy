@@ -197,6 +197,75 @@ test("用户管理读取返回 403 时也通过统一状态机重新鉴权", asy
   assert.doesNotMatch(container.textContent || "", /管理员权限已失效/);
 });
 
+test("并发权限恢复忽略较晚完成的旧鉴权结果", async () => {
+  let resolveOlderCheck!: (response: Response) => void;
+  const allow = () => Response.json({
+    authenticated: true,
+    outcome: "allow",
+    destination: "admin",
+    redirectTo: null,
+    reason: "local_admin",
+    accountRole: null,
+    source: "local_bypass",
+    administrator: { role: "admin", email: "local-admin@localhost", source: "local_bypass" },
+    recoveryAvailable: false,
+  });
+  const deny = () => Response.json({
+    authenticated: false,
+    outcome: "deny",
+    destination: null,
+    redirectTo: null,
+    reason: "signed_out",
+    accountRole: null,
+    source: null,
+    administrator: null,
+    recoveryAvailable: false,
+  });
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === "/admin/api/session") {
+      sessionChecks += 1;
+      if (sessionChecks === 1 || sessionChecks === 3) return allow();
+      return new Promise<Response>((resolve) => { resolveOlderCheck = resolve; });
+    }
+    if (url === "/admin/api/users" && init?.method === "PATCH") {
+      return Response.json({ error: "管理员权限已失效" }, { status: 403 });
+    }
+    if (url === "/admin/api/users") {
+      return Response.json({ users: [{
+        id: "user-1", email: "reader@example.com", displayName: "读者",
+        role: "reader", status: "active", emailVerifiedAt: "2026-01-01T00:00:00.000Z",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }] });
+    }
+    return baseFetch(input, init);
+  };
+  await act(async () => root.render(<AdminStudio />));
+  await settle();
+  const users = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("用户管理"));
+  assert.ok(users);
+  await act(async () => users.click());
+  await settle();
+  const selects = [...container.querySelectorAll("select")];
+  assert.equal(selects.length, 2);
+  await act(async () => {
+    selects[0].value = "author";
+    selects[0].dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    selects[1].value = "disabled";
+    selects[1].dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  });
+  await settle();
+  assert.equal(sessionChecks, 3);
+
+  resolveOlderCheck(deny());
+  await settle();
+  await settle();
+
+  assert.match(container.textContent || "", /用户与角色/);
+  assert.doesNotMatch(container.textContent || "", /当前未配置应急恢复密钥/);
+});
+
 test("错误工作台按照模块决策只跳转一次", async () => {
   workspaceRedirectTo = "/studio";
   const navigations: string[] = [];

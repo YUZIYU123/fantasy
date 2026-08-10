@@ -70,9 +70,10 @@ export function AdminStudio({
   const [assetReturnView, setAssetReturnView] = useState<View>("novels");
   const [previewReturnView, setPreviewReturnView] = useState<View>("editor");
   const [previewNodeId, setPreviewNodeId] = useState("");
+  const accessEpoch = useRef(0);
 
-  const loadContent = useCallback(async (): Promise<"loaded" | "access_stale" | "failed"> => {
-    setBusy(true);
+  const loadContent = useCallback(async (isCurrent: () => boolean): Promise<"loaded" | "access_stale" | "failed"> => {
+    if (isCurrent()) setBusy(true);
     try {
       const [novelResponse, chapterResponse, assetResponse] = await Promise.all([
         fetch(`${apiBase}/novels`),
@@ -87,6 +88,7 @@ export function AdminStudio({
         chapterResponse.json() as Promise<{ chapters?: ChapterRecord[] }>,
         assetResponse.json() as Promise<{ assets?: AssetRecord[]; folders?: AssetFolder[] }>,
       ]);
+      if (!isCurrent()) return "failed";
       setNovels(novelData.novels || []);
       setChapters(chapterData.chapters || []);
       setAssets(assetData.assets || []);
@@ -96,15 +98,18 @@ export function AdminStudio({
     } catch {
       return "failed";
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   }, [apiBase]);
   const executeAccess = useCallback(async (initialAccess = startCreatorWorkspaceAccess()) => {
+    const epoch = ++accessEpoch.current;
+    const isCurrent = () => accessEpoch.current === epoch;
     setBusy(true);
     setAccessFailed(false);
     let access = initialAccess;
     if (access.status === "resolving") setAuthenticated(null);
     while (access.effect) {
+      if (!isCurrent()) return;
       if (access.effect.type === "navigate") {
         navigate(access.effect.to);
         return;
@@ -114,17 +119,20 @@ export function AdminStudio({
           const response = await fetch(`${apiBase}/session`, { cache: "no-store" });
           if (!response.ok) throw new Error("无法确认创作权限");
           const decision = await response.json() as CreatorAccessDecision & { authenticated: boolean };
+          if (!isCurrent()) return;
           access = advanceCreatorWorkspaceAccess(access, { type: "access_resolved", decision });
         } catch {
+          if (!isCurrent()) return;
           access = advanceCreatorWorkspaceAccess(access, { type: "access_failed" });
         }
         continue;
       }
       access = advanceCreatorWorkspaceAccess(access, {
         type: "content_resolved",
-        result: await loadContent(),
+        result: await loadContent(isCurrent),
       });
     }
+    if (!isCurrent()) return;
     if (access.decision) {
       setEntryReason(access.decision.reason);
       setEmergencyCredentialEnabled(access.decision.recoveryAvailable);
@@ -163,8 +171,8 @@ export function AdminStudio({
     return true;
   }, [executeAccess]);
   const refreshContent = useCallback(async () => {
-    await executeAccess(resumeCreatorWorkspaceAccess(await loadContent()));
-  }, [executeAccess, loadContent]);
+    await executeAccess(startCreatorWorkspaceAccess());
+  }, [executeAccess]);
   useEffect(() => {
     queueMicrotask(() => resolveAccess().catch(() => {
       setAuthenticated(false);
