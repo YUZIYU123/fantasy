@@ -22,10 +22,23 @@ test("ElevenLabs 终端语音列出音色并生成 multilingual v2 MP3", async (
   assert.equal(body.text, "任务已更新");
 });
 
-test("ElevenLabs 终端语音明确报告未配置、限流和错误格式", async () => {
+test("ElevenLabs 终端语音明确报告未配置、鉴权、限流和错误格式", async () => {
   assert.throws(() => new ElevenLabsTerminalSpeechProvider({ apiKey: "" }), (error) => error instanceof TerminalSpeechError && error.code === "TTS_NOT_CONFIGURED");
   const limited = new ElevenLabsTerminalSpeechProvider({ apiKey: "key", fetcher: async () => new Response("", { status: 429 }) });
   await assert.rejects(() => limited.generate({ voiceId: "voice", text: "消息" }), (error) => error.code === "TTS_PROVIDER_LIMIT");
+  const unauthorized = new ElevenLabsTerminalSpeechProvider({ apiKey: "key", fetcher: async () => new Response("", { status: 401 }) });
+  await assert.rejects(() => unauthorized.generate({ voiceId: "voice", text: "消息" }), (error) => error.code === "TTS_PROVIDER_AUTH");
   const invalid = new ElevenLabsTerminalSpeechProvider({ apiKey: "key", fetcher: async () => new Response("json", { headers: { "content-type": "application/json" } }) });
   await assert.rejects(() => invalid.generate({ voiceId: "voice", text: "消息" }), (error) => error.code === "TTS_INVALID_MIME");
+});
+
+test("ElevenLabs 终端语音请求超时后中止", async () => {
+  const provider = new ElevenLabsTerminalSpeechProvider({
+    apiKey: "key",
+    timeoutMs: 5,
+    fetcher: async (_url, init) => await new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }),
+  });
+  await assert.rejects(() => provider.generate({ voiceId: "voice", text: "消息" }), (error) => error.code === "TTS_TIMEOUT");
 });

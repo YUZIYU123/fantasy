@@ -1,16 +1,19 @@
-import { desc, eq } from "drizzle-orm";
-import { ensureSchema, getDb } from "../../../../../db";
-import { novelVersions } from "../../../../../db/schema";
-import { adminAuthResponse, requireAdmin } from "../../../../../lib/admin-auth";
+import { creationLifecycle } from "../../../../../db/creation-lifecycle";
+import { creationLifecycleErrorResponse } from "../../../../_creation-lifecycle-http";
+import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
+import { sessionAuthorization } from "../../../../../lib/session-authorization";
 
 export async function GET(request: Request) {
-  try { await requireAdmin(request); } catch (error) { return adminAuthResponse(error); }
-  await ensureSchema();
-  const novelId = new URL(request.url).searchParams.get("novelId");
-  if (!novelId) return Response.json({ versions: [] });
-  const rows = await getDb().select({
-    version: novelVersions.version,
-    createdAt: novelVersions.createdAt,
-  }).from(novelVersions).where(eq(novelVersions.novelId, novelId)).orderBy(desc(novelVersions.version));
-  return Response.json({ versions: rows });
+  try {
+    await sessionAuthorization.requireAdministrator(request);
+    const novelId = new URL(request.url).searchParams.get("novelId");
+    if (!novelId) return Response.json({ versions: [] });
+    const versions = await creationLifecycle.listVersions({ kind: "administrator" }, "novel", novelId);
+    return Response.json({ versions });
+  } catch (error) {
+    const response = creationLifecycleErrorResponse(error);
+    if (response) return response;
+    if (error instanceof AdminAuthError) return adminAuthResponse(error);
+    throw error;
+  }
 }
