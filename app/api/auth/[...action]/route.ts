@@ -4,6 +4,7 @@ import { accountLifecycle, type AccountCommand } from "../../../../db/account-li
 import { accountLifecycleResponse } from "../../../_account-lifecycle-http";
 import { authErrorResponse, clearSessionCookie } from "../../../../lib/auth";
 import { sessionAuthorization } from "../../../../lib/session-authorization";
+import { sessionAuthorizationResponse } from "../../../_session-authorization-http";
 
 type Context = { params: Promise<{ action: string[] }> };
 
@@ -12,8 +13,21 @@ function actionName(values: string[]) {
 }
 
 export async function GET(request: Request, context: Context) {
-  await ensureSchema();
   const action = actionName((await context.params).action);
+  if (action === "creator-entry") {
+    try {
+      const decision = await sessionAuthorization.resolveCreatorAccess(request, "entry");
+      return Response.json({
+        destination: decision.destination,
+        redirectTo: decision.redirectTo,
+        reason: decision.reason,
+        accountRole: decision.accountRole,
+      }, { headers: { "cache-control": "no-store" } });
+    } catch (error) {
+      return sessionAuthorizationResponse(error);
+    }
+  }
+  await ensureSchema();
   if (action === "me") return Response.json({ user: await sessionAuthorization.optional(request) });
   if (action === "config") {
     return Response.json({ turnstileSiteKey: (env as unknown as { TURNSTILE_SITE_KEY?: string }).TURNSTILE_SITE_KEY || "" });

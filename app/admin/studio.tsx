@@ -20,6 +20,15 @@ import {
 } from "../../lib/story";
 import { SFX_GENERATION_DEFAULT_SECONDS, suggestChoiceSfxPrompt } from "../../lib/sfx";
 import type { TerminalVoiceOption } from "../../lib/tts";
+import type {
+  AdministratorSource,
+  CreatorAccessDecision,
+} from "../../lib/session-authorization-module";
+import {
+  advanceCreatorWorkspaceAccess,
+  resumeCreatorWorkspaceAccess,
+  startCreatorWorkspaceAccess,
+} from "../../lib/session-authorization-module";
 import { Brand } from "../brand";
 import { FantasyTerminal, type TerminalPlayback } from "../fantasy-terminal";
 import { ChapterOutroScreen, Reader } from "../story-studio";
@@ -28,7 +37,15 @@ type StudioScope = "admin" | "author";
 type View = "novels" | "novel-settings" | "chapters" | "settings" | "editor" | "preview" | "assets" | "users";
 type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string; duration: number };
 
-export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
+const navigateWindow = (to: string) => window.location.replace(to);
+
+export function AdminStudio({
+  scope = "admin",
+  navigate = navigateWindow,
+}: {
+  scope?: StudioScope;
+  navigate?: (to: string) => void;
+}) {
   const apiBase = scope === "admin" ? "/admin/api" : "/studio/api";
   const [view, setView] = useState<View>("novels");
   const [novels, setNovels] = useState<NovelRecord[]>([]);
@@ -42,35 +59,118 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("");
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [entryReason, setEntryReason] = useState<CreatorAccessDecision["reason"]>("signed_out");
+  const [adminSource, setAdminSource] = useState<AdministratorSource | null>(null);
+  const [emergencyCredentialEnabled, setEmergencyCredentialEnabled] = useState(false);
+  const [accessFailed, setAccessFailed] = useState(false);
+  const [contentLoaded, setContentLoaded] = useState(false);
   const [pendingOpenId, setPendingOpenId] = useState("");
   const [pendingNovelId, setPendingNovelId] = useState("");
   const [assetReturnView, setAssetReturnView] = useState<View>("novels");
   const [previewReturnView, setPreviewReturnView] = useState<View>("editor");
   const [previewNodeId, setPreviewNodeId] = useState("");
 
-  const load = useCallback(async () => {
+  const loadContent = useCallback(async (): Promise<"loaded" | "access_stale" | "failed"> => {
     setBusy(true);
-    const [novelResponse, chapterResponse, assetResponse] = await Promise.all([
-      fetch(`${apiBase}/novels`),
-      fetch(`${apiBase}/chapters`),
-      fetch(`${apiBase}/assets`),
-    ]);
-    if ([novelResponse.status, chapterResponse.status, assetResponse.status].some((status) => status === 401 || status === 403 || status === 503)) {
-      setAuthenticated(false); setMessage(""); setBusy(false); return;
+    try {
+      const [novelResponse, chapterResponse, assetResponse] = await Promise.all([
+        fetch(`${apiBase}/novels`),
+        fetch(`${apiBase}/chapters`),
+        fetch(`${apiBase}/assets`),
+      ]);
+      const responses = [novelResponse, chapterResponse, assetResponse];
+      if (responses.some((response) => response.status === 401 || response.status === 403)) return "access_stale";
+      if (!responses.every((response) => response.ok)) return "failed";
+      const [novelData, chapterData, assetData] = await Promise.all([
+        novelResponse.json() as Promise<{ novels?: NovelRecord[] }>,
+        chapterResponse.json() as Promise<{ chapters?: ChapterRecord[] }>,
+        assetResponse.json() as Promise<{ assets?: AssetRecord[]; folders?: AssetFolder[] }>,
+      ]);
+      setNovels(novelData.novels || []);
+      setChapters(chapterData.chapters || []);
+      setAssets(assetData.assets || []);
+      setFolders(assetData.folders || []);
+      setContentLoaded(true);
+      return "loaded";
+    } catch {
+      return "failed";
+    } finally {
+      setBusy(false);
     }
-    const [novelData, chapterData, assetData] = await Promise.all([
-      novelResponse.json() as Promise<{ novels?: NovelRecord[] }>,
-      chapterResponse.json() as Promise<{ chapters?: ChapterRecord[] }>,
-      assetResponse.json() as Promise<{ assets?: AssetRecord[]; folders?: AssetFolder[] }>,
-    ]);
-    setAuthenticated(true);
-    setNovels(novelData.novels || []);
-    setChapters(chapterData.chapters || []);
-    setAssets(assetData.assets || []);
-    setFolders(assetData.folders || []);
-    setBusy(false);
   }, [apiBase]);
-  useEffect(() => { queueMicrotask(() => load().catch(() => { setMessage("后台加载失败"); setBusy(false); })); }, [load]);
+  const executeAccess = useCallback(async (initialAccess = startCreatorWorkspaceAccess()) => {
+    setBusy(true);
+    setAccessFailed(false);
+    let access = initialAccess;
+    if (access.status === "resolving") setAuthenticated(null);
+    while (access.effect) {
+      if (access.effect.type === "navigate") {
+        navigate(access.effect.to);
+        return;
+      }
+      if (access.effect.type === "check_access") {
+        try {
+          const response = await fetch(`${apiBase}/session`, { cache: "no-store" });
+          if (!response.ok) throw new Error("无法确认创作权限");
+          const decision = await response.json() as CreatorAccessDecision & { authenticated: boolean };
+          access = advanceCreatorWorkspaceAccess(access, { type: "access_resolved", decision });
+        } catch {
+          access = advanceCreatorWorkspaceAccess(access, { type: "access_failed" });
+        }
+        continue;
+      }
+      access = advanceCreatorWorkspaceAccess(access, {
+        type: "content_resolved",
+        result: await loadContent(),
+      });
+    }
+    if (access.decision) {
+      setEntryReason(access.decision.reason);
+      setEmergencyCredentialEnabled(access.decision.recoveryAvailable);
+      setAdminSource(access.decision.source);
+    }
+    if (access.status === "ready") {
+      setAuthenticated(true);
+      setBusy(false);
+      return;
+    }
+    if (access.status === "denied") {
+      setAuthenticated(false);
+      setBusy(false);
+      return;
+    }
+    if (access.status === "content_error") {
+      setAuthenticated(true);
+      setContentLoaded(false);
+      setMessage("后台内容加载失败，请重试");
+      setBusy(false);
+      return;
+    }
+    if (access.status === "access_error") {
+      setAccessFailed(true);
+      setAuthenticated(false);
+      setBusy(false);
+    }
+  }, [apiBase, loadContent, navigate]);
+  const resolveAccess = useCallback(() => executeAccess(startCreatorWorkspaceAccess()), [executeAccess]);
+  const reconcileOperationAccess = useCallback(async (response: Response) => {
+    const access = resumeCreatorWorkspaceAccess(
+      response.status === 401 || response.status === 403 ? "access_stale" : "loaded",
+    );
+    if (access.status === "ready") return false;
+    await executeAccess(access);
+    return true;
+  }, [executeAccess]);
+  const refreshContent = useCallback(async () => {
+    await executeAccess(resumeCreatorWorkspaceAccess(await loadContent()));
+  }, [executeAccess, loadContent]);
+  useEffect(() => {
+    queueMicrotask(() => resolveAccess().catch(() => {
+      setAuthenticated(false);
+      setMessage("无法确认创作权限");
+      setBusy(false);
+    }));
+  }, [resolveAccess]);
   useEffect(() => {
     if (!pendingOpenId) return;
     const created = chapters.find((chapter) => chapter.id === pendingOpenId);
@@ -122,10 +222,11 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
     setBusy(true);
     const response = await fetch(`${apiBase}/chapters`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, id, ...extra }) });
     const data = await response.json() as { id?: string; errors?: string[]; error?: string }; setBusy(false);
+    if (await reconcileOperationAccess(response)) return false;
     if (!response.ok) { setMessage(data.errors?.join("；") || data.error || "操作失败"); return false; }
     setMessage(action === "publish" ? "章节已发布" : action === "submit" ? "已提交管理员审核" : action === "save" ? "草稿已保存" : "操作完成");
     if (action === "create" && data.id) setPendingOpenId(data.id);
-    await load(); return data;
+    await refreshContent(); return data;
   }
 
   async function novelAction(action: string, id?: string, extra: Record<string, unknown> = {}) {
@@ -137,13 +238,14 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
     });
     const data = await response.json() as { id?: string; errors?: string[]; error?: string };
     setBusy(false);
+    if (await reconcileOperationAccess(response)) return false;
     if (!response.ok) {
       setMessage(data.errors?.join("；") || data.error || "操作失败");
       return false;
     }
     setMessage(action === "publish" ? "小说资料已发布" : action === "submit" ? "小说资料已提交审核" : action === "save" ? "小说资料已保存" : "操作完成");
     if (action === "create" && data.id) setPendingNovelId(data.id);
-    await load();
+    await refreshContent();
     return data;
   }
 
@@ -159,13 +261,16 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
       }),
     });
     const data = await response.json() as { updatedAt?: string; errors?: string[]; error?: string };
+    if (await reconcileOperationAccess(response)) {
+      throw new Error("创作权限已失效，请重新登录");
+    }
     if (!response.ok) throw new Error(data.errors?.join("；") || data.error || "自动保存失败");
     const updatedAt = data.updatedAt || new Date().toISOString();
     const updated = { ...chapter, draft: snapshot, title: snapshot.title, summary: snapshot.summary, coverUrl: snapshot.openingImageUrl, updatedAt };
     setChapters((current) => current.map((item) => item.id === chapter.id ? updated : item));
     setActive((current) => current?.id === chapter.id ? updated : current);
     return { updatedAt };
-  }, [apiBase]);
+  }, [apiBase, reconcileOperationAccess]);
 
   async function logout() {
     if (scope === "author") {
@@ -176,7 +281,7 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
         fetch("/api/auth/logout", { method: "POST" }),
       ]);
     }
-    setAuthenticated(false); setNovels([]); setChapters([]); setAssets([]); setFolders([]); setActiveNovel(null); setActive(null); setView("novels");
+    setAuthenticated(false); setContentLoaded(false); setNovels([]); setChapters([]); setAssets([]); setFolders([]); setActiveNovel(null); setActive(null); setView("novels");
   }
 
   const openNovel = (novel: NovelRecord, destination: "novel-settings" | "chapters") => {
@@ -196,15 +301,24 @@ export function AdminStudio({ scope = "admin" }: { scope?: StudioScope }) {
     setAssetReturnView(returnView);
     setView("assets");
   };
-  if (authenticated === false) return <StudioGate scope={scope} onRetry={load} />;
+  if (authenticated === null) return <StudioAccessResolving />;
+  if (accessFailed) return <StudioAccessError onRetry={resolveAccess} />;
+  if (authenticated === false) return <StudioGate
+    scope={scope}
+    reason={entryReason}
+    emergencyCredentialEnabled={emergencyCredentialEnabled}
+    onRetry={resolveAccess}
+  />;
+  if (!contentLoaded) return <StudioContentError busy={busy} onRetry={refreshContent} />;
   return <main className="admin-shell">
     {busy && <div className="loading-bar" aria-label="加载中" />}{message && <div className="toast" role="status">{message}</div>}
-    {authenticated && view !== "preview" && <button className="creator-logout" onClick={logout}>{scope === "author" ? "退出登录" : "退出创作"}</button>}
+    {scope === "admin" && adminSource === "local_bypass" && view !== "preview" && <span className="local-admin-badge">本地管理员模式</span>}
+    {authenticated && view !== "preview" && adminSource !== "local_bypass" && <button className="creator-logout" onClick={logout}>{scope === "author" ? "退出登录" : "退出创作"}</button>}
     {view === "novels" && <NovelDashboard scope={scope} novels={novels} onOpen={(novel) => openNovel(novel, "novel-settings")} onChapters={(novel) => openNovel(novel, "chapters")} onAssets={() => openAssets("novels")} onUsers={() => setView("users")} onAction={novelAction} />}
     {view === "novel-settings" && activeNovel && novelDraft && <NovelSettings scope={scope} novel={activeNovel} draft={novelDraft} setDraft={setNovelDraft} assets={assets} folders={folders} onBack={() => setView("novels")} onChapters={() => setView("chapters")} onAssets={() => openAssets("novel-settings")} onSave={() => novelAction("save", activeNovel.id, { novel: novelDraft, meta: { slug: activeNovel.slug, sortOrder: activeNovel.sortOrder } })} onSubmit={() => novelAction(scope === "admin" ? "publish" : "submit", activeNovel.id, { novel: novelDraft })} />}
     {view === "chapters" && activeNovel && <ChapterDashboard scope={scope} novel={activeNovel} chapters={chapters.filter((chapter) => chapter.novelId === activeNovel.id)} onNovels={() => setView("novels")} onSettings={(chapter) => openChapter(chapter, "settings")} onEdit={(chapter) => openChapter(chapter, "editor")} onAssets={() => openAssets("chapters")} onUsers={() => setView("users")} onAction={(action, id, extra = {}) => chapterAction(action, id, action === "create" ? { ...extra, meta: { novelId: activeNovel.id } } : extra)} />}
     {view === "settings" && active && <ChapterSettings scope={scope} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onBack={() => setView("chapters")} onAssets={() => openAssets("settings")} onEdit={() => setView("editor")} onPreview={() => { setPreviewNodeId(story.startNodeId); setPreviewReturnView("settings"); setView("preview"); }} onSave={() => chapterAction("save", active.id, { story, meta: { slug: active.slug, sortOrder: active.sortOrder } })} />}
-    {view === "assets" && <AssetManager scope={scope} apiBase={apiBase} assets={assets} folders={folders} onBack={() => setView(assetReturnView)} onReload={load} onMessage={setMessage} />}
+    {view === "assets" && <AssetManager scope={scope} apiBase={apiBase} assets={assets} folders={folders} onBack={() => setView(assetReturnView)} onReload={refreshContent} onMessage={setMessage} />}
     {view === "users" && scope === "admin" && <UserManager onBack={() => setView("novels")} onAssets={() => openAssets("users")} />}
     {view === "editor" && active && <StoryEditor key={active.id} scope={scope} apiBase={apiBase} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onAssetCreated={(asset) => setAssets((current) => [asset, ...current.filter((item) => item.id !== asset.id)])} onBack={() => setView("chapters")} onSettings={() => setView("settings")} onAssets={() => openAssets("editor")} onPreview={(nodeId) => { setPreviewNodeId(nodeId); setPreviewReturnView("editor"); setView("preview"); }} onSave={saveChapterDraft} onPublish={() => chapterAction(scope === "admin" ? "publish" : "submit", active.id, { story })} onRollback={async (version) => { if (scope === "admin" && await chapterAction("rollback", active.id, { version })) setView("chapters"); }} />}
     {view === "preview" && <div className="preview-wrap"><div className="preview-toolbar"><button className="preview-exit" onClick={() => setView(previewReturnView)}>← 返回编辑</button><label>从节点预览<select value={previewNodeId || story.startNodeId} onChange={(event) => setPreviewNodeId(event.target.value)}><option value={story.startNodeId}>章节起点 · {story.nodes.find((node) => node.id === story.startNodeId)?.title}</option>{story.nodes.filter((node) => node.id !== story.startNodeId).map((node) => <option key={node.id} value={node.id}>{node.title} · {node.id}</option>)}</select></label></div><div className="phone-frame"><StoryPreview key={previewNodeId || story.startNodeId} story={story} novelName={activeNovel?.draft.name || ""} initialNodeId={previewNodeId || story.startNodeId} onBack={() => setView(previewReturnView)} /></div></div>}
@@ -236,7 +350,43 @@ function StoryPreview({ story, novelName, initialNodeId, onBack }: {
   />;
 }
 
-function StudioGate({ scope, onRetry }: { scope: StudioScope; onRetry: () => Promise<void> }) {
+function StudioAccessResolving() {
+  return <main className="creator-login"><section>
+    <Brand />
+    <p className="eyebrow">CREATOR ACCESS</p>
+    <h1>创作中心</h1>
+    <p role="status">正在确认创作权限…</p>
+  </section></main>;
+}
+
+function StudioAccessError({ onRetry }: { onRetry: () => Promise<void> }) {
+  return <main className="creator-login"><section>
+    <Brand />
+    <p className="eyebrow">CREATOR ACCESS</p>
+    <h1>暂时无法确认权限</h1>
+    <p role="alert">权限服务暂时不可用，未将你误判为未登录。</p>
+    <button className="primary" onClick={() => void onRetry()}>重新检查权限</button>
+    <Link href="/">← 返回读者端</Link>
+  </section></main>;
+}
+
+function StudioContentError({ busy, onRetry }: { busy: boolean; onRetry: () => void }) {
+  return <main className="creator-login"><section>
+    <Brand />
+    <p className="eyebrow">CREATOR CONTENT</p>
+    <h1>后台内容加载失败</h1>
+    <p role="alert">创作权限已经确认，小说和素材暂时没有加载成功。</p>
+    <button className="primary" disabled={busy} onClick={onRetry}>{busy ? "正在重试…" : "重新加载内容"}</button>
+    <Link href="/">← 返回读者端</Link>
+  </section></main>;
+}
+
+function StudioGate({ scope, reason, emergencyCredentialEnabled, onRetry }: {
+  scope: StudioScope;
+  reason: CreatorAccessDecision["reason"];
+  emergencyCredentialEnabled: boolean;
+  onRetry: () => Promise<void>;
+}) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -257,13 +407,21 @@ function StudioGate({ scope, onRetry }: { scope: StudioScope; onRetry: () => Pro
     <Brand />
     <p className="eyebrow">{scope === "admin" ? "ADMIN ACCESS" : "AUTHOR STUDIO"}</p>
     <h1>{scope === "admin" ? "进入创作后台" : "请以作者账号登录"}</h1>
-    <p>{scope === "admin" ? "使用创作者密码登录，或先以已授权的管理员账号登录。" : "读者账号需要由管理员升级为作者后才能进入工作台。"}</p>
-    {scope === "admin" ? <form onSubmit={creatorLogin}>
-      <label>创作者密码<input autoFocus autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-      {error && <p className="creator-login-error" role="alert">{error}</p>}
-      <button className="primary" disabled={submitting || !password}>{submitting ? "正在验证…" : "以创作者身份登录"}</button>
-    </form> : <Link className="primary auth-link-button" href="/login?next=/studio">登录账号</Link>}
-    {scope === "admin" && <Link className="ghost link-button" href="/login?next=/admin">使用管理员账号登录</Link>}
+    <p>{reason === "reader_account"
+      ? "当前账号是读者账号，需要管理员升级角色后才能进入创作工作台。"
+      : scope === "admin"
+        ? "请使用已授权的管理员账号登录。"
+        : "请使用已升级为作者的账号登录。"}</p>
+    <Link className="primary auth-link-button" href="/login?next=/creator">登录账号</Link>
+    {scope === "admin" && emergencyCredentialEnabled && <details className="emergency-login">
+      <summary>使用应急恢复密钥</summary>
+      <form onSubmit={creatorLogin}>
+        <label>应急恢复密钥<input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {error && <p className="creator-login-error" role="alert">{error}</p>}
+        <button className="ghost" disabled={submitting || !password}>{submitting ? "正在验证…" : "验证应急密钥"}</button>
+      </form>
+    </details>}
+    {scope === "admin" && !emergencyCredentialEnabled && <p className="creator-login-note">当前未配置应急恢复密钥，管理员密码输入已隐藏。</p>}
     <button className="ghost" onClick={() => void onRetry()}>重新检查权限</button>
     <Link href="/">← 返回读者端</Link>
   </section></main>;

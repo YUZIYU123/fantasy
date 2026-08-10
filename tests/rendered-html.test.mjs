@@ -118,6 +118,28 @@ test("公开页面与后台页面由 Vinext Worker 正常渲染", async () => {
   assert.match(await admin.text(), /创作后台/);
 });
 
+test("公开页面统一通过创作中心解析工作台入口", async () => {
+  const homeResponse = await fetch(`${origin}/`);
+  assert.equal(homeResponse.status, 200);
+  const home = await homeResponse.text();
+  assert.match(home, /href="\/creator"/);
+  assert.doesNotMatch(home, /href="\/studio"/);
+
+  const creatorResponse = await fetch(`${origin}/creator`);
+  assert.equal(creatorResponse.status, 200);
+  assert.match(await creatorResponse.text(), /正在确认创作权限/);
+});
+
+test("创作工作台解析权限期间不显示空作品状态", async () => {
+  for (const path of ["/admin", "/studio"]) {
+    const response = await fetch(`${origin}${path}`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /正在确认创作权限/);
+    assert.doesNotMatch(html, /还没有小说/);
+  }
+});
+
 test("公开 API 只返回已发布内容，创作者登录后才能访问管理员 API", async () => {
   const published = await fetch(`${origin}/api/chapters`);
   assert.equal(published.status, 200);
@@ -128,7 +150,14 @@ test("公开 API 只返回已发布内容，创作者登录后才能访问管理
   assert.equal(publicWrite.status, 405);
   const adminRead = await fetch(`${origin}/admin/api/chapters`);
   assert.equal(adminRead.status, 401);
-  assert.match((await adminRead.json()).error, /创作者账号/);
+  assert.match((await adminRead.json()).error, /管理员账号/);
+  const protectedGeneration = await fetch(`${origin}/admin/api/assets/sfx`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ choiceText: "测试", interactionPreset: "glow" }),
+  });
+  assert.equal(protectedGeneration.status, 401);
+  assert.equal(protectedGeneration.headers.get("cache-control"), "no-store");
   const login = await fetch(`${origin}/admin/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json", origin },
@@ -141,6 +170,14 @@ test("公开 API 只返回已发布内容，创作者登录后才能访问管理
   assert.equal(session.status, 200);
   assert.deepEqual(await session.json(), {
     authenticated: true,
+    outcome: "allow",
+    destination: "admin",
+    redirectTo: null,
+    reason: "shared_credential",
+    accountRole: null,
+    source: "shared_credential",
+    administrator: { role: "admin", email: "creator", source: "shared_credential" },
+    recoveryAvailable: false,
     role: "admin",
     email: "creator",
   });
@@ -175,6 +212,70 @@ test("公开 API 只返回已发布内容，创作者登录后才能访问管理
   assert.equal(chapters[0].title, "未命名章节");
   assert.equal(chapters[0].draft.nodes.length, 1);
   assert.equal(chapters[0].draft.nodes[0].body, "");
+});
+
+test("创作入口按账号最新角色进入对应工作台", async () => {
+  const signedOut = await requestJson("/api/auth/creator-entry");
+  assert.deepEqual(signedOut.payload, {
+    destination: null,
+    redirectTo: "/login?next=/creator",
+    reason: "signed_out",
+    accountRole: null,
+  });
+
+  const email = `creator-entry-${process.pid}@example.com`;
+  const registration = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: { email, displayName: "入口角色测试", password: "test-password-123", turnstileToken: "" },
+  });
+  assert.equal(registration.response.status, 201);
+  assert.equal((await requestJson("/api/auth/verify-email", {
+    method: "POST",
+    body: { token: registration.payload.developmentToken },
+  })).response.status, 200);
+  const login = await requestJson("/api/auth/login", {
+    method: "POST",
+    body: { email, password: "test-password-123" },
+  });
+  assert.equal(login.response.status, 200);
+  const accountCookie = login.response.headers.get("set-cookie")?.split(";")[0] || "";
+  const user = (await requestJson("/admin/api/users", { cookie: adminCookie })).payload.users
+    .find((candidate) => candidate.email === email);
+  assert.ok(user);
+
+  assert.deepEqual((await requestJson("/api/auth/creator-entry", { cookie: accountCookie })).payload, {
+    destination: null,
+    redirectTo: null,
+    reason: "reader_account",
+    accountRole: "reader",
+  });
+  assert.equal((await requestJson("/admin/api/users", {
+    method: "PATCH", cookie: adminCookie, body: { id: user.id, role: "author" },
+  })).response.status, 200);
+  assert.deepEqual((await requestJson("/api/auth/creator-entry", { cookie: accountCookie })).payload, {
+    destination: "studio",
+    redirectTo: "/studio",
+    reason: "author_account",
+    accountRole: "author",
+  });
+  assert.equal((await requestJson("/admin/api/users", {
+    method: "PATCH", cookie: adminCookie, body: { id: user.id, role: "admin" },
+  })).response.status, 200);
+  assert.deepEqual((await requestJson("/api/auth/creator-entry", { cookie: accountCookie })).payload, {
+    destination: "admin",
+    redirectTo: "/admin",
+    reason: "admin_account",
+    accountRole: "admin",
+  });
+  assert.equal((await requestJson("/admin/api/users", {
+    method: "PATCH", cookie: adminCookie, body: { id: user.id, status: "disabled" },
+  })).response.status, 200);
+  assert.deepEqual((await requestJson("/api/auth/creator-entry", { cookie: accountCookie })).payload, {
+    destination: null,
+    redirectTo: "/login?next=/creator",
+    reason: "signed_out",
+    accountRole: null,
+  });
 });
 
 test("读者注册验证登录后可访问云端进度，管理员可升级为作者", async () => {
@@ -729,8 +830,8 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     method: "PATCH", cookie: adminCookie, body: { id: account.id, role: "reader" },
   })).response.status, 200);
   const revokedCapability = await requestJson("/admin/api/users", { cookie: accountCookie });
-  assert.equal(revokedCapability.response.status, 401);
-  assert.equal(revokedCapability.payload.error, "请先登录创作者账号");
+  assert.equal(revokedCapability.response.status, 403);
+  assert.equal(revokedCapability.payload.error, "当前账号没有管理员权限");
   assert.equal((await requestJson("/admin/api/users", {
     method: "PATCH", cookie: adminCookie, body: { id: account.id, status: "disabled" },
   })).response.status, 200);

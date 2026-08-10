@@ -40,6 +40,7 @@ export function createCloudflareRuntime({ main, port, vars = {}, readinessPath =
       WRANGLER_LOG_PATH: ".wrangler/test.log",
       CLOUDFLARE_PERSIST_PATH: persistencePath,
       CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: configPath,
+      CLOUDFLARE_DISABLE_INSPECTOR: "true",
     } : process.env;
     server = spawn("pnpm", command, { cwd: projectRoot, env: runtimeEnv, stdio: ["ignore", "pipe", "pipe"] });
     const collect = (chunk) => { output = `${output}${chunk}`.slice(-20_000); };

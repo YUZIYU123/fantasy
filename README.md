@@ -9,9 +9,10 @@
 - `/api/chapters`：公开、只读的已发布章节接口，支持按 `novelId` 过滤。
 - `/api/assets/:id`：公开 R2 素材读取接口，支持视频 Range 请求和长期缓存。
 - `/register`、`/login`、`/account`：读者注册、登录、资料和云端阅读进度。
+- `/creator`：统一创作入口，按本地管理员能力或账号角色进入正确工作台。
 - `/studio`：作者自己的小说资料、章节设置、流程画布和素材库；作者只能提交审核。
 - `/admin`：管理员小说／章节审核、发布、回退、用户角色和全部素材管理。
-- `/admin/api/*`：使用单创作者密码会话或站内管理员账号鉴权，不依赖 Cloudflare Access。
+- `/admin/api/*`：使用站内管理员账号或可选的应急恢复密钥鉴权，不依赖 Cloudflare Access。
 - `wrangler.jsonc`：唯一 Cloudflare 部署配置，包含 Worker、D1、R2 和观测配置。
 
 ## 本地开发
@@ -25,11 +26,15 @@ pnpm db:migrate:local
 pnpm dev
 ```
 
-如需在本机打开后台，新建不会提交到 Git 的 `.dev.vars`：
+复制不含密钥的本地变量示例；开启后访问 `/creator` 会自动进入 `/admin`，不依赖本地 D1 中是否存在账号：
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+需要其他本地集成时，再向不会提交到 Git 的 `.dev.vars` 增加对应配置：
 
 ```dotenv
-LOCAL_ADMIN_BYPASS=true
-LOCAL_AUTH_BYPASS=true
 TURNSTILE_SITE_KEY=your-turnstile-site-key
 APP_ORIGIN=http://localhost:3000
 # 可选：本地测试 AI 音效生成时再加入，不要提交真实密钥
@@ -43,14 +48,14 @@ ELEVENLABS_API_KEY=your-elevenlabs-api-key
 
 1. 在 Cloudflare 创建或确认 `mist-page-fiction-db` D1 数据库与 `mist-page-fiction-assets` R2 Bucket。它们沿用旧资源名以保证线上数据兼容，不随品牌更名。
 2. 将 `wrangler.jsonc` 中的 `database_id` 和资源名称改为目标环境的真实值。
-3. 生成高强度创作者密码并计算 SHA-256 十六进制摘要，同时生成至少 32 字符的随机会话密钥，然后保存为 Worker 加密变量：
+3. 正常情况下先注册站内账号，再由已有管理员将账号角色升级为管理员。若需要账号不可用时的应急恢复入口，可生成高强度恢复密钥并计算 SHA-256 十六进制摘要，同时生成至少 32 字符的随机会话密钥，然后保存为 Worker 加密变量：
 
 ```bash
 pnpm exec wrangler secret put CREATOR_PASSWORD_HASH
 pnpm exec wrangler secret put CREATOR_SESSION_SECRET
 ```
 
-创作者访问 `/admin` 后输入密码，服务端签发仅限 `/admin`、`HttpOnly`、`SameSite=Strict` 的 30 天会话 Cookie。创作者也可以把已验证的站内账号升级为管理员，之后使用该账号访问后台。
+只有以上两个变量都已配置时，`/admin` 才显示折叠的“应急恢复密钥”入口；未配置时不会展示无效密码框。验证成功后，服务端签发仅限 `/admin`、`HttpOnly`、`SameSite=Strict` 的 30 天会话 Cookie。
 
 4. 配置注册邮件和 Turnstile。以下值使用 `wrangler secret put` 保存，不要提交到仓库：
 
