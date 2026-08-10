@@ -1,5 +1,4 @@
 import { env } from "cloudflare:workers";
-import { optionalSessionIdentity } from "../db/session-identity";
 
 type AdminEnv = {
   CREATOR_PASSWORD_HASH?: string;
@@ -62,14 +61,7 @@ function cookieSecurity(request: Request) {
   return new URL(request.url).protocol === "https:" ? "; Secure" : "";
 }
 
-function assertAdminOrigin(request: Request) {
-  const origin = request.headers.get("origin");
-  if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && origin && origin !== new URL(request.url).origin) {
-    throw new AdminAuthError("请求来源无效", 403);
-  }
-}
-
-async function hasCreatorSession(request: Request) {
+export async function hasCreatorSession(request: Request) {
   const secret = values().CREATOR_SESSION_SECRET;
   if (!secret || !creatorAuthConfigured()) return false;
   const [version, expiresAtText, signature] = readCookie(request, SESSION_COOKIE).split(".");
@@ -90,6 +82,11 @@ export function creatorAuthConfigured() {
   );
 }
 
+export function localAdminBypassEnabled(request: Request) {
+  const hostname = new URL(request.url).hostname;
+  return (hostname === "localhost" || hostname === "127.0.0.1") && values().LOCAL_ADMIN_BYPASS === "true";
+}
+
 export async function verifyCreatorPassword(password: string) {
   const expected = values().CREATOR_PASSWORD_HASH?.toLowerCase() ?? "";
   if (!creatorAuthConfigured() || !password || password.length > 256) return false;
@@ -107,30 +104,6 @@ export async function createCreatorSessionCookie(request: Request) {
 
 export function clearCreatorSessionCookie(request: Request) {
   return `${SESSION_COOKIE}=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0${cookieSecurity(request)}`;
-}
-
-export async function requireAdmin(request: Request): Promise<AdminIdentity> {
-  const config = values();
-  const hostname = new URL(request.url).hostname;
-  const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
-  if (isLocal && config.LOCAL_ADMIN_BYPASS === "true") {
-    assertAdminOrigin(request);
-    return { role: "admin", email: "local-admin@localhost" };
-  }
-
-  if (await hasCreatorSession(request)) {
-    assertAdminOrigin(request);
-    return { role: "admin", email: "creator" };
-  }
-
-  const account = await optionalSessionIdentity(request);
-  if (account?.role === "admin") {
-    assertAdminOrigin(request);
-    return { role: "admin", email: account.email };
-  }
-
-  if (!creatorAuthConfigured()) throw new AdminAuthError("尚未配置创作者登录密钥", 503);
-  throw new AdminAuthError("请先登录创作者账号", 401);
 }
 
 export class AdminAuthError extends Error {

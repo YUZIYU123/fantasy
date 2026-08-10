@@ -54,11 +54,9 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     if (timeout) clearTimeout(timeout);
     timers.current.delete(timeoutId);
     if (activeVideoEffectId.current !== id) return;
+    activeVideoEffectId.current = null;
+    setNeedsPlay(false);
     dispatchRef.current({ type: "effect-result", id, outcome });
-    if (outcome !== "success") {
-      activeVideoEffectId.current = null;
-      setNeedsPlay(false);
-    }
   }, []);
 
   const executeEffects = useCallback((effects: ReadingEffect[]) => {
@@ -114,14 +112,14 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
           timers.current.delete(previousTimeoutId);
         }
         activeVideoEffectId.current = effect.id;
+        const timeoutId = `${effect.id}:timeout`;
+        timers.current.set(timeoutId, setTimeout(() => {
+          reportVideoOutcome(effect.id, "timeout");
+        }, effect.maximumMs));
         queueMicrotask(() => video.current?.play()
-          .then(() => reportVideoOutcome(effect.id, "success"))
+          .then(() => setNeedsPlay(false))
           .catch(() => {
             setNeedsPlay(true);
-            const timeoutId = `${effect.id}:timeout`;
-            timers.current.set(timeoutId, setTimeout(() => {
-              reportVideoOutcome(effect.id, "timeout");
-            }, 30_000));
           }));
       } else if (effect.kind === "terminal-feedback") {
         activeTerminalEffectId.current = effect.id;
@@ -208,7 +206,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     {state.activeTransition && <div className={`choice-transition transition-${state.activeTransition}`} aria-label="剧情转场"><i /><i /></div>}
     {state.choiceFeedback && <ChoiceFeedback choice={state.choiceFeedback} reducedMotion={reducedMotion} />}
     {node.videoMode === "background" && node.videoUrl && <video className="scene-video" src={node.videoUrl} poster={node.imageUrl || undefined} autoPlay muted loop playsInline onError={(event) => { event.currentTarget.style.display = "none"; }} />}
-    {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={needsPlay} onEnded={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")} onError={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "failure")} />{needsPlay && <button onClick={() => { const id = activeVideoEffectId.current; if (!id) return; video.current?.play().then(() => { setNeedsPlay(false); reportVideoOutcome(id, "success"); }).catch(() => reportVideoOutcome(id, "failure")); }}>点击播放</button>}<button className="skip-video" onClick={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")}>跳过动画 →</button></div>}
+    {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={needsPlay} onEnded={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")} onError={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "failure")} />{needsPlay && <button onClick={() => { const id = activeVideoEffectId.current; if (!id) return; video.current?.play().then(() => setNeedsPlay(false)).catch(() => reportVideoOutcome(id, "failure")); }}>点击播放</button>}<button className="skip-video" onClick={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")}>跳过动画 →</button></div>}
     <header className="reader-nav"><button onClick={onBack} aria-label="返回章节目录">←</button><div><span>{story.title}</span>{state.activeCueName && <small>♫ {state.activeCueName}</small>}</div><button onClick={() => setMuted((value) => !value)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
     {(state.phase === "beforeImage" || state.phase === "afterImage") && <NodeDisplayImage node={node} onContinue={() => dispatch({ type: "continue-image" })} />}
     {state.phase === "content" && <article className="story-panel" ref={storyPanel}><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${pageIndex}`} aria-live="polite">{pages[pageIndex]}</p>

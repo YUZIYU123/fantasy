@@ -4,18 +4,11 @@ import {
   clearCreatorSessionCookie,
   createCreatorSessionCookie,
   creatorAuthConfigured,
-  requireAdmin,
+  hasCreatorSession,
+  localAdminBypassEnabled,
   verifyCreatorPassword,
 } from "./admin-auth";
 import { optionalSessionIdentity, requireSessionIdentity, requireSessionRole } from "../db/session-identity";
-
-export const sessionAuthorization = {
-  optional: optionalSessionIdentity,
-  require: requireSessionIdentity,
-  async requireRole(request: Request, roles: UserRole[]) {
-    return requireSessionRole(request, roles);
-  },
-};
 
 const creatorAttempts = new Map<string, { count: number; resetAt: number }>();
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
@@ -45,8 +38,30 @@ async function authenticateSharedCredential(request: Request, password: string) 
   return createCreatorSessionCookie(request);
 }
 
-export const administratorCapability = {
-  require: requireAdmin,
+function assertAdministratorOrigin(request: Request) {
+  const origin = request.headers.get("origin");
+  if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && origin && origin !== new URL(request.url).origin) {
+    throw new AdministratorCapabilityError("请求来源无效", 403);
+  }
+}
+
+async function requireAdministrator(request: Request) {
+  assertAdministratorOrigin(request);
+  if (localAdminBypassEnabled(request)) return { role: "admin" as const, email: "local-admin@localhost" };
+  if (await hasCreatorSession(request)) return { role: "admin" as const, email: "creator" };
+  const account = await optionalSessionIdentity(request);
+  if (account?.role === "admin") return { role: "admin" as const, email: account.email };
+  if (!creatorAuthConfigured()) throw new AdministratorCapabilityError("尚未配置创作者登录密钥", 503);
+  throw new AdministratorCapabilityError("请先登录创作者账号", 401);
+}
+
+export const sessionAuthorization = {
+  optional: optionalSessionIdentity,
+  require: requireSessionIdentity,
+  async requireRole(request: Request, roles: UserRole[]) {
+    return requireSessionRole(request, roles);
+  },
+  requireAdministrator,
   authenticateSharedCredential,
   clearSharedCredential: clearCreatorSessionCookie,
 };

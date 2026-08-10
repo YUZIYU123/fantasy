@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse } from "../../../../_asset-lifecycle-http";
 import { adminAuthResponse, AdminAuthError } from "../../../../../lib/admin-auth";
-import { administratorCapability } from "../../../../../lib/session-authorization";
+import { sessionAuthorization } from "../../../../../lib/session-authorization";
 import { AuthError } from "../../../../../lib/auth";
 import { ElevenLabsTerminalSpeechProvider, TerminalSpeechError } from "../../../../../lib/tts";
 
@@ -14,7 +14,7 @@ function provider() {
 
 export async function GET(request: Request) {
   try {
-    await administratorCapability.require(request);
+    await sessionAuthorization.requireAdministrator(request);
     return Response.json({ voices: await provider().listVoices() });
   } catch (error) {
     if (error instanceof TerminalSpeechError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const identity = await administratorCapability.require(request);
+    const identity = await sessionAuthorization.requireAdministrator(request);
     const body = await request.json() as { text?: string; voiceId?: string; voiceName?: string };
     return assetLifecycleResponse(await assetLifecycle.execute({ kind: "administrator" }, {
       action: "generate-tts", bucket: env.ASSET_BUCKET, provider: provider(),

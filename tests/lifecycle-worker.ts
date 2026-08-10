@@ -1,6 +1,7 @@
 import { createAccountLifecycle, MockAuthMailer, MockTurnstileVerifier } from "../db/account-lifecycle";
 import { AssetLifecycleError, assetLifecycle } from "../db/assets";
 import { creationLifecycle } from "../db/creation-lifecycle";
+import { readingSessionProgress } from "../db/reading-session-progress";
 import { sessionAuthorization } from "../lib/session-authorization";
 import { AuthError } from "../lib/auth";
 import { createBlankNovel, createBlankStory } from "../lib/story";
@@ -11,6 +12,10 @@ const lifecycleWorker = {
   async fetch(request: Request, workerEnv: TestEnv) {
     const pathname = new URL(request.url).pathname;
     if (pathname === "/health") return Response.json({ ok: true });
+
+    if (pathname === "/reading-progress" && request.method === "GET") {
+      return Response.json({ progress: await readingSessionProgress.list(crypto.randomUUID()) });
+    }
 
     if (pathname === "/creation" && request.method === "POST") {
       const owner = { kind: "author" as const, id: crypto.randomUUID() };
@@ -463,9 +468,11 @@ const lifecycleWorker = {
       if (!login.cookie) throw new Error("登录没有创建 session cookie");
       const authorizedRequest = lifecycleRequest(login.cookie);
       const before = await sessionAuthorization.require(authorizedRequest);
+      await lifecycle.execute({ action: "update-user", id: before.id, role: "admin" });
+      const administrator = await sessionAuthorization.requireAdministrator(authorizedRequest);
       await lifecycle.execute({ action: "update-user", id: before.id, status: "disabled" });
       const after = await sessionAuthorization.optional(authorizedRequest);
-      return Response.json({ before, after });
+      return Response.json({ before, administrator, after });
     }
 
     if (pathname === "/account-mail-timeout" && request.method === "POST") {

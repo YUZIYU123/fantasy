@@ -129,7 +129,14 @@ test("SessionAuthorization 每次请求读取最新账号状态", async () => {
   assert.equal(response.status, 200, runtime.output);
   const payload = await response.json();
   assert.equal(payload.before.status, "active");
+  assert.deepEqual(payload.administrator, { role: "admin", email: payload.before.email });
   assert.equal(payload.after, null);
+});
+
+test("ReadingSession 通过公开接口读取云端进度", async () => {
+  const response = await fetch(`${runtime.origin}/reading-progress`);
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), { progress: [] });
 });
 
 test("AccountLifecycle 对邮件超时执行有限重试并返回稳定错误", async () => {

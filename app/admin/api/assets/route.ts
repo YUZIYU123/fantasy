@@ -2,13 +2,13 @@ import { env } from "cloudflare:workers";
 import { assetLifecycle } from "../../../../db/assets";
 import { assetLifecycleErrorResponse, assetLifecycleResponse, parseAssetMutation } from "../../../_asset-lifecycle-http";
 import { adminAuthResponse, AdminAuthError } from "../../../../lib/admin-auth";
-import { administratorCapability } from "../../../../lib/session-authorization";
+import { sessionAuthorization } from "../../../../lib/session-authorization";
 
 const actor = { kind: "administrator" } as const;
 
 export async function GET(request: Request) {
   try {
-    await administratorCapability.require(request);
+    await sessionAuthorization.requireAdministrator(request);
     return Response.json(await assetLifecycle.list(actor));
   } catch (error) {
     const response = assetLifecycleErrorResponse(error);
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    await administratorCapability.require(request);
+    await sessionAuthorization.requireAdministrator(request);
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File)) return Response.json({ error: "请选择文件" }, { status: 400 });
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    await administratorCapability.require(request);
+    await sessionAuthorization.requireAdministrator(request);
     const body = parseAssetMutation(await request.json());
     return assetLifecycleResponse(await assetLifecycle.execute(actor, body));
   } catch (error) {
@@ -53,7 +53,7 @@ export async function PATCH(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    await administratorCapability.require(request);
+    await sessionAuthorization.requireAdministrator(request);
     return assetLifecycleResponse(await assetLifecycle.execute(actor, {
       action: "delete", id: new URL(request.url).searchParams.get("id") || undefined, bucket: env.ASSET_BUCKET,
     }));

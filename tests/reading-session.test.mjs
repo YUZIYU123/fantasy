@@ -38,10 +38,46 @@ test("预览会话推进剧情但永不产生持久化 effect", () => {
   assert.equal(advanced.effects.some((effect) => effect.kind === "persist-progress"), false);
 });
 
+test("ReadingSession 按配置在源节点之后或目标节点之前执行剧情转场", () => {
+  for (const transitionPosition of ["afterSource", "beforeTarget"]) {
+    const current = story();
+    const source = current.nodes.find((node) => node.id === current.startNodeId);
+    const choice = source.choices[0];
+    choice.transitionPreset = "fade";
+    choice.transitionPosition = transitionPosition;
+    const session = createReadingSession({
+      story: current,
+      chapterId: `transition-${transitionPosition}`,
+      chapterVersion: 1,
+      preview: true,
+    });
+
+    const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
+    const feedback = chosen.effects.find((effect) => effect.kind === "wait");
+    assert.ok(feedback);
+    const transitioning = session.dispatch({ type: "effect-result", id: feedback.id, outcome: "timeout" });
+    assert.equal(transitioning.state.activeTransition, "fade");
+    assert.equal(transitioning.state.phase, "transitionEffect");
+    assert.equal(
+      transitioning.state.nodeId,
+      transitionPosition === "afterSource" ? source.id : choice.targetId,
+    );
+    const transition = transitioning.effects.find((effect) => effect.kind === "wait");
+    assert.equal(transition?.id, `transition:${choice.id}`);
+
+    const completed = session.dispatch({ type: "effect-result", id: transition.id, outcome: "timeout" });
+    assert.equal(completed.state.nodeId, choice.targetId);
+    assert.equal(completed.state.phase, "content");
+    assert.equal(completed.state.activeTransition, null);
+    assert.equal(completed.state.choiceLocked, false);
+  }
+});
+
 test("媒体失败回送后会解除选择锁并抵达可继续状态", () => {
   const current = story();
   const choice = current.nodes[0].choices[0];
   choice.sfxUrl = "https://example.com/fail.mp3";
+  choice.transitionPreset = "none";
   const session = createReadingSession({ story: current, chapterId: "media", chapterVersion: 1, preview: true });
   const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
   assert.equal(chosen.state.choiceLocked, true);
@@ -143,6 +179,7 @@ test("终端反馈由 effect 驱动且失败或超时后仍能继续", () => {
     choice.terminalMessage = "任务链路异常，继续剧情。";
     choice.terminalSpeak = true;
     choice.terminalVoiceUrl = "https://example.com/fail.mp3";
+    choice.transitionPreset = "none";
     const session = createReadingSession({
       story: current, chapterId: `terminal-${outcome}`, chapterVersion: 1, preview: true,
     });
@@ -155,4 +192,31 @@ test("终端反馈由 effect 驱动且失败或超时后仍能继续", () => {
     assert.equal(recovered.state.nodeId, choice.targetId);
     assert.equal(recovered.state.choiceLocked, false);
   }
+});
+
+test("终端反馈完成后仍按目标节点前的配置执行剧情转场", () => {
+  const current = story();
+  const choice = current.nodes[0].choices[0];
+  choice.terminalFeedbackEnabled = true;
+  choice.terminalMessage = "反馈完成后执行转场。";
+  choice.transitionPreset = "fade";
+  choice.transitionPosition = "beforeTarget";
+  const session = createReadingSession({
+    story: current,
+    chapterId: "terminal-transition",
+    chapterVersion: 1,
+    preview: true,
+  });
+  const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
+  const terminal = chosen.effects.find((effect) => effect.kind === "terminal-feedback");
+  assert.ok(terminal);
+  const transitioning = session.dispatch({ type: "effect-result", id: terminal.id, outcome: "complete" });
+  assert.equal(transitioning.state.nodeId, choice.targetId);
+  assert.equal(transitioning.state.phase, "transitionEffect");
+  assert.equal(transitioning.state.activeTransition, "fade");
+  const transition = transitioning.effects.find((effect) => effect.id === `transition:${choice.id}`);
+  assert.ok(transition);
+  const completed = session.dispatch({ type: "effect-result", id: transition.id, outcome: "timeout" });
+  assert.equal(completed.state.phase, "content");
+  assert.equal(completed.state.choiceLocked, false);
 });
