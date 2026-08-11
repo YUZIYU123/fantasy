@@ -721,5 +721,3 @@ export function createAccountLifecycle({
   }
   return { execute, registrationConfig: () => ({ ...config, allowedHostnames: [...config.allowedHostnames] }) };
 }
-
-export const accountLifecycle = createAccountLifecycle();
