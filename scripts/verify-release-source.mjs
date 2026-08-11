@@ -17,6 +17,12 @@ const branch = git(["branch", "--show-current"]);
 if (!branch) throw new Error("detached HEAD 不能发布");
 if (target === "production" && branch !== "main") throw new Error("production 只能从 main 发布");
 const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+if (target === "production" && upstream !== "origin/main") {
+  throw new Error("production 的 main 必须跟踪 origin/main");
+}
+if (target === "staging" && !upstream.startsWith("origin/")) {
+  throw new Error("staging 发布分支必须跟踪 origin 上游");
+}
 const head = git(["rev-parse", "HEAD"]);
 const upstreamHead = git(["rev-parse", upstream]);
 if (head !== upstreamHead) throw new Error(`本地 HEAD 与上游 ${upstream} 不一致，拒绝发布`);

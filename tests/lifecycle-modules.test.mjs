@@ -202,6 +202,7 @@ test("注册操作超时可查询结果且重复提交保持幂等", async () =>
   assert.equal(payload.first.status, 201);
   assert.deepEqual(payload.repeated.body, payload.first.body);
   assert.equal(payload.successMailCalls, 1);
+  assert.equal(payload.receiptMatchesOfflinePasswordGuess, false);
 });
 
 test("注册与重发共享频控且拒绝发生在外部调用之前", async () => {
@@ -212,6 +213,12 @@ test("注册与重发共享频控且拒绝发生在外部调用之前", async ()
   assert.ok(payload.retryAfterSeconds > 0);
   assert.equal(payload.mailCalls, 5);
   assert.equal(payload.turnstileCalls, 5);
+});
+
+test("账号频控在并发请求下只接受阈值内的操作", async () => {
+  const response = await fetch(`${runtime.origin}/account-rate-limit-concurrency`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), { accepted: 5, limited: 1 });
 });
 
 test("AccountLifecycle 清理七天未验证账号且保留正常账号", async () => {

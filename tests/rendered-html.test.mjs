@@ -145,6 +145,29 @@ test("账号身份、配置和错误响应禁止进入共享缓存", async () =>
   assert.equal(rejected.headers.get("cache-control"), "private, no-store");
 });
 
+test("向导记忆的领域拒绝由 HTTP adapter 映射为稳定错误", async () => {
+  const email = `guide-rejection-${process.pid}@example.com`;
+  const registration = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: {
+      email, displayName: "向导拒绝测试", password: "guide-rejection-password-123",
+      turnstileToken: "", ...requiredRegistrationConsent,
+    },
+  });
+  const activation = await requestJson("/api/auth/activate-account", {
+    method: "POST", body: { token: registration.payload.developmentToken },
+  });
+  const cookie = activation.response.headers.get("set-cookie")?.split(";")[0] || "";
+  const rejected = await requestJson("/api/account/guide-memory", {
+    method: "PATCH",
+    cookie,
+    body: { preferences: ["奇幻"], completeGuide: false },
+  });
+  assert.equal(rejected.response.status, 400);
+  assert.equal(rejected.payload.error, "需要明确确认同步阅读偏好");
+  assert.equal(rejected.response.headers.get("cache-control"), "private, no-store");
+});
+
 test("公开页面统一通过创作中心解析工作台入口", async () => {
   const homeResponse = await fetch(`${origin}/`);
   assert.equal(homeResponse.status, 200);

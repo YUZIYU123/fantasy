@@ -64,11 +64,13 @@ test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
 });
 
 test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环境", async () => {
-  const [files, journal, packageJson, workflow] = await Promise.all([
+  const [files, journal, packageJson, workflow, sourceGate, smoke] = await Promise.all([
     readdir(new URL("drizzle", root)),
     json("drizzle/meta/_journal.json"),
     json("package.json"),
     readFile(new URL(".github/workflows/verify.yml", root), "utf8"),
+    readFile(new URL("scripts/verify-release-source.mjs", root), "utf8"),
+    readFile(new URL("scripts/smoke-cloudflare.mjs", root), "utf8"),
   ]);
   const migrations = files.filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   assert.deepEqual(migrations.map((file) => Number(file.slice(0, 4))), migrations.map((_, index) => index));
@@ -88,6 +90,10 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
     assert.match(packageJson.scripts["release:check"], new RegExp(gate.replaceAll(":", "\\:")));
   }
   assert.match(workflow, /pnpm release:check/);
+  assert.match(sourceGate, /upstream !== "origin\/main"/);
+  assert.match(sourceGate, /upstream\.startsWith\("origin\/"\)/);
+  assert.match(smoke, /desiredAnalyticsAllowed = !originalAnalyticsAllowed/);
+  assert.match(smoke, /恢复核心写流程前态/);
 });
 
 test("AccountLifecycle 业务规则只依赖 AccountStore interface", async () => {

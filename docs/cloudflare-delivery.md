@@ -39,6 +39,6 @@ Destructive schema changes use expand-contract across separate releases: add com
 
 Deployment commands fetch and prune `origin`, require a clean worktree, and require local `HEAD` to equal its GitHub upstream. Production additionally requires the current branch to be `main`. Each deployment command reapplies the corresponding ordered migration command as a final no-op-or-apply gate before uploading code, so code cannot be deployed ahead of committed migrations.
 
-The smoke scripts check the environment-attested health endpoint, homepage, login page, a public D1-backed read, rejection of an unauthenticated write, an authenticated session, and an idempotent authenticated guide-memory write. `SMOKE_SESSION_COOKIE` is mandatory and must belong to a controlled staging/production test account; the script never prints it.
+The smoke scripts check the environment-attested health endpoint, homepage, login page, a public D1-backed read, rejection of an unauthenticated write, an authenticated session, and an authenticated guide-memory write followed by a read-back assertion and restoration of the original value. `SMOKE_SESSION_COOKIE` is mandatory and must belong to a controlled staging/production test account; the script never prints it.
 
 If an incident occurs, first establish a replayable failing request, minimize it, test falsifiable hypotheses against Workers logs/traces, add a regression test, fix, rerun the original request, remove temporary logging, and record the root cause and prevention.

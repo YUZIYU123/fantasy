@@ -45,11 +45,47 @@ if (!(await identity.json()).user) throw new Error("登录会话没有返回用�
 const memoryResponse = await request("/api/account/guide-memory", { headers: { cookie: sessionCookie } });
 expectStatus(memoryResponse, [200], "核心写流程读取前态");
 const memory = (await memoryResponse.json()).memory;
-const verifiedWrite = await request("/api/account/guide-memory", {
-  method: "PATCH",
-  headers: { "content-type": "application/json", origin, cookie: sessionCookie },
-  body: JSON.stringify({ analyticsAllowed: Boolean(memory?.registrationAnalyticsAllowed) }),
-});
-expectStatus(verifiedWrite, [200], "已授权幂等核心写流程");
+const originalAnalyticsAllowed = Boolean(memory?.registrationAnalyticsAllowed);
+const desiredAnalyticsAllowed = !originalAnalyticsAllowed;
+
+async function setAnalyticsPreference(allowed, label) {
+  const response = await request("/api/account/guide-memory", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", origin, cookie: sessionCookie },
+    body: JSON.stringify({ analyticsAllowed: allowed }),
+  });
+  expectStatus(response, [200], label);
+  const payload = await response.json();
+  if (payload.memory?.registrationAnalyticsAllowed !== allowed) throw new Error(`${label} 未返回写入值`);
+}
+
+async function readAnalyticsPreference(label) {
+  const response = await request("/api/account/guide-memory", { headers: { cookie: sessionCookie } });
+  expectStatus(response, [200], label);
+  return Boolean((await response.json()).memory?.registrationAnalyticsAllowed);
+}
+
+let writeFailure;
+try {
+  await setAnalyticsPreference(desiredAnalyticsAllowed, "已授权核心写流程");
+  if (await readAnalyticsPreference("核心写流程回读") !== desiredAnalyticsAllowed) {
+    throw new Error("核心写流程没有持久化变更");
+  }
+} catch (error) {
+  writeFailure = error;
+}
+
+let restoreFailure;
+try {
+  await setAnalyticsPreference(originalAnalyticsAllowed, "恢复核心写流程前态");
+  if (await readAnalyticsPreference("恢复后回读") !== originalAnalyticsAllowed) {
+    throw new Error("核心写流程前态没有恢复");
+  }
+} catch (error) {
+  restoreFailure = error;
+}
+
+if (writeFailure) throw writeFailure;
+if (restoreFailure) throw restoreFailure;
 
 process.stdout.write(`${target} 冒烟测试通过：${origin}\n`);

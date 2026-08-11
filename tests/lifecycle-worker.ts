@@ -2,12 +2,13 @@ import { createAccountLifecycle, MockAuthMailer, MockTurnstileVerifier } from ".
 import { accountRegistrationConfigFrom } from "../db/account-runtime";
 import { acceptsTurnstileResult } from "../db/account-providers";
 import { drizzleD1AccountStore } from "../db/account-store";
+import { d1AccountRateLimiter } from "../db/rate-limit";
 import { MockRegistrationTelemetry } from "../lib/registration-telemetry";
 import { AssetLifecycleError, assetLifecycle } from "../db/assets";
 import { creationLifecycle } from "../db/creation-lifecycle";
 import { readingSessionProgress } from "../db/reading-session-progress";
 import { sessionAuthorization } from "../lib/session-authorization";
-import { AuthError } from "../lib/auth";
+import { AuthError, hashToken } from "../lib/auth";
 import { createBlankNovel, createBlankStory } from "../lib/story";
 
 type TestEnv = { ASSET_BUCKET: R2Bucket };
@@ -676,11 +677,20 @@ const lifecycleWorker = {
       };
       const first = await successLifecycle.execute(command);
       const repeated = await successLifecycle.execute(command);
+      const receipt = await drizzleD1AccountStore.findOperationReceipt(await hashToken(successOperationId));
+      const receiptBody = JSON.parse(receipt?.resultJson || "{}") as { requestHash?: string };
+      const offlinePasswordGuess = await hashToken(JSON.stringify({
+        kind: "register", email: command.email, displayName: command.displayName,
+        passwordHash: await hashToken(command.password), ageConfirmed: true,
+        termsAccepted: true, privacyAccepted: true, analyticsAllowed: false,
+        termsVersion: "development", privacyVersion: "development",
+      }));
       return Response.json({
         uncertain, recovered, recoveredOutcome,
         recoveryMailCalls, recoveryMailSameKey: new Set(recoveryMailKeys).size === 1,
         recoveredAccountCount: recoveredAccounts.filter((account) => account.email === timeoutEmail).length,
         first, repeated, successMailCalls: successMailer.calls.length,
+        receiptMatchesOfflinePasswordGuess: receiptBody.requestHash === offlinePasswordGuess,
       });
     }
 
@@ -718,6 +728,21 @@ const lifecycleWorker = {
       }
       return Response.json({
         limitedStatus, retryAfterSeconds, mailCalls: mailer.calls.length, turnstileCalls: turnstile.calls.length,
+      });
+    }
+
+    if (pathname === "/account-rate-limit-concurrency" && request.method === "POST") {
+      const rateRequest = () => new Request(request.url, {
+        headers: { "cf-connecting-ip": "203.0.113.44" },
+      });
+      const identity = `concurrent-${crypto.randomUUID()}@example.com`;
+      const results = await Promise.allSettled(Array.from({ length: 6 }, () => d1AccountRateLimiter.enforce(
+        rateRequest(), "concurrent-registration", identity, 5, 30, () => new Date("2026-08-11T00:00:00.000Z"),
+      )));
+      return Response.json({
+        accepted: results.filter((result) => result.status === "fulfilled").length,
+        limited: results.filter((result) => result.status === "rejected"
+          && result.reason instanceof AuthError && result.reason.status === 429).length,
       });
     }
 

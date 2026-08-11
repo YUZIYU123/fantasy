@@ -1,5 +1,5 @@
 import { sendAuthEmail, validateTurnstile } from "./account-providers";
-import { enforceRateLimit } from "./rate-limit";
+import { d1AccountRateLimiter, type AccountRateLimiter } from "./rate-limit";
 import { drizzleD1AccountStore, type AccountStore } from "./account-store";
 import {
   AuthError,
@@ -203,6 +203,7 @@ export function createAccountLifecycle({
   resetTokenLifetimeMs = 30 * 60_000,
   clock = () => new Date(),
   telemetry = workerRegistrationTelemetry,
+  rateLimiter = d1AccountRateLimiter,
 }: {
   config?: AccountRegistrationConfig;
   store?: AccountStore;
@@ -214,6 +215,7 @@ export function createAccountLifecycle({
   resetTokenLifetimeMs?: number;
   clock?: () => Date;
   telemetry?: RegistrationTelemetry;
+  rateLimiter?: AccountRateLimiter;
 } = {}) {
   async function createSession(userId: string, request: Request) {
     const token = randomToken();
@@ -367,7 +369,7 @@ export function createAccountLifecycle({
     if (command.action === "register" && command.operationId) {
       const requestHash = await hashToken(JSON.stringify({
         kind: "register", email: normalizeEmail(command.email), displayName: command.displayName.trim(),
-        passwordHash: await hashToken(command.password), ageConfirmed: command.ageConfirmed === true,
+        ageConfirmed: command.ageConfirmed === true,
         termsAccepted: command.termsAccepted === true, privacyAccepted: command.privacyAccepted === true,
         analyticsAllowed: command.analyticsAllowed === true, termsVersion: config.termsVersion, privacyVersion: config.privacyVersion,
       }));
@@ -386,7 +388,7 @@ export function createAccountLifecycle({
     if (command.action === "restart-registration" && command.operationId) {
       const requestHash = await hashToken(JSON.stringify({
         kind: "restart", currentEmail: normalizeEmail(command.currentEmail), email: normalizeEmail(command.email),
-        displayName: command.displayName.trim(), passwordHash: await hashToken(command.password),
+        displayName: command.displayName.trim(),
         ageConfirmed: command.ageConfirmed === true, termsAccepted: command.termsAccepted === true,
         privacyAccepted: command.privacyAccepted === true, analyticsAllowed: command.analyticsAllowed === true,
         termsVersion: config.termsVersion, privacyVersion: config.privacyVersion,
@@ -405,7 +407,7 @@ export function createAccountLifecycle({
       if (!displayName || displayName.length > 40) throw new AuthError("昵称需要为 1–40 个字符");
       const passwordError = validatePassword(command.password);
       if (passwordError) throw new AuthError(passwordError);
-      await enforceRateLimit(command.request, "registration-email", email, 5, 30, clock);
+      await rateLimiter.enforce(command.request, "registration-email", email, 5, 30, clock);
       const turnstileIdempotencyKey = command.externalIdempotencyBase
         ? `${command.externalIdempotencyBase}:turnstile`
         : crypto.randomUUID();
@@ -484,7 +486,7 @@ export function createAccountLifecycle({
         const remainingMs = 60_000 - (nowDate.getTime() - Date.parse(account.lastVerificationSentAt));
         if (remainingMs > 0) throw new AuthError("请稍后再发送验证邮件", 429, Math.ceil(remainingMs / 1000));
       }
-      await enforceRateLimit(command.request, "registration-email", email, 5, 30, clock);
+      await rateLimiter.enforce(command.request, "registration-email", email, 5, 30, clock);
       const turnstileIdempotencyKey = command.externalIdempotencyBase
         ? `${command.externalIdempotencyBase}:turnstile`
         : crypto.randomUUID();
@@ -533,7 +535,7 @@ export function createAccountLifecycle({
       if (!account || account.status !== "pending") throw new AuthError("待验证账号不可恢复", 409);
       const conflicting = await store.findByEmail(email);
       if (conflicting && conflicting.id !== account.id) throw new AuthError("此邮箱已注册", 409);
-      await enforceRateLimit(command.request, "registration-email", currentEmail, 5, 30, clock);
+      await rateLimiter.enforce(command.request, "registration-email", currentEmail, 5, 30, clock);
       const turnstileIdempotencyKey = command.externalIdempotencyBase
         ? `${command.externalIdempotencyBase}:turnstile`
         : crypto.randomUUID();
@@ -629,7 +631,7 @@ export function createAccountLifecycle({
     if (command.action === "login") {
       const email = normalizeEmail(command.email);
       if (email.length > 254) throw new AuthError("邮箱格式无效");
-      await enforceRateLimit(command.request, "login", email, 10, 15, clock);
+      await rateLimiter.enforce(command.request, "login", email, 10, 15, clock);
       const user = await store.findByEmail(email);
       if (!user || !await verifyPassword(command.password, user.passwordHash)) throw new AuthError("邮箱或密码错误", 401);
       if (user.status === "pending") throw new AuthError("请先验证邮箱", 403);
@@ -642,7 +644,7 @@ export function createAccountLifecycle({
     if (command.action === "forgot-password") {
       const email = normalizeEmail(command.email);
       if (email.length > 254) throw new AuthError("邮箱格式无效");
-      await enforceRateLimit(command.request, "forgot-password", email, 4, 60, clock);
+      await rateLimiter.enforce(command.request, "forgot-password", email, 4, 60, clock);
       const turnstileIdempotencyKey = crypto.randomUUID();
       await executeExternal(
         (signal) => turnstile.verify(command.request, command.turnstileToken, "forgot-password", {
