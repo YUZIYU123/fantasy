@@ -12,13 +12,16 @@ export function createCloudflareRuntime({ main, port, vars = {}, readinessPath =
   let output = "";
   let persistencePath;
   let configPath;
+  let databaseName;
   const origin = `http://localhost:${port}`;
 
   async function start() {
     persistencePath = await mkdtemp(join(tmpdir(), "mist-page-lifecycle-test-"));
     configPath = join(persistencePath, "wrangler.test.json");
-    const config = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+    const rootConfig = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+    const config = { ...rootConfig, ...rootConfig.env.local };
     delete config.$schema;
+    delete config.env;
     delete config.routes;
     config.main = main;
     config.vars = { ...config.vars, ...vars };
@@ -26,9 +29,10 @@ export function createCloudflareRuntime({ main, port, vars = {}, readinessPath =
       ...database,
       migrations_dir: join(projectRoot, "drizzle"),
     }));
+    databaseName = config.d1_databases[0].database_name;
     await writeFile(configPath, JSON.stringify(config));
     const migration = spawnSync("pnpm", [
-      "exec", "wrangler", "d1", "migrations", "apply", "mist-page-fiction-db", "--local",
+      "exec", "wrangler", "d1", "migrations", "apply", databaseName, "--local", "--config", configPath,
       "--persist-to", persistencePath,
     ], { cwd: projectRoot, env: process.env, encoding: "utf8" });
     assert.equal(migration.status, 0, `本地 D1 迁移失败：\n${migration.stdout}\n${migration.stderr}`);
@@ -72,7 +76,7 @@ export function createCloudflareRuntime({ main, port, vars = {}, readinessPath =
 
   function executeD1(sql) {
     const result = spawnSync("pnpm", [
-      "exec", "wrangler", "d1", "execute", "mist-page-fiction-db", "--local",
+      "exec", "wrangler", "d1", "execute", databaseName, "--local", "--config", configPath,
       "--persist-to", persistencePath, "--command", sql,
     ], { cwd: projectRoot, env: process.env, encoding: "utf8" });
     assert.equal(result.status, 0, `本地 D1 命令失败：\n${result.stdout}\n${result.stderr}`);

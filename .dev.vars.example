@@ -3,3 +3,12 @@ LOCAL_ADMIN_BYPASS=true
 
 # 本地调试注册、邮箱验证和密码找回时使用；生产环境不要设置。
 LOCAL_AUTH_BYPASS=true
+
+# 可选的本地管理员恢复配置。不要把真实值提交到 Git。
+CREATOR_PASSWORD_HASH=
+CREATOR_SESSION_SECRET=
+
+# 可选的本地第三方服务密钥。LOCAL_AUTH_BYPASS=true 时注册不需要这些值。
+ELEVENLABS_API_KEY=
+TURNSTILE_SECRET_KEY=
+RESEND_API_KEY=

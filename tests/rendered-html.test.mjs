@@ -123,6 +123,13 @@ test("公开页面与后台页面由 Vinext Worker 正常渲染", async () => {
   assert.match(await admin.text(), /创作后台/);
 });
 
+test("平台健康检查验证 D1 与 R2 bindings 且禁止缓存", async () => {
+  const response = await fetch(`${origin}/api/health`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), { ok: true });
+});
+
 test("公开页面统一通过创作中心解析工作台入口", async () => {
   const homeResponse = await fetch(`${origin}/`);
   assert.equal(homeResponse.status, 200);
