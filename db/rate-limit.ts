@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { and, count, eq, gt } from "drizzle-orm";
+import { and, asc, eq, gt } from "drizzle-orm";
 import { getDb } from ".";
 import { authAttempts } from "./schema";
 import { AuthError, hashToken, normalizeEmail } from "../lib/auth";
@@ -16,9 +16,13 @@ export async function enforceRateLimit(request: Request, action: string, identit
   const key = await hashToken(`${ip}:${normalizeEmail(identity)}`);
   // SQLite CURRENT_TIMESTAMP uses `YYYY-MM-DD HH:mm:ss`.
   const since = new Date(Date.now() - minutes * 60_000).toISOString().replace("T", " ").slice(0, 19);
-  const result = await getDb().select({ value: count() }).from(authAttempts).where(and(
+  const attempts = await getDb().select({ createdAt: authAttempts.createdAt }).from(authAttempts).where(and(
     eq(authAttempts.key, key), eq(authAttempts.action, action), gt(authAttempts.createdAt, since),
-  ));
-  if ((result[0]?.value ?? 0) >= maximum) throw new AuthError("操作过于频繁，请稍后再试", 429);
+  )).orderBy(asc(authAttempts.createdAt));
+  if (attempts.length >= maximum) {
+    const oldest = Date.parse(`${attempts[0].createdAt.replace(" ", "T")}Z`);
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldest + minutes * 60_000 - Date.now()) / 1000));
+    throw new AuthError("操作过于频繁，请稍后再试", 429, retryAfterSeconds);
+  }
   await getDb().insert(authAttempts).values({ key, action });
 }

@@ -94,12 +94,50 @@ export const users = sqliteTable("users", {
   role: text("role", { enum: ["reader", "author", "admin"] }).notNull().default("reader"),
   status: text("status", { enum: ["pending", "active", "disabled"] }).notNull().default("pending"),
   emailVerifiedAt: text("email_verified_at"),
+  lastVerificationSentAt: text("last_verification_sent_at"),
+  pendingExpiresAt: text("pending_expires_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("users_email_unique").on(table.email),
   index("users_role_status_idx").on(table.role, table.status),
 ]);
+
+export const registrationConsents = sqliteTable("registration_consents", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  ageConfirmedAt: text("age_confirmed_at").notNull(),
+  termsVersion: text("terms_version").notNull(),
+  privacyVersion: text("privacy_version").notNull(),
+  confirmedAt: text("confirmed_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("registration_consents_user_unique").on(table.userId),
+]);
+
+export const accountOperationReceipts = sqliteTable("account_operation_receipts", {
+  id: text("id").primaryKey(),
+  idempotencyHash: text("idempotency_hash").notNull(),
+  kind: text("kind", { enum: ["register", "resend", "restart"] }).notNull(),
+  userId: text("user_id"),
+  status: text("status", { enum: ["processing", "succeeded", "failed", "uncertain"] }).notNull(),
+  resultJson: text("result_json").notNull().default("{}"),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("account_operation_receipts_idempotency_unique").on(table.idempotencyHash),
+  index("account_operation_receipts_expiry_idx").on(table.expiresAt),
+]);
+
+export const accountPreferences = sqliteTable("account_preferences", {
+  userId: text("user_id").primaryKey(),
+  registrationAnalyticsAllowed: integer("registration_analytics_allowed", { mode: "boolean" }).notNull().default(false),
+  readingPreferencesJson: text("reading_preferences_json").notNull().default("[]"),
+  guideCompletedAt: text("guide_completed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
 
 export const sessions = sqliteTable("sessions", {
   id: text("id").primaryKey(),

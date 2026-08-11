@@ -2,6 +2,7 @@ import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { getDb } from ".";
 import { sendAuthEmail, validateTurnstile } from "./account-providers";
 import { enforceRateLimit } from "./rate-limit";
+import { drizzleD1AccountStore, type AccountStore } from "./account-store";
 import { authTokens, sessions, users } from "./schema";
 import {
   AuthError,
@@ -16,6 +17,13 @@ import {
   AUTH_SESSION_COOKIE,
   randomToken,
 } from "../lib/auth";
+import { registrationResumeDirective, type RegistrationIntent } from "../lib/registration-intent";
+import {
+  workerRegistrationTelemetry,
+  type RegistrationTelemetry,
+  type RegistrationTelemetryEvent,
+} from "../lib/registration-telemetry";
+import { normalizeReaderPreferences } from "../lib/terminal";
 
 const SESSION_DAYS = 30;
 
@@ -123,7 +131,43 @@ async function executeExternal<T>(
 }
 
 export type AccountCommand =
-  | { action: "register"; request: Request; email: string; displayName: string; password: string; turnstileToken: string }
+  | {
+    action: "register";
+    request: Request;
+    email: string;
+    displayName: string;
+    password: string;
+    turnstileToken: string;
+    ageConfirmed?: boolean;
+    termsAccepted?: boolean;
+    privacyAccepted?: boolean;
+    analyticsAllowed?: boolean;
+    operationId?: string;
+  }
+  | { action: "inspect-email-verification"; token: string }
+  | { action: "activate-account"; request: Request; token: string; intent?: RegistrationIntent | null; analyticsAllowed?: boolean }
+  | { action: "resend-verification"; request: Request; email: string; turnstileToken: string; analyticsAllowed?: boolean; operationId?: string }
+  | {
+    action: "restart-registration";
+    request: Request;
+    currentEmail: string;
+    email: string;
+    displayName: string;
+    password: string;
+    turnstileToken: string;
+    ageConfirmed?: boolean;
+    termsAccepted?: boolean;
+    privacyAccepted?: boolean;
+    analyticsAllowed?: boolean;
+    operationId?: string;
+  }
+  | { action: "record-registration-event"; analyticsAllowed?: boolean; event: RegistrationTelemetryEvent }
+  | { action: "get-guide-memory"; actorId: string }
+  | { action: "update-guide-memory"; actorId: string; preferences: unknown; completeGuide: boolean }
+  | { action: "clear-guide-memory"; actorId: string }
+  | { action: "set-registration-analytics-preference"; actorId: string; allowed: boolean }
+  | { action: "get-registration-outcome"; operationId: string }
+  | { action: "cleanup-expired-pending-accounts" }
   | { action: "verify-email"; request: Request; token: string }
   | { action: "login"; request: Request; email: string; password: string }
   | { action: "forgot-password"; request: Request; email: string; turnstileToken: string }
@@ -137,6 +181,20 @@ export type AccountResult = {
   status?: number;
   body: Record<string, unknown>;
   cookie?: string;
+};
+
+export type AccountRegistrationConfig = {
+  registrationEnabled: boolean;
+  termsVersion: string;
+  privacyVersion: string;
+  allowedHostnames: string[];
+};
+
+const testRegistrationConfig: AccountRegistrationConfig = {
+  registrationEnabled: true,
+  termsVersion: "development",
+  privacyVersion: "development",
+  allowedHostnames: ["localhost", "127.0.0.1"],
 };
 
 function validEmail(value: string) {
@@ -177,54 +235,332 @@ async function consumeToken(
 }
 
 export function createAccountLifecycle({
+  config = testRegistrationConfig,
+  store = drizzleD1AccountStore,
   turnstile = productionTurnstileVerifier,
   mailer = productionAuthMailer,
   externalTimeoutMs = 8_000,
   externalRetries = 1,
   verificationTokenLifetimeMs = 24 * 60 * 60_000,
   resetTokenLifetimeMs = 30 * 60_000,
+  clock = () => new Date(),
+  telemetry = workerRegistrationTelemetry,
 }: {
+  config?: AccountRegistrationConfig;
+  store?: AccountStore;
   turnstile?: TurnstileVerifier;
   mailer?: AuthMailer;
   externalTimeoutMs?: number;
   externalRetries?: number;
   verificationTokenLifetimeMs?: number;
   resetTokenLifetimeMs?: number;
+  clock?: () => Date;
+  telemetry?: RegistrationTelemetry;
 } = {}) {
+  async function recordIfAllowed(allowed: boolean | undefined, event: RegistrationTelemetryEvent) {
+    if (allowed === true) await telemetry.record(event);
+  }
+
+  async function executeWithReceipt(
+    operationId: string,
+    kind: "register" | "resend" | "restart",
+    operation: () => Promise<AccountResult>,
+  ): Promise<AccountResult> {
+    if (!operationId || operationId.length > 128) throw new AuthError("操作标识无效");
+    const idempotencyHash = await hashToken(operationId);
+    let receipt = await store.findOperationReceipt(idempotencyHash);
+    if (receipt?.status === "succeeded") return JSON.parse(receipt.resultJson) as AccountResult;
+    if (receipt?.status === "failed") {
+      const failure = JSON.parse(receipt.resultJson) as { error?: string; status?: number; retryAfterSeconds?: number };
+      throw new AuthError(failure.error || "账号操作失败", failure.status || 400, failure.retryAfterSeconds);
+    }
+    if (receipt) return { status: 202, body: { state: receipt.status === "processing" ? "processing" : "uncertain" } };
+    const nowDate = clock();
+    try {
+      await store.createOperationReceipt({
+        id: crypto.randomUUID(), idempotencyHash, kind, status: "processing", resultJson: "{}",
+        expiresAt: new Date(nowDate.getTime() + 24 * 60 * 60_000).toISOString(), updatedAt: nowDate.toISOString(),
+      });
+    } catch {
+      receipt = await store.findOperationReceipt(idempotencyHash);
+      if (receipt) return executeWithReceipt(operationId, kind, operation);
+      throw new AuthError("账号操作暂时不可用", 503);
+    }
+    try {
+      const result = await operation();
+      const safeBody = { ...result.body };
+      delete safeBody.developmentToken;
+      const storedResult = { ...result, body: safeBody };
+      await store.finishOperationReceipt(idempotencyHash, {
+        status: "succeeded", resultJson: JSON.stringify(storedResult), updatedAt: clock().toISOString(),
+      });
+      return result;
+    } catch (error) {
+      const authError = error instanceof AuthError ? error : new AuthError("账号操作失败", 500);
+      await store.finishOperationReceipt(idempotencyHash, {
+        status: authError.status === 504 ? "uncertain" : "failed",
+        resultJson: JSON.stringify({
+          error: authError.message, status: authError.status, retryAfterSeconds: authError.retryAfterSeconds,
+        }),
+        updatedAt: clock().toISOString(),
+      });
+      throw error;
+    }
+  }
+
   async function execute(command: AccountCommand): Promise<AccountResult> {
     const db = getDb();
     if ("request" in command) assertSameOrigin(command.request);
+    if (command.action === "record-registration-event") {
+      await recordIfAllowed(command.analyticsAllowed, command.event);
+      return { body: { ok: true } };
+    }
+    if (command.action === "cleanup-expired-pending-accounts") {
+      return { body: await store.cleanupExpired(clock().toISOString()) };
+    }
+    if (command.action === "get-guide-memory") {
+      const preference = await store.findAccountPreferences(command.actorId);
+      return { body: { memory: {
+        preferences: normalizeReaderPreferences(preference ? JSON.parse(preference.readingPreferencesJson) : []),
+        guideCompletedAt: preference?.guideCompletedAt ?? null,
+        updatedAt: preference?.updatedAt ?? null,
+        registrationAnalyticsAllowed: preference?.registrationAnalyticsAllowed ?? false,
+      } } };
+    }
+    if (command.action === "update-guide-memory") {
+      if (!command.completeGuide) throw new AuthError("需要明确确认同步阅读偏好");
+      const preferences = normalizeReaderPreferences(command.preferences);
+      const now = clock().toISOString();
+      await store.updateGuideMemory({
+        userId: command.actorId,
+        readingPreferencesJson: JSON.stringify(preferences),
+        guideCompletedAt: now,
+        updatedAt: now,
+      });
+      return execute({ action: "get-guide-memory", actorId: command.actorId });
+    }
+    if (command.action === "clear-guide-memory") {
+      await store.clearGuideMemory(command.actorId, clock().toISOString());
+      return execute({ action: "get-guide-memory", actorId: command.actorId });
+    }
+    if (command.action === "set-registration-analytics-preference") {
+      await store.setRegistrationAnalyticsPreference(command.actorId, command.allowed, clock().toISOString());
+      return execute({ action: "get-guide-memory", actorId: command.actorId });
+    }
+    if (command.action === "get-registration-outcome") {
+      if (!command.operationId || command.operationId.length > 128) throw new AuthError("操作标识无效");
+      const receipt = await store.findOperationReceipt(await hashToken(command.operationId));
+      if (!receipt) return { body: { state: "not_found" } };
+      if (receipt.status === "succeeded") return { body: { state: "succeeded", result: JSON.parse(receipt.resultJson) } };
+      if (receipt.status === "failed") return { body: { state: "failed", result: JSON.parse(receipt.resultJson) } };
+      return { body: { state: receipt.status === "processing" ? "processing" : "uncertain" } };
+    }
+    if (command.action === "register" && command.operationId) {
+      return executeWithReceipt(command.operationId, "register", () => execute({ ...command, operationId: undefined }));
+    }
+    if (command.action === "resend-verification" && command.operationId) {
+      return executeWithReceipt(command.operationId, "resend", () => execute({ ...command, operationId: undefined }));
+    }
+    if (command.action === "restart-registration" && command.operationId) {
+      return executeWithReceipt(command.operationId, "restart", () => execute({ ...command, operationId: undefined }));
+    }
     if (command.action === "register") {
+      if (!config.registrationEnabled) throw new AuthError("账号注册尚未开放", 503);
+      if (!command.ageConfirmed) throw new AuthError("需要确认已满十四周岁");
+      if (!command.termsAccepted || !command.privacyAccepted) throw new AuthError("需要确认服务条款和隐私政策");
       const email = normalizeEmail(command.email);
       const displayName = command.displayName.trim();
       if (!validEmail(email)) throw new AuthError("请输入有效邮箱");
       if (!displayName || displayName.length > 40) throw new AuthError("昵称需要为 1–40 个字符");
       const passwordError = validatePassword(command.password);
       if (passwordError) throw new AuthError(passwordError);
-      await enforceRateLimit(command.request, "register", email, 5, 30);
+      await enforceRateLimit(command.request, "registration-email", email, 5, 30);
       const turnstileIdempotencyKey = crypto.randomUUID();
       await executeExternal(
         (signal) => turnstile.verify(command.request, command.turnstileToken, "register", { signal, idempotencyKey: turnstileIdempotencyKey }),
         externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
       );
-      const existing = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
-      if (existing?.status === "active" || existing?.status === "disabled") throw new AuthError("此邮箱已注册", 409);
-      const userId = existing?.id || crypto.randomUUID();
+      const existing = await store.findByEmail(email);
+      if (existing) throw new AuthError(existing.status === "pending" ? "账号正在等待邮箱确认" : "此邮箱已注册", 409);
+      const userId = crypto.randomUUID();
       const passwordHash = await hashPassword(command.password);
-      if (existing) await db.update(users).set({ displayName, passwordHash, updatedAt: new Date().toISOString() }).where(eq(users.id, existing.id));
-      else await db.insert(users).values({ id: userId, email, displayName, passwordHash, role: "reader", status: "pending" });
-      const token = await createAuthToken(userId, "verify_email", verificationTokenLifetimeMs);
+      const nowDate = clock();
+      const now = nowDate.toISOString();
+      const pendingExpiresAt = new Date(nowDate.getTime() + 7 * 86_400_000).toISOString();
+      const token = randomToken();
+      await store.createPendingRegistration({
+        user: { id: userId, email, displayName, passwordHash, role: "reader", status: "pending", pendingExpiresAt },
+        consent: {
+          id: crypto.randomUUID(), userId, ageConfirmedAt: now,
+          termsVersion: config.termsVersion, privacyVersion: config.privacyVersion, confirmedAt: now,
+        },
+        preference: {
+          userId, registrationAnalyticsAllowed: command.analyticsAllowed === true, updatedAt: now,
+        },
+        token: {
+          id: crypto.randomUUID(), userId, tokenHash: await hashToken(token), type: "verify_email",
+          expiresAt: new Date(nowDate.getTime() + verificationTokenLifetimeMs).toISOString(),
+        },
+      });
       const mailIdempotencyKey = crypto.randomUUID();
       const delivery = await executeExternal(
         (signal) => mailer.send(command.request, email, "verify_email", token, { signal, idempotencyKey: mailIdempotencyKey }),
         externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
       );
-      return { status: 201, body: { ok: true, message: "验证邮件已发送", ...delivery } };
+      const sentDate = clock();
+      const sentAt = sentDate.toISOString();
+      await store.markVerificationSent(userId, sentAt, new Date(sentDate.getTime() + 7 * 86_400_000).toISOString());
+      await recordIfAllowed(command.analyticsAllowed, { flow: "register", stage: "mail_delivery", outcome: "succeeded" });
+      return {
+        status: 201,
+        body: { ok: true, state: "awaiting_email", accountStatus: "pending", message: "验证邮件已发送", ...delivery },
+      };
+    }
+    if (command.action === "resend-verification") {
+      if (!config.registrationEnabled) throw new AuthError("账号注册尚未开放", 503);
+      const email = normalizeEmail(command.email);
+      if (!validEmail(email)) throw new AuthError("请输入有效邮箱");
+      const account = await store.findByEmail(email);
+      if (!account) return { body: { ok: true, state: "recovery_unavailable" } };
+      if (account.status === "active") return {
+        status: 409,
+        body: { state: "existing_account", nextActions: ["login", "forgot-password"] },
+      };
+      if (account.status === "disabled") throw new AuthError("账号当前不可用", 403);
+      const nowDate = clock();
+      if (typeof command.analyticsAllowed === "boolean") {
+        await store.setRegistrationAnalyticsPreference(account.id, command.analyticsAllowed, nowDate.toISOString());
+      }
+      if (account.lastVerificationSentAt) {
+        const remainingMs = 60_000 - (nowDate.getTime() - Date.parse(account.lastVerificationSentAt));
+        if (remainingMs > 0) throw new AuthError("请稍后再发送验证邮件", 429, Math.ceil(remainingMs / 1000));
+      }
+      await enforceRateLimit(command.request, "registration-email", email, 5, 30);
+      const turnstileIdempotencyKey = crypto.randomUUID();
+      await executeExternal(
+        (signal) => turnstile.verify(command.request, command.turnstileToken, "resend-verification", {
+          signal, idempotencyKey: turnstileIdempotencyKey,
+        }),
+        externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
+      );
+      const token = randomToken();
+      await store.createEmailVerificationToken({
+        id: crypto.randomUUID(),
+        userId: account.id,
+        tokenHash: await hashToken(token),
+        type: "verify_email",
+        expiresAt: new Date(nowDate.getTime() + verificationTokenLifetimeMs).toISOString(),
+      });
+      const mailIdempotencyKey = crypto.randomUUID();
+      const delivery = await executeExternal(
+        (signal) => mailer.send(command.request, email, "verify_email", token, {
+          signal, idempotencyKey: mailIdempotencyKey,
+        }),
+        externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
+      );
+      const sentDate = clock();
+      await store.markVerificationSent(account.id, sentDate.toISOString(), new Date(sentDate.getTime() + 7 * 86_400_000).toISOString());
+      await recordIfAllowed(command.analyticsAllowed, { flow: "resend", stage: "mail_delivery", outcome: "succeeded" });
+      return { body: { ok: true, state: "awaiting_email", resent: true, message: "验证邮件已重新发送", ...delivery } };
+    }
+    if (command.action === "restart-registration") {
+      if (!config.registrationEnabled) throw new AuthError("账号注册尚未开放", 503);
+      if (!command.ageConfirmed) throw new AuthError("需要确认已满十四周岁");
+      if (!command.termsAccepted || !command.privacyAccepted) throw new AuthError("需要确认服务条款和隐私政策");
+      const currentEmail = normalizeEmail(command.currentEmail);
+      const email = normalizeEmail(command.email);
+      const displayName = command.displayName.trim();
+      if (!validEmail(currentEmail) || !validEmail(email)) throw new AuthError("请输入有效邮箱");
+      if (!displayName || displayName.length > 40) throw new AuthError("昵称需要为 1–40 个字符");
+      const passwordError = validatePassword(command.password);
+      if (passwordError) throw new AuthError(passwordError);
+      const account = await store.findByEmail(currentEmail);
+      if (!account || account.status !== "pending") throw new AuthError("待验证账号不可恢复", 409);
+      const conflicting = await store.findByEmail(email);
+      if (conflicting && conflicting.id !== account.id) throw new AuthError("此邮箱已注册", 409);
+      await enforceRateLimit(command.request, "registration-email", currentEmail, 5, 30);
+      const turnstileIdempotencyKey = crypto.randomUUID();
+      await executeExternal(
+        (signal) => turnstile.verify(command.request, command.turnstileToken, "restart-registration", {
+          signal, idempotencyKey: turnstileIdempotencyKey,
+        }),
+        externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
+      );
+      const nowDate = clock();
+      const now = nowDate.toISOString();
+      const token = randomToken();
+      const updated = await store.restartPendingRegistration({
+        userId: account.id,
+        email,
+        displayName,
+        passwordHash: await hashPassword(command.password),
+        pendingExpiresAt: new Date(nowDate.getTime() + 7 * 86_400_000).toISOString(),
+        consent: {
+          ageConfirmedAt: now, termsVersion: config.termsVersion,
+          privacyVersion: config.privacyVersion, confirmedAt: now,
+        },
+        analyticsAllowed: command.analyticsAllowed === true,
+        revokedMarker: `revoked:${now}:${crypto.randomUUID()}`,
+        token: {
+          id: crypto.randomUUID(), userId: account.id, tokenHash: await hashToken(token),
+          type: "verify_email", expiresAt: new Date(nowDate.getTime() + verificationTokenLifetimeMs).toISOString(),
+        },
+      });
+      if (!updated) throw new AuthError("账号状态已经变化，请重新开始", 409);
+      const mailIdempotencyKey = crypto.randomUUID();
+      const delivery = await executeExternal(
+        (signal) => mailer.send(command.request, email, "verify_email", token, { signal, idempotencyKey: mailIdempotencyKey }),
+        externalTimeoutMs, externalRetries, () => new AuthError("邮件发送超时，请稍后重试", 504),
+      );
+      const sentDate = clock();
+      await store.markVerificationSent(account.id, sentDate.toISOString(), new Date(sentDate.getTime() + 7 * 86_400_000).toISOString());
+      await recordIfAllowed(command.analyticsAllowed, { flow: "restart", stage: "mail_delivery", outcome: "succeeded" });
+      return { body: { ok: true, state: "awaiting_email", restarted: true, message: "账号注册已重新开始", ...delivery } };
+    }
+    if (command.action === "inspect-email-verification") {
+      if (!command.token || command.token.length > 256) return { body: { state: "invalid" } };
+      const inspection = await store.inspectEmailVerification(await hashToken(command.token), clock().toISOString());
+      return { body: { state: inspection.state } };
+    }
+    if (command.action === "activate-account") {
+      if (!command.token || command.token.length > 256) throw new AuthError("验证链接无效");
+      const nowDate = clock();
+      const now = nowDate.toISOString();
+      const sessionToken = randomToken();
+      const sessionExpiresAt = new Date(nowDate.getTime() + SESSION_DAYS * 86_400_000).toISOString();
+      const user = await store.activateAccount({
+        tokenHash: await hashToken(command.token),
+        usedMarker: `${now}:${crypto.randomUUID()}`,
+        now,
+        session: {
+          id: crypto.randomUUID(),
+          tokenHash: await hashToken(sessionToken),
+          expiresAt: sessionExpiresAt,
+        },
+      });
+      if (!user) throw new AuthError("验证链接无效或已过期");
+      if (typeof command.analyticsAllowed === "boolean") {
+        await store.setRegistrationAnalyticsPreference(user.id, command.analyticsAllowed, now);
+      }
+      await recordIfAllowed(command.analyticsAllowed, {
+        flow: "activate", stage: "account_activation", outcome: "succeeded",
+      });
+      await recordIfAllowed(command.analyticsAllowed, {
+        flow: "activate", stage: "intent_resume", outcome: command.intent ? "succeeded" : "skipped",
+      });
+      const secure = new URL(command.request.url).protocol === "https:";
+      return {
+        body: {
+          ok: true,
+          state: "active",
+          user: { id: user.id, displayName: user.displayName, role: user.role, status: user.status },
+          resumeDirective: registrationResumeDirective(command.intent),
+        },
+        cookie: `${AUTH_SESSION_COOKIE}=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}${secure ? "; Secure" : ""}`,
+      };
     }
     if (command.action === "verify-email") {
-      if (!command.token || command.token.length > 256) throw new AuthError("验证链接无效");
-      await consumeToken(command.token, "verify_email");
-      return { body: { ok: true } };
+      return execute({ action: "activate-account", request: command.request, token: command.token });
     }
     if (command.action === "login") {
       const email = normalizeEmail(command.email);
@@ -300,7 +636,7 @@ export function createAccountLifecycle({
     ]);
     return { body: { ok: true } };
   }
-  return { execute };
+  return { execute, registrationConfig: () => ({ ...config, allowedHostnames: [...config.allowedHostnames] }) };
 }
 
 export const accountLifecycle = createAccountLifecycle();

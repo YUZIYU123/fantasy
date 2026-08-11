@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../../db";
-import { accountLifecycle, type AccountCommand } from "../../../../db/account-lifecycle";
+import type { AccountCommand } from "../../../../db/account-lifecycle";
+import { accountLifecycle, accountRegistrationConfig } from "../../../../db/account-runtime";
 import { accountLifecycleResponse } from "../../../_account-lifecycle-http";
 import { authErrorResponse, clearSessionCookie } from "../../../../lib/auth";
 import { sessionAuthorization } from "../../../../lib/session-authorization";
 import { sessionAuthorizationResponse } from "../../../_session-authorization-http";
+import { normalizeRegistrationTelemetryEvent } from "../../../../lib/registration-telemetry";
 
 type Context = { params: Promise<{ action: string[] }> };
 
@@ -28,17 +30,72 @@ export async function GET(request: Request, context: Context) {
     }
   }
   await ensureSchema();
+  if (action === "verify-email") {
+    const token = new URL(request.url).searchParams.get("token") || "";
+    return accountLifecycle.execute({ action: "inspect-email-verification", token }).then(accountLifecycleResponse);
+  }
+  if (action === "registration-outcome") {
+    const operationId = new URL(request.url).searchParams.get("operationId") || "";
+    return accountLifecycle.execute({ action: "get-registration-outcome", operationId }).then(accountLifecycleResponse);
+  }
   if (action === "me") return Response.json({ user: await sessionAuthorization.optional(request) });
   if (action === "config") {
-    return Response.json({ turnstileSiteKey: (env as unknown as { TURNSTILE_SITE_KEY?: string }).TURNSTILE_SITE_KEY || "" });
+    return Response.json({
+      turnstileSiteKey: (env as unknown as { TURNSTILE_SITE_KEY?: string }).TURNSTILE_SITE_KEY || "",
+      registrationEnabled: accountRegistrationConfig().registrationEnabled,
+    });
   }
   return Response.json({ error: "不支持的账号操作" }, { status: 404 });
 }
 
 function commandFor(action: string, request: Request, body: Record<string, unknown>): AccountCommand | null {
-  if (action === "register") return { action, request, email: String(body.email || ""), displayName: String(body.displayName || ""), password: String(body.password || ""), turnstileToken: String(body.turnstileToken || "") };
+  if (action === "register") return {
+    action,
+    request,
+    email: String(body.email || ""),
+    displayName: String(body.displayName || ""),
+    password: String(body.password || ""),
+    turnstileToken: String(body.turnstileToken || ""),
+    ageConfirmed: body.ageConfirmed === true,
+    termsAccepted: body.termsAccepted === true,
+    privacyAccepted: body.privacyAccepted === true,
+    analyticsAllowed: body.analyticsAllowed === true,
+    operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+  };
   if (action === "login") return { action, request, email: String(body.email || ""), password: String(body.password || "") };
-  if (action === "verify-email") return { action, request, token: String(body.token || "") };
+  if (action === "verify-email" || action === "activate-account") return {
+    action: "activate-account",
+    request,
+    token: String(body.token || ""),
+    intent: body.intent && typeof body.intent === "object" ? body.intent as never : null,
+    analyticsAllowed: body.analyticsAllowed === true,
+  };
+  if (action === "resend-verification") return {
+    action,
+    request,
+    email: String(body.email || ""),
+    turnstileToken: String(body.turnstileToken || ""),
+    analyticsAllowed: body.analyticsAllowed === true,
+    operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+  };
+  if (action === "restart-registration") return {
+    action,
+    request,
+    currentEmail: String(body.currentEmail || ""),
+    email: String(body.email || ""),
+    displayName: String(body.displayName || ""),
+    password: String(body.password || ""),
+    turnstileToken: String(body.turnstileToken || ""),
+    ageConfirmed: body.ageConfirmed === true,
+    termsAccepted: body.termsAccepted === true,
+    privacyAccepted: body.privacyAccepted === true,
+    analyticsAllowed: body.analyticsAllowed === true,
+    operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+  };
+  if (action === "record-registration-event") {
+    const event = normalizeRegistrationTelemetryEvent(body.event);
+    return event ? { action, event, analyticsAllowed: body.analyticsAllowed === true } : null;
+  }
   if (action === "forgot-password") return { action, request, email: String(body.email || ""), turnstileToken: String(body.turnstileToken || "") };
   if (action === "reset-password") return { action, request, token: String(body.token || ""), password: String(body.password || "") };
   return null;

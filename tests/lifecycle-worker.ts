@@ -1,4 +1,5 @@
 import { createAccountLifecycle, MockAuthMailer, MockTurnstileVerifier } from "../db/account-lifecycle";
+import { MockRegistrationTelemetry } from "../lib/registration-telemetry";
 import { AssetLifecycleError, assetLifecycle } from "../db/assets";
 import { creationLifecycle } from "../db/creation-lifecycle";
 import { readingSessionProgress } from "../db/reading-session-progress";
@@ -347,6 +348,387 @@ const lifecycleWorker = {
       return Response.json({ generated: 5, rateLimited });
     }
 
+    if (pathname === "/account-registration-disabled" && request.method === "POST") {
+      const lifecycle = createAccountLifecycle({
+        config: {
+          registrationEnabled: false,
+          termsVersion: "2026-08-11",
+          privacyVersion: "2026-08-11",
+          allowedHostnames: [new URL(request.url).hostname],
+        },
+        turnstile: new MockTurnstileVerifier(),
+        mailer: new MockAuthMailer(),
+      });
+      try {
+        await lifecycle.execute({
+          action: "register",
+          request: new Request(request.url, { method: "POST", headers: { origin: new URL(request.url).origin } }),
+          email: `disabled-${crypto.randomUUID()}@example.com`,
+          displayName: "关闭注册",
+          password: "disabled-registration-password",
+          turnstileToken: "disabled-token",
+        });
+        throw new Error("关闭注册后仍然创建了账号");
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        return Response.json({ status: error.status, message: error.message });
+      }
+    }
+
+    if (pathname === "/account-registration-create" && request.method === "POST") {
+      const turnstile = new MockTurnstileVerifier();
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({ turnstile, mailer });
+      const lifecycleRequest = () => new Request(request.url, {
+        method: "POST",
+        headers: { origin: new URL(request.url).origin, "cf-connecting-ip": crypto.randomUUID() },
+      });
+      const email = `guided-${crypto.randomUUID()}@example.com`;
+      const statusOf = async (overrides: Record<string, unknown>) => {
+        try {
+          const result = await lifecycle.execute({
+            action: "register",
+            request: lifecycleRequest(),
+            email: `${crypto.randomUUID()}@example.com`,
+            displayName: "小雾旅伴",
+            password: "十五字符以上的安全密码 phrase",
+            turnstileToken: "guided-token",
+            ageConfirmed: true,
+            termsAccepted: true,
+            privacyAccepted: true,
+            ...overrides,
+          });
+          return result.status ?? 200;
+        } catch (error) {
+          if (!(error instanceof AuthError)) throw error;
+          return error.status;
+        }
+      };
+      const missingAge = await statusOf({ ageConfirmed: false });
+      const missingTerms = await statusOf({ termsAccepted: false });
+      const shortPassword = await statusOf({ password: "twelve-chars" });
+      const registration = await lifecycle.execute({
+        action: "register",
+        request: lifecycleRequest(),
+        email,
+        displayName: "小雾旅伴",
+        password: "十五字符以上的安全密码 phrase",
+        turnstileToken: "guided-token",
+        ageConfirmed: true,
+        termsAccepted: true,
+        privacyAccepted: true,
+      });
+      return Response.json({
+        missingAge,
+        missingTerms,
+        shortPassword,
+        registration,
+        turnstile: turnstile.calls.at(-1),
+        mail: mailer.calls.at(-1),
+      });
+    }
+
+    if (pathname === "/account-activation" && request.method === "POST") {
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer });
+      const lifecycleRequest = (cookie = "") => new Request(request.url, {
+        method: "POST",
+        headers: { origin: new URL(request.url).origin, ...(cookie ? { cookie } : {}) },
+      });
+      const email = `activation-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email, displayName: "激活旅伴",
+        password: "activation-password-123", turnstileToken: "activation-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const token = mailer.calls.at(-1)?.token;
+      if (!token) throw new Error("没有生成验证 token");
+      const inspection = await lifecycle.execute({ action: "inspect-email-verification", token });
+      let pendingLogin = 0;
+      try {
+        await lifecycle.execute({ action: "login", request: lifecycleRequest(), email, password: "activation-password-123" });
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        pendingLogin = error.status;
+      }
+      const activation = await lifecycle.execute({
+        action: "activate-account",
+        request: lifecycleRequest(),
+        token,
+        intent: { kind: "bookshelf", targetId: "novel-42" },
+      });
+      const identity = activation.cookie ? await sessionAuthorization.optional(lifecycleRequest(activation.cookie)) : null;
+      let repeated = 0;
+      try {
+        await lifecycle.execute({ action: "activate-account", request: lifecycleRequest(), token });
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        repeated = error.status;
+      }
+      return Response.json({ inspection, pendingLogin, activation, identity, repeated });
+    }
+
+    if (pathname === "/account-resend" && request.method === "POST") {
+      let now = new Date("2026-08-11T00:00:00.000Z");
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(), mailer, clock: () => now,
+      });
+      const lifecycleRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.40" },
+      });
+      const email = `resend-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email, displayName: "重发旅伴",
+        password: "resend-password-12345", turnstileToken: "initial-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      let immediateStatus = 0;
+      let retryAfterSeconds = 0;
+      try {
+        await lifecycle.execute({ action: "resend-verification", request: lifecycleRequest(), email, turnstileToken: "too-soon" });
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        immediateStatus = error.status;
+        retryAfterSeconds = error.retryAfterSeconds ?? 0;
+      }
+      now = new Date("2026-08-11T00:01:01.000Z");
+      const resent = await lifecycle.execute({
+        action: "resend-verification", request: lifecycleRequest(), email, turnstileToken: "resend-token",
+      });
+      return Response.json({ immediateStatus, retryAfterSeconds, resent, mailCalls: mailer.calls.length });
+    }
+
+    if (pathname === "/account-restart" && request.method === "POST") {
+      let now = new Date("2026-08-11T00:00:00.000Z");
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer, clock: () => now });
+      const lifecycleRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.41" },
+      });
+      const currentEmail = `restart-${crypto.randomUUID()}@example.com`;
+      const newEmail = `restarted-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: currentEmail, displayName: "旧昵称",
+        password: "original-password-123", turnstileToken: "initial-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const oldToken = mailer.calls.at(-1)?.token;
+      if (!oldToken) throw new Error("没有旧 token");
+      now = new Date("2026-08-11T00:01:01.000Z");
+      const restarted = await lifecycle.execute({
+        action: "restart-registration", request: lifecycleRequest(), currentEmail, email: newEmail,
+        displayName: "新昵称", password: "replacement-password-456", turnstileToken: "restart-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const newToken = mailer.calls.at(-1)?.token;
+      if (!newToken) throw new Error("没有新 token");
+      const oldInspection = await lifecycle.execute({ action: "inspect-email-verification", token: oldToken });
+      const newInspection = await lifecycle.execute({ action: "inspect-email-verification", token: newToken });
+      return Response.json({ restarted, oldInspection, newInspection, mailCalls: mailer.calls.length });
+    }
+
+    if (pathname === "/account-operation-receipt" && request.method === "POST") {
+      const requestForLifecycle = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.42" },
+      });
+      const hangingMailer = new MockAuthMailer({}, undefined, true);
+      const timeoutLifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(), mailer: hangingMailer, externalTimeoutMs: 5, externalRetries: 0,
+      });
+      const timeoutOperationId = crypto.randomUUID();
+      try {
+        await timeoutLifecycle.execute({
+          action: "register", request: requestForLifecycle(), email: `uncertain-${crypto.randomUUID()}@example.com`,
+          displayName: "不确定旅伴", password: "uncertain-password-123", turnstileToken: "uncertain-token",
+          ageConfirmed: true, termsAccepted: true, privacyAccepted: true, operationId: timeoutOperationId,
+        });
+      } catch (error) {
+        if (!(error instanceof AuthError) || error.status !== 504) throw error;
+      }
+      const uncertain = await timeoutLifecycle.execute({ action: "get-registration-outcome", operationId: timeoutOperationId });
+
+      const successMailer = new MockAuthMailer();
+      const successLifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer: successMailer });
+      const successOperationId = crypto.randomUUID();
+      const command = {
+        action: "register" as const, request: requestForLifecycle(), email: `idempotent-${crypto.randomUUID()}@example.com`,
+        displayName: "幂等旅伴", password: "idempotent-password-123", turnstileToken: "idempotent-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true, operationId: successOperationId,
+      };
+      const first = await successLifecycle.execute(command);
+      const repeated = await successLifecycle.execute(command);
+      return Response.json({ uncertain, first, repeated, successMailCalls: successMailer.calls.length });
+    }
+
+    if (pathname === "/account-registration-rate-limit" && request.method === "POST") {
+      let now = new Date("2026-08-11T00:00:00.000Z");
+      const mailer = new MockAuthMailer();
+      const turnstile = new MockTurnstileVerifier();
+      const lifecycle = createAccountLifecycle({ turnstile, mailer, clock: () => now });
+      const lifecycleRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.43" },
+      });
+      const email = `shared-limit-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email, displayName: "频控旅伴",
+        password: "rate-limit-password-123", turnstileToken: "initial-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      for (let index = 1; index < 5; index += 1) {
+        now = new Date(now.getTime() + 61_000);
+        await lifecycle.execute({
+          action: "resend-verification", request: lifecycleRequest(), email, turnstileToken: `resend-${index}`,
+        });
+      }
+      now = new Date(now.getTime() + 61_000);
+      let limitedStatus = 0;
+      let retryAfterSeconds = 0;
+      try {
+        await lifecycle.execute({
+          action: "resend-verification", request: lifecycleRequest(), email, turnstileToken: "blocked-resend",
+        });
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        limitedStatus = error.status;
+        retryAfterSeconds = error.retryAfterSeconds ?? 0;
+      }
+      return Response.json({
+        limitedStatus, retryAfterSeconds, mailCalls: mailer.calls.length, turnstileCalls: turnstile.calls.length,
+      });
+    }
+
+    if (pathname === "/account-expired-registration-cleanup" && request.method === "POST") {
+      let now = new Date("2026-08-11T00:00:00.000Z");
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer, clock: () => now });
+      const lifecycleRequest = (cookie = "") => new Request(request.url, {
+        method: "POST",
+        headers: {
+          origin: new URL(request.url).origin,
+          "cf-connecting-ip": crypto.randomUUID(),
+          ...(cookie ? { cookie } : {}),
+        },
+      });
+      const pendingEmail = `expired-pending-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: pendingEmail, displayName: "过期待验证旅伴",
+        password: "expired-pending-password-123", turnstileToken: "pending-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const pendingToken = mailer.calls.at(-1)?.token;
+      if (!pendingToken) throw new Error("没有待验证 token");
+
+      const activeEmail = `cleanup-active-${crypto.randomUUID()}@example.com`;
+      const activePassword = "cleanup-active-password-123";
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: activeEmail, displayName: "正常旅伴",
+        password: activePassword, turnstileToken: "active-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const activeToken = mailer.calls.at(-1)?.token;
+      if (!activeToken) throw new Error("没有正常账号 token");
+      await lifecycle.execute({ action: "activate-account", request: lifecycleRequest(), token: activeToken });
+
+      now = new Date("2026-08-18T00:00:01.000Z");
+      const cleanup = await lifecycle.execute({ action: "cleanup-expired-pending-accounts" });
+      const expiredInspection = await lifecycle.execute({ action: "inspect-email-verification", token: pendingToken });
+      const activeLogin = await lifecycle.execute({
+        action: "login", request: lifecycleRequest(), email: activeEmail, password: activePassword,
+      });
+      return Response.json({ cleanup, expiredInspection, activeStatus: (activeLogin.body.user as { status: string }).status });
+    }
+
+    if (pathname === "/account-registration-telemetry" && request.method === "POST") {
+      const telemetry = new MockRegistrationTelemetry();
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer, telemetry });
+      const lifecycleRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": crypto.randomUUID() },
+      });
+      await lifecycle.execute({
+        action: "record-registration-event", analyticsAllowed: false,
+        event: { flow: "register", stage: "invitation", outcome: "shown" },
+      });
+      const declinedEmail = `analytics-declined-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: declinedEmail, displayName: "不参与分析",
+        password: "analytics-declined-password-123", turnstileToken: "declined-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true, analyticsAllowed: false,
+      });
+      const declinedToken = mailer.calls.at(-1)?.token;
+      if (!declinedToken) throw new Error("没有拒绝分析账号 token");
+      await lifecycle.execute({
+        action: "activate-account", request: lifecycleRequest(), token: declinedToken, analyticsAllowed: false,
+      });
+      const declinedEventCount = telemetry.events.length;
+
+      await lifecycle.execute({
+        action: "record-registration-event", analyticsAllowed: true,
+        event: { flow: "register", stage: "invitation", outcome: "shown" },
+      });
+      const allowedEmail = `analytics-allowed-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: allowedEmail, displayName: "参与分析",
+        password: "analytics-allowed-password-123", turnstileToken: "allowed-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true, analyticsAllowed: true,
+      });
+      const allowedToken = mailer.calls.at(-1)?.token;
+      if (!allowedToken) throw new Error("没有允许分析账号 token");
+      await lifecycle.execute({
+        action: "activate-account", request: lifecycleRequest(), token: allowedToken,
+        intent: { kind: "cross-device" }, analyticsAllowed: true,
+      });
+      return Response.json({
+        declinedEventCount,
+        events: telemetry.events,
+        serializedEvents: JSON.stringify(telemetry.events),
+        privateValues: [declinedEmail, allowedEmail, "不参与分析", "参与分析", "analytics-allowed-password-123", allowedToken],
+      });
+    }
+
+    if (pathname === "/account-guide-memory" && request.method === "POST") {
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer });
+      const lifecycleRequest = (cookie = "") => new Request(request.url, {
+        method: "POST", headers: {
+          origin: new URL(request.url).origin,
+          "cf-connecting-ip": crypto.randomUUID(),
+          ...(cookie ? { cookie } : {}),
+        },
+      });
+      const createActiveAccount = async (label: string) => {
+        const email = `guide-${label}-${crypto.randomUUID()}@example.com`;
+        await lifecycle.execute({
+          action: "register", request: lifecycleRequest(), email, displayName: `向导记忆${label}`,
+          password: `guide-memory-${label}-password-123`, turnstileToken: `${label}-token`,
+          ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+        });
+        const token = mailer.calls.at(-1)?.token;
+        if (!token) throw new Error("没有向导记忆验证 token");
+        const activation = await lifecycle.execute({ action: "activate-account", request: lifecycleRequest(), token });
+        if (!activation.cookie) throw new Error("没有向导记忆会话");
+        return activation.cookie;
+      };
+      const ownerCookie = await createActiveAccount("owner");
+      const strangerCookie = await createActiveAccount("stranger");
+      const owner = await sessionAuthorization.require(lifecycleRequest(ownerCookie));
+      const stranger = await sessionAuthorization.require(lifecycleRequest(strangerCookie));
+
+      const declined = await lifecycle.execute({ action: "get-guide-memory", actorId: owner.id });
+      const accepted = await lifecycle.execute({
+        action: "update-guide-memory", actorId: owner.id,
+        preferences: ["奇幻", "不在白名单", "轻松", "奇幻"], completeGuide: true,
+      });
+      const crossDevice = await lifecycle.execute({ action: "get-guide-memory", actorId: owner.id });
+      const strangerView = await lifecycle.execute({ action: "get-guide-memory", actorId: stranger.id });
+      const changed = await lifecycle.execute({
+        action: "update-guide-memory", actorId: owner.id, preferences: ["悬疑"], completeGuide: true,
+      });
+      const cleared = await lifecycle.execute({ action: "clear-guide-memory", actorId: owner.id });
+      return Response.json({ declined, accepted, crossDevice, strangerView, changed, cleared });
+    }
+
     if (pathname === "/account" && request.method === "POST") {
       const turnstile = new MockTurnstileVerifier();
       const mailer = new MockAuthMailer();
@@ -364,6 +746,7 @@ const lifecycleWorker = {
         displayName: "Module Contract",
         password,
         turnstileToken: "contract-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
       const token = mailer.calls[0]?.token;
       if (!token) throw new Error("注册没有生成验证 token");
@@ -386,6 +769,7 @@ const lifecycleWorker = {
       await lifecycle.execute({
         action: "register", request: lifecycleRequest(), email, displayName: "Account Matrix",
         password, turnstileToken: "register-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
       operations.push("register");
       const verificationToken = mailer.calls.at(-1)?.token;
@@ -460,6 +844,7 @@ const lifecycleWorker = {
       await lifecycle.execute({
         action: "register", request: lifecycleRequest(), email, displayName: "Authorization Contract",
         password, turnstileToken: "authorization-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
       const token = mailer.calls[0]?.token;
       if (!token) throw new Error("注册没有生成验证 token");
@@ -489,6 +874,7 @@ const lifecycleWorker = {
           displayName: "Mail Timeout",
           password: "contract-password-123",
           turnstileToken: "contract-token",
+          ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
         });
         throw new Error("邮件超时没有失败");
       } catch (error) {
@@ -511,6 +897,7 @@ const lifecycleWorker = {
           action: "register", request: requestForLifecycle(),
           email: `turnstile-timeout-${crypto.randomUUID()}@example.com`, displayName: "Turnstile Timeout",
           password: "contract-password-123", turnstileToken: "timeout-token",
+          ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
         });
       } catch (error) {
         if (!(error instanceof AuthError)) throw error;
@@ -535,6 +922,7 @@ const lifecycleWorker = {
         action: "register", request: requestForLifecycle(),
         email: `mail-retry-${crypto.randomUUID()}@example.com`, displayName: "Mail Retry",
         password: "contract-password-123", turnstileToken: "retry-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
       return Response.json({
         turnstileTimeout: {
@@ -556,6 +944,7 @@ const lifecycleWorker = {
       await setup.execute({
         action: "register", request: requestForLifecycle(), email, displayName: "Forgot Enumeration",
         password: "contract-password-123", turnstileToken: "register-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
       const verificationToken = setupMailer.calls.at(-1)?.token;
       if (!verificationToken) throw new Error("没有验证 token");
@@ -601,6 +990,7 @@ const lifecycleWorker = {
       await lifecycle.execute({
         action: "register", request: lifecycleRequest(), email, displayName: "Account Security",
         password, turnstileToken: "register-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
       const pendingLogin = await statusOf(() => lifecycle.execute({ action: "login", request: lifecycleRequest(), email, password }));
       const verificationToken = mailer.calls.at(-1)?.token;
@@ -616,6 +1006,7 @@ const lifecycleWorker = {
       await expiredVerificationLifecycle.execute({
         action: "register", request: lifecycleRequest(), email: `expired-${crypto.randomUUID()}@example.com`,
         displayName: "Expired Verification", password, turnstileToken: "expired-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
       const expiredVerificationToken = expiredVerificationMailer.calls.at(-1)?.token;
       if (!expiredVerificationToken) throw new Error("没有过期验证 token");

@@ -5,7 +5,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
   "vars": {
-    "SFX_PROVIDER": "elevenlabs"
+    "SFX_PROVIDER": "elevenlabs",
+    "REGISTRATION_ENABLED": "false",
+    "TERMS_VERSION": "draft",
+    "PRIVACY_VERSION": "draft"
   },
   "routes": [
     {
@@ -13,6 +16,9 @@
       "custom_domain": true
     }
   ],
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
   "d1_databases": [
     {
       "binding": "DB",

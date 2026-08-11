@@ -18,11 +18,15 @@ const runtime = createCloudflareRuntime({
     CREATOR_SESSION_SECRET: "test-session-secret-that-is-at-least-32-characters",
     LOCAL_ADMIN_BYPASS: "false",
     LOCAL_AUTH_BYPASS: "true",
+    REGISTRATION_ENABLED: "true",
+    TERMS_VERSION: "test-terms",
+    PRIVACY_VERSION: "test-privacy",
   },
 });
 const origin = runtime.origin;
 let adminCookie = "";
 let adminNovelId = "";
+const requiredRegistrationConsent = { ageConfirmed: true, termsAccepted: true, privacyAccepted: true };
 
 async function requestText(path, { method = "GET", cookie = "", body } = {}) {
   const response = await fetch(`${origin}${path}`, {
@@ -79,7 +83,7 @@ async function createAuthorAccount(label) {
   const email = `${label}-${process.pid}@example.com`;
   const registration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email, displayName: label, password: "test-password-123", turnstileToken: "" },
+    body: { email, displayName: label, password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(registration.response.status, 201);
   const verification = await requestJson("/api/auth/verify-email", {
@@ -226,7 +230,7 @@ test("创作入口按账号最新角色进入对应工作台", async () => {
   const email = `creator-entry-${process.pid}@example.com`;
   const registration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email, displayName: "入口角色测试", password: "test-password-123", turnstileToken: "" },
+    body: { email, displayName: "入口角色测试", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(registration.response.status, 201);
   assert.equal((await requestJson("/api/auth/verify-email", {
@@ -283,7 +287,7 @@ test("读者注册验证登录后可访问云端进度，管理员可升级为�
   const register = await fetch(`${origin}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json", origin },
-    body: JSON.stringify({ email, displayName: "测试读者", password: "test-password-123", turnstileToken: "" }),
+    body: JSON.stringify({ email, displayName: "测试读者", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent }),
   });
   assert.equal(register.status, 201);
   const registration = await register.json();
@@ -784,14 +788,14 @@ test("平台与作者素材的归属、整理和历史引用保护保持兼容",
 test("账号验证、重置、角色状态和管理员能力的安全契约保持兼容", async () => {
   const invalidRegistration = await requestText("/api/auth/register", {
     method: "POST",
-    body: { email: "invalid", displayName: "无效账号", password: "test-password-123", turnstileToken: "" },
+    body: { email: "invalid", displayName: "无效账号", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(invalidRegistration.response.status, 500);
   assert.equal(invalidRegistration.text, "");
   const pendingEmail = `pending-${process.pid}@example.com`;
   const pendingRegistration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email: pendingEmail, displayName: "待验证账号", password: "test-password-123", turnstileToken: "" },
+    body: { email: pendingEmail, displayName: "待验证账号", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(pendingRegistration.response.status, 201);
   const pendingLogin = await requestText("/api/auth/login", {
@@ -848,7 +852,7 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
   const resetEmail = `reset-${process.pid}@example.com`;
   const resetRegistration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email: resetEmail, displayName: "重置账号", password: "old-password-123", turnstileToken: "" },
+    body: { email: resetEmail, displayName: "重置账号", password: "old-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(resetRegistration.response.status, 201);
   assert.equal((await requestJson("/api/auth/verify-email", {
@@ -900,7 +904,7 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
   const expiredEmail = `expired-${process.pid}@example.com`;
   const expiredRegistration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email: expiredEmail, displayName: "过期验证账号", password: "test-password-123", turnstileToken: "" },
+    body: { email: expiredEmail, displayName: "过期验证账号", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(expiredRegistration.response.status, 201);
   runtime.executeD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${expiredEmail}') AND type = 'verify_email'`);

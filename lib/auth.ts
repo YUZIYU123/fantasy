@@ -28,7 +28,7 @@ export function normalizeEmail(value: string) {
 }
 
 export function validatePassword(value: string) {
-  if (value.length < 10) return "密码至少需要 10 个字符";
+  if (value.length < 15) return "密码至少需要 15 个字符";
   if (value.length > 128) return "密码不能超过 128 个字符";
   return "";
 }
@@ -76,14 +76,22 @@ export function assertSameOrigin(request: Request) {
 
 export class AuthError extends Error {
   readonly status: number;
+  readonly retryAfterSeconds?: number;
 
-  constructor(message: string, status = 400) {
+  constructor(message: string, status = 400, retryAfterSeconds?: number) {
     super(message);
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
 export function authErrorResponse(error: unknown) {
-  if (error instanceof AuthError) return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof AuthError) return Response.json({
+    error: error.message,
+    ...(error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds }),
+  }, {
+    status: error.status,
+    ...(error.retryAfterSeconds === undefined ? {} : { headers: { "retry-after": String(error.retryAfterSeconds) } }),
+  });
   return Response.json({ error: "账号操作失败" }, { status: 500 });
 }

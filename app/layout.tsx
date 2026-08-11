@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "@xyflow/react/dist/style.css";
 import "./globals.css";
+import "./registration.css";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

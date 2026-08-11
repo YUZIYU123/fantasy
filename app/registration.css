@@ -1,0 +1,189 @@
+.registration-guide {
+  display: grid;
+  gap: 20px;
+  color: #dff8ff;
+}
+
+.registration-progress {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 5px;
+}
+
+.registration-progress span {
+  overflow: hidden;
+  color: #587889;
+  font-size: 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.registration-progress span::before {
+  content: "";
+  display: block;
+  height: 2px;
+  margin-bottom: 6px;
+  background: rgba(92, 218, 255, .14);
+}
+
+.registration-progress span.active {
+  color: #7deafa;
+}
+
+.registration-progress span.active::before {
+  background: linear-gradient(90deg, #5beaff, #7752ee);
+  box-shadow: 0 0 10px rgba(91, 234, 255, .45);
+}
+
+.mist-guide {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 128px;
+  height: 106px;
+  margin: auto;
+  color: #8ef5ff;
+  filter: drop-shadow(0 0 18px rgba(82, 224, 255, .35));
+}
+
+.mist-guide::before {
+  content: "";
+  position: absolute;
+  width: 82px;
+  height: 78px;
+  border: 1px solid rgba(135, 246, 255, .55);
+  border-radius: 52% 48% 55% 45%;
+  background: radial-gradient(circle at 44% 35%, rgba(255, 255, 255, .28), rgba(73, 216, 255, .1) 42%, rgba(113, 73, 236, .08) 65%, transparent 67%);
+  box-shadow: inset 0 0 22px rgba(82, 224, 255, .16);
+}
+
+.mist-hair {
+  position: absolute;
+  top: 7px;
+  width: 78px;
+  height: 35px;
+  clip-path: polygon(0 75%, 10% 25%, 23% 58%, 35% 0, 47% 52%, 64% 8%, 70% 58%, 91% 24%, 100% 82%, 76% 68%, 54% 77%, 31% 64%);
+  background: linear-gradient(145deg, rgba(143, 248, 255, .65), rgba(114, 76, 236, .28));
+}
+
+.mist-face {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 19px;
+  margin-top: 5px;
+}
+
+.mist-face i {
+  width: 8px;
+  height: 3px;
+  border-radius: 50%;
+  background: #d9ffff;
+  box-shadow: 0 0 7px #5fe7ff;
+  transform: rotate(-8deg);
+}
+
+.mist-guide.concerned .mist-face i {
+  transform: rotate(8deg);
+}
+
+.mist-guide.happy .mist-face i {
+  height: 6px;
+  border-bottom: 2px solid #d9ffff;
+  background: transparent;
+}
+
+.mist-guide small {
+  position: absolute;
+  bottom: 0;
+  font-size: 8px;
+  letter-spacing: .16em;
+}
+
+.registration-dialogue {
+  padding: 17px;
+  border: 1px solid rgba(91, 234, 255, .2);
+  background: rgba(30, 77, 118, .18);
+}
+
+.registration-dialogue p,
+.registration-security p,
+.registration-awaiting p {
+  margin: 0;
+  font: 15px/1.8 var(--serif);
+}
+
+.registration-dialogue small,
+.registration-guide label small,
+.registration-guide fieldset small {
+  color: #7599aa;
+  font-size: 10px;
+}
+
+.registration-guide fieldset {
+  display: grid;
+  gap: 13px;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid rgba(91, 234, 255, .2);
+}
+
+.registration-guide fieldset legend {
+  padding: 0 7px;
+  font: 14px/1.6 var(--serif);
+}
+
+.registration-guide label {
+  display: grid;
+  gap: 9px;
+  font: 13px/1.6 var(--serif);
+}
+
+.registration-guide fieldset label {
+  grid-template-columns: 18px 1fr;
+  align-items: start;
+}
+
+.registration-guide input:not([type="checkbox"]) {
+  width: 100%;
+  padding: 13px;
+  border: 1px solid rgba(106, 210, 255, .24);
+  background: #08142c;
+  color: #effcff;
+  font: 14px var(--sans);
+}
+
+.registration-guide input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #57dfee;
+}
+
+.registration-actions {
+  display: flex;
+  gap: 9px;
+}
+
+.registration-actions > * {
+  flex: 1;
+}
+
+.registration-security {
+  display: grid;
+  gap: 10px;
+}
+
+.registration-awaiting {
+  text-align: center;
+}
+
+.registration-awaiting .ghost {
+  justify-self: center;
+}
+
+.registration-guide button:focus-visible,
+.registration-guide a:focus-visible,
+.registration-guide input:focus-visible {
+  outline: 2px solid #7ef3ff;
+  outline-offset: 3px;
+}

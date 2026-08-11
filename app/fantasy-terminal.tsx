@@ -86,6 +86,7 @@ export function FantasyTerminal({
   const [activeMessage, setActiveMessage] = useState<StoryTerminalEvent | null>(null);
   const [user, setUser] = useState<TerminalUser | null>(null);
   const [preferences, setPreferences] = useState<ReaderPreference[]>([]);
+  const [cloudPreferencesEnabled, setCloudPreferencesEnabled] = useState(false);
   const [ready, setReady] = useState(false);
   const [playbackPhase, setPlaybackPhase] = useState<TerminalPlaybackPhase>("boot");
   const [revealedMessage, setRevealedMessage] = useState("");
@@ -234,7 +235,20 @@ export function FantasyTerminal({
     fetch("/api/auth/me").then(async (response) => response.ok
       ? await response.json() as { user?: TerminalUser | null }
       : { user: null })
-      .then((data) => setUser(data.user || null)).catch(() => {});
+      .then((data) => {
+        setUser(data.user || null);
+        if (!data.user) return;
+        fetch("/api/account/guide-memory").then((response) => response.ok
+          ? response.json() as Promise<{ memory?: { preferences?: unknown; guideCompletedAt?: string | null } }>
+          : { memory: undefined })
+          .then((result) => {
+            if (!result.memory?.guideCompletedAt) return;
+            const cloudPreferences = normalizeReaderPreferences(result.memory.preferences);
+            setPreferences(cloudPreferences);
+            setCloudPreferencesEnabled(true);
+            localStorage.setItem("fantasy-reader-preferences", JSON.stringify(cloudPreferences));
+          }).catch(() => {});
+      }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -313,6 +327,11 @@ export function FantasyTerminal({
       : [...preferences, preference].slice(-6);
     setPreferences(next);
     localStorage.setItem("fantasy-reader-preferences", JSON.stringify(next));
+    if (cloudPreferencesEnabled) void fetch("/api/account/guide-memory", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ preferences: next, completeGuide: true }),
+    }).catch(() => {});
   };
   const openTask = () => { setSection("task"); setSignal(false); setOpen(true); };
   const collapseTarget = activeTask?.title ? "task" : "fab";
@@ -351,7 +370,7 @@ export function FantasyTerminal({
         </>}
       </div> : section === "message" && displayedEvent ? <div className="terminal-message"><span>节点信号已接入</span><p>{displayedEvent.message}</p><div>{displayedEvent.speak && <button onClick={() => playPassiveEventVoice(displayedEvent)}>♫ 播放拟人语音</button>}<button onClick={() => setSection("home")}>打开终端</button></div></div> : section === "task" && activeTask ? <div className="terminal-task-panel"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><TaskDetails task={activeTask} /></div> : section === "preferences" ? <div className="terminal-preferences"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><h3>你想进入怎样的世界？</h3><p>选择最多六项，偏好只保存在当前设备。</p><div>{READER_PREFERENCE_OPTIONS.map((item) => <button className={preferences.includes(item) ? "selected" : ""} key={item} onClick={() => togglePreference(item)}>{item}</button>)}</div><h4>为你推荐</h4>{recommendations.length ? recommendations.map((novel) => <button className="terminal-recommendation" key={novel.id} onClick={() => onOpenNovel?.(novel.id)}><span>{novel.published?.name}</span><i>→</i></button>) : <small>书架暂时还没有已发布小说。</small>}</div> : <div className="terminal-home">
         <p>{ready && user ? `欢迎回来，${user.displayName}。终端已同步你的身份。` : "旅人，要保存进度并在不同设备继续吗？"}</p>
-        {!user && <div className="terminal-auth"><a href="/register?next=/">注册读者账号</a><a href="/login?next=/">登录</a></div>}
+        {!user && <div className="terminal-auth"><a href="/register?intent=cross-device">建立账号</a><a href="/login?next=/">登录</a></div>}
         {activeTask?.title && <button className="terminal-menu" onClick={openTask}><span>⌁ 当前任务<small>{activeTask.title} · {completedObjectives}/{activeTask.objectives.length}</small></span><i>→</i></button>}
         <button className="terminal-menu" onClick={() => setSection("preferences")}><span>◇ 偏好与小说推荐<small>{preferences.length ? `已选择 ${preferences.join("、")}` : "回答几个问题，寻找适合你的世界"}</small></span><i>→</i></button>
         {config.voiceName && <small>AI VOICE · {config.voiceName}</small>}

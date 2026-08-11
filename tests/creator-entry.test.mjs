@@ -13,6 +13,7 @@ const runtime = createCloudflareRuntime({
   vars: {
     LOCAL_ADMIN_BYPASS: "true",
     LOCAL_AUTH_BYPASS: "true",
+    REGISTRATION_ENABLED: "true",
   },
 });
 
