@@ -1,11 +1,36 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getD1Binding, getDb } from ".";
-import { accountOperationReceipts, accountPreferences, authTokens, registrationConsents, users } from "./schema";
+import {
+  accountOperationReceipts,
+  accountPreferences,
+  authTokens,
+  registrationConsents,
+  sessions,
+  users,
+} from "./schema";
 
 export type AccountRecord = typeof users.$inferSelect;
 
 export interface AccountStore {
   findByEmail(email: string): Promise<AccountRecord | undefined>;
+  findById(id: string): Promise<AccountRecord | undefined>;
+  createSession(session: typeof sessions.$inferInsert): Promise<void>;
+  revokeSession(tokenHash: string): Promise<void>;
+  createPasswordResetToken(token: typeof authTokens.$inferInsert): Promise<void>;
+  consumePasswordReset(input: {
+    tokenHash: string;
+    usedMarker: string;
+    now: string;
+    passwordHash: string;
+  }): Promise<boolean>;
+  updateDisplayName(userId: string, displayName: string, updatedAt: string): Promise<void>;
+  listUsers(): Promise<AccountRecord[]>;
+  updateUser(input: {
+    id: string;
+    role?: AccountRecord["role"];
+    status?: Extract<AccountRecord["status"], "active" | "disabled">;
+    updatedAt: string;
+  }): Promise<void>;
   createPendingRegistration(input: {
     user: typeof users.$inferInsert;
     consent: typeof registrationConsents.$inferInsert;
@@ -57,6 +82,49 @@ export interface AccountStore {
 export const drizzleD1AccountStore: AccountStore = {
   async findByEmail(email) {
     return (await getDb().select().from(users).where(eq(users.email, email)).limit(1))[0];
+  },
+  async findById(id) {
+    return (await getDb().select().from(users).where(eq(users.id, id)).limit(1))[0];
+  },
+  async createSession(session) {
+    await getDb().insert(sessions).values(session);
+  },
+  async revokeSession(tokenHash) {
+    await getDb().delete(sessions).where(eq(sessions.tokenHash, tokenHash));
+  },
+  async createPasswordResetToken(token) {
+    await getDb().insert(authTokens).values(token);
+  },
+  async consumePasswordReset(input) {
+    const d1 = getD1Binding();
+    const validToken = `(SELECT user_id FROM auth_tokens
+      WHERE token_hash = ? AND type = 'reset_password' AND used_at IS NULL AND expires_at > ?)`;
+    await d1.batch([
+      d1.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ${validToken}`)
+        .bind(input.passwordHash, input.now, input.tokenHash, input.now),
+      d1.prepare(`DELETE FROM sessions WHERE user_id = ${validToken}`)
+        .bind(input.tokenHash, input.now),
+      d1.prepare(`UPDATE auth_tokens SET used_at = ?
+        WHERE token_hash = ? AND type = 'reset_password' AND used_at IS NULL AND expires_at > ?`)
+        .bind(input.usedMarker, input.tokenHash, input.now),
+    ]);
+    const consumed = (await getDb().select({ usedAt: authTokens.usedAt }).from(authTokens)
+      .where(and(eq(authTokens.tokenHash, input.tokenHash), eq(authTokens.type, "reset_password"))).limit(1))[0];
+    return consumed?.usedAt === input.usedMarker;
+  },
+  async updateDisplayName(userId, displayName, updatedAt) {
+    await getDb().update(users).set({ displayName, updatedAt }).where(eq(users.id, userId));
+  },
+  async listUsers() {
+    return getDb().select().from(users).orderBy(desc(users.createdAt));
+  },
+  async updateUser(input) {
+    const db = getDb();
+    await db.batch([
+      db.update(users).set({ role: input.role, status: input.status, updatedAt: input.updatedAt })
+        .where(eq(users.id, input.id)),
+      ...(input.status === "disabled" ? [db.delete(sessions).where(eq(sessions.userId, input.id))] : []),
+    ]);
   },
   async createPendingRegistration(input) {
     const db = getDb();

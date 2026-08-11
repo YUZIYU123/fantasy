@@ -11,6 +11,7 @@
       "preview_urls": false,
       "vars": {
         "SFX_PROVIDER": "elevenlabs",
+        "DEPLOYMENT_ENV": "local",
         "REGISTRATION_ENABLED": "true",
         "TERMS_VERSION": "local-dev",
         "PRIVACY_VERSION": "local-dev",
@@ -42,6 +43,7 @@
       "preview_urls": true,
       "vars": {
         "SFX_PROVIDER": "elevenlabs",
+        "DEPLOYMENT_ENV": "staging",
         "REGISTRATION_ENABLED": "false",
         "TERMS_VERSION": "draft",
         "PRIVACY_VERSION": "draft",
@@ -56,6 +58,12 @@
           "RESEND_API_KEY"
         ]
       },
+      "routes": [
+        {
+          "pattern": "staging.fantasy.bytesucceed.com",
+          "custom_domain": true
+        }
+      ],
       "triggers": {
         "crons": ["17 3 * * *"]
       },
@@ -93,6 +101,7 @@
       "preview_urls": false,
       "vars": {
         "SFX_PROVIDER": "elevenlabs",
+        "DEPLOYMENT_ENV": "production",
         "REGISTRATION_ENABLED": "false",
         "TERMS_VERSION": "draft",
         "PRIVACY_VERSION": "draft",

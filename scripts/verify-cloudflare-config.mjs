@@ -42,6 +42,7 @@ export async function verifyCloudflareConfig({ requireRemote, requireRegistratio
     const r2 = assertBinding(value.r2_buckets, name, "ASSET_BUCKET");
     if (d1.migrations_dir !== "drizzle") fail(`${name} 必须从 drizzle 读取 migrations`);
     if (typeof value.vars?.REGISTRATION_ENABLED !== "string") fail(`${name} 缺少 REGISTRATION_ENABLED`);
+    if (value.vars?.DEPLOYMENT_ENV !== name) fail(`${name} 的 DEPLOYMENT_ENV 不匹配`);
     if (name !== "local") {
       if (!value.observability?.logs?.enabled || !value.observability?.traces?.enabled) {
         fail(`${name} 必须启用持久化 logs 和 traces`);

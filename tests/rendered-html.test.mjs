@@ -127,7 +127,22 @@ test("平台健康检查验证 D1 与 R2 bindings 且禁止缓存", async () => 
   const response = await fetch(`${origin}/api/health`);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.deepEqual(await response.json(), { ok: true });
+  assert.deepEqual(await response.json(), { ok: true, environment: "local" });
+});
+
+test("账号身份、配置和错误响应禁止进入共享缓存", async () => {
+  for (const path of ["/api/auth/me", "/api/auth/config"]) {
+    const response = await fetch(`${origin}${path}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+  }
+  const rejected = await fetch(`${origin}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ email: "missing@example.com", password: "not-a-real-password" }),
+  });
+  assert.equal(rejected.status, 401);
+  assert.equal(rejected.headers.get("cache-control"), "private, no-store");
 });
 
 test("公开页面统一通过创作中心解析工作台入口", async () => {
@@ -1033,6 +1048,16 @@ test("正式账号 HTTP 路由覆盖确认、恢复、重启与操作结果查�
   const repeated = await requestJson("/api/auth/register", { method: "POST", body: operationBody });
   assert.equal(repeated.response.status, 201);
   assert.equal(repeated.payload.state, "awaiting_email");
+  const changedRequest = await requestJson("/api/auth/register", {
+    method: "POST", body: { ...operationBody, email: `changed-${operationEmail}` },
+  });
+  assert.equal(changedRequest.response.status, 409);
+  assert.equal(changedRequest.payload.code, "operation_mismatch");
+  const changedKind = await requestJson("/api/auth/resend-verification", {
+    method: "POST", body: { email: operationEmail, turnstileToken: "", operationId },
+  });
+  assert.equal(changedKind.response.status, 409);
+  assert.equal(changedKind.payload.code, "operation_mismatch");
 });
 
 test("未配置 AI 提供商密钥时明确拒绝生成且不回退本地合成", async () => {

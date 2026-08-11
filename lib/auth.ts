@@ -77,21 +77,30 @@ export function assertSameOrigin(request: Request) {
 export class AuthError extends Error {
   readonly status: number;
   readonly retryAfterSeconds?: number;
+  readonly code?: string;
 
-  constructor(message: string, status = 400, retryAfterSeconds?: number) {
+  constructor(message: string, status = 400, retryAfterSeconds?: number, code?: string) {
     super(message);
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.code = code;
   }
 }
 
 export function authErrorResponse(error: unknown) {
   if (error instanceof AuthError) return Response.json({
     error: error.message,
+    ...(error.code ? { code: error.code } : {}),
     ...(error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds }),
   }, {
     status: error.status,
-    ...(error.retryAfterSeconds === undefined ? {} : { headers: { "retry-after": String(error.retryAfterSeconds) } }),
+    headers: {
+      "cache-control": "private, no-store",
+      ...(error.retryAfterSeconds === undefined ? {} : { "retry-after": String(error.retryAfterSeconds) }),
+    },
   });
-  return Response.json({ error: "账号操作失败" }, { status: 500 });
+  return Response.json({ error: "账号操作失败" }, {
+    status: 500,
+    headers: { "cache-control": "private, no-store" },
+  });
 }

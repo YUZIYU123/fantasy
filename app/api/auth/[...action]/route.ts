@@ -9,6 +9,7 @@ import { sessionAuthorizationResponse } from "../../../_session-authorization-ht
 import { normalizeRegistrationTelemetryEvent } from "../../../../lib/registration-telemetry";
 
 type Context = { params: Promise<{ action: string[] }> };
+const privateResponse = { "cache-control": "private, no-store" };
 
 function actionName(values: string[]) {
   return values.join("/");
@@ -41,14 +42,14 @@ export async function GET(request: Request, context: Context) {
     const operationId = new URL(request.url).searchParams.get("operationId") || "";
     return accountLifecycleResponse(await accountLifecycle.execute({ action: "get-registration-outcome", operationId }));
   }
-  if (action === "me") return Response.json({ user: await sessionAuthorization.optional(request) });
+  if (action === "me") return Response.json({ user: await sessionAuthorization.optional(request) }, { headers: privateResponse });
   if (action === "config") {
     return Response.json({
       turnstileSiteKey: (env as unknown as { TURNSTILE_SITE_KEY?: string }).TURNSTILE_SITE_KEY || "",
       registrationEnabled: accountRegistrationConfig().registrationEnabled,
-    });
+    }, { headers: privateResponse });
   }
-  return Response.json({ error: "不支持的账号操作" }, { status: 404 });
+  return Response.json({ error: "不支持的账号操作" }, { status: 404, headers: privateResponse });
 }
 
 function commandFor(action: string, request: Request, body: Record<string, unknown>): AccountCommand | null {
@@ -110,7 +111,9 @@ export async function POST(request: Request, context: Context) {
     const action = actionName((await context.params).action);
     if (action === "logout") {
       const result = await accountLifecycle.execute({ action, request });
-      return Response.json(result.body, { headers: { "set-cookie": clearSessionCookie(request) } });
+      return Response.json(result.body, {
+        headers: { ...privateResponse, "set-cookie": clearSessionCookie(request) },
+      });
     }
     if (action === "profile") {
       const body = await request.json() as Record<string, unknown>;
@@ -120,7 +123,7 @@ export async function POST(request: Request, context: Context) {
       }));
     }
     const command = commandFor(action, request, await request.json() as Record<string, unknown>);
-    if (!command) return Response.json({ error: "不支持的账号操作" }, { status: 404 });
+    if (!command) return Response.json({ error: "不支持的账号操作" }, { status: 404, headers: privateResponse });
     return accountLifecycleResponse(await accountLifecycle.execute(command));
   } catch (error) {
     return authErrorResponse(error);

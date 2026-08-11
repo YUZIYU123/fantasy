@@ -24,6 +24,7 @@ test("Cloudflare local、staging 与 production 配置和资源彼此隔离", as
     assert.equal(environment.d1_databases?.[0]?.migrations_dir, "drizzle");
     assert.equal(environment.r2_buckets?.[0]?.binding, "ASSET_BUCKET");
     assert.equal(typeof environment.vars?.REGISTRATION_ENABLED, "string");
+    assert.equal(environment.vars?.DEPLOYMENT_ENV, name);
   }
 
   assert.equal(environments.staging.name, "mist-page-fiction-staging");
@@ -74,12 +75,25 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
   assert.equal(journal.entries.length, migrations.length);
   assert.match(packageJson.scripts["db:migrate:staging"], /--env staging/);
   assert.match(packageJson.scripts["db:migrate:production"], /--env production/);
+  assert.match(packageJson.scripts["db:migrate:staging"], /release:source:staging/);
+  assert.match(packageJson.scripts["db:migrate:production"], /release:source:production/);
   assert.match(packageJson.scripts["deploy:staging"], /--env staging/);
   assert.match(packageJson.scripts["deploy:production"], /--env production/);
+  assert.match(packageJson.scripts["deploy:staging"], /db:migrate:staging/);
+  assert.match(packageJson.scripts["deploy:production"], /db:migrate:production/);
   assert.match(packageJson.scripts["deploy:staging"], /cf:secrets:staging/);
   assert.match(packageJson.scripts["deploy:production"], /cf:secrets:production/);
+  assert.match(packageJson.scripts["release:check"], /build:production/);
   for (const gate of ["typecheck", "lint", "db:migrate:local", "test", "cf:config:check"]) {
     assert.match(packageJson.scripts["release:check"], new RegExp(gate.replaceAll(":", "\\:")));
   }
   assert.match(workflow, /pnpm release:check/);
+});
+
+test("AccountLifecycle 业务规则只依赖 AccountStore interface", async () => {
+  const lifecycle = await readFile(new URL("db/account-lifecycle.ts", root), "utf8");
+  assert.doesNotMatch(lifecycle, /from "drizzle-orm"/);
+  assert.doesNotMatch(lifecycle, /from "\."/);
+  assert.doesNotMatch(lifecycle, /from "\.\/schema"/);
+  assert.doesNotMatch(lifecycle, /\bgetDb\(/);
 });

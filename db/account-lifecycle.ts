@@ -1,9 +1,6 @@
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
-import { getDb } from ".";
 import { sendAuthEmail, validateTurnstile } from "./account-providers";
 import { enforceRateLimit } from "./rate-limit";
 import { drizzleD1AccountStore, type AccountStore } from "./account-store";
-import { authTokens, sessions, users } from "./schema";
 import {
   AuthError,
   assertSameOrigin,
@@ -34,28 +31,6 @@ function cookieValue(request: Request, name: string) {
     if (key === name) return decodeURIComponent(rest.join("="));
   }
   return "";
-}
-
-async function createSession(userId: string, request: Request) {
-  const token = randomToken();
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
-  await getDb().insert(sessions).values({ id: crypto.randomUUID(), userId, tokenHash: await hashToken(token), expiresAt });
-  const secure = new URL(request.url).protocol === "https:";
-  return `${AUTH_SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}${secure ? "; Secure" : ""}`;
-}
-
-async function revokeCurrentSession(request: Request) {
-  const token = cookieValue(request, AUTH_SESSION_COOKIE);
-  if (token) await getDb().delete(sessions).where(eq(sessions.tokenHash, await hashToken(token)));
-}
-
-async function createAuthToken(userId: string, type: "verify_email" | "reset_password", lifetimeMs: number) {
-  const token = randomToken();
-  await getDb().insert(authTokens).values({
-    id: crypto.randomUUID(), userId, tokenHash: await hashToken(token), type,
-    expiresAt: new Date(Date.now() + lifetimeMs).toISOString(),
-  });
-  return token;
 }
 
 export interface TurnstileVerifier {
@@ -217,39 +192,6 @@ function validEmail(value: string) {
   return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-async function consumeToken(
-  token: string,
-  type: "verify_email" | "reset_password",
-  passwordHash?: string,
-) {
-  const tokenHash = await hashToken(token);
-  const db = getDb();
-  const row = (await db.select().from(authTokens).where(and(
-    eq(authTokens.tokenHash, tokenHash), eq(authTokens.type, type), isNull(authTokens.usedAt), gt(authTokens.expiresAt, new Date().toISOString()),
-  )).limit(1))[0];
-  if (!row) throw new AuthError("链接无效或已过期");
-  const now = new Date().toISOString();
-  const marker = `${now}:${crypto.randomUUID()}`;
-  const consume = db.update(authTokens).set({ usedAt: marker }).where(and(
-    eq(authTokens.id, row.id), isNull(authTokens.usedAt), gt(authTokens.expiresAt, now),
-  ));
-  const validUserId = sql<string>`(SELECT user_id FROM auth_tokens WHERE id = ${row.id} AND used_at IS NULL AND expires_at > ${now})`;
-  if (type === "verify_email") {
-    await db.batch([
-      db.update(users).set({ status: "active", emailVerifiedAt: now, updatedAt: now }).where(eq(users.id, validUserId)),
-      consume,
-    ]);
-  } else {
-    await db.batch([
-      db.update(users).set({ passwordHash: passwordHash!, updatedAt: now }).where(eq(users.id, validUserId)),
-      db.delete(sessions).where(eq(sessions.userId, validUserId)),
-      consume,
-    ]);
-  }
-  const consumed = (await db.select({ usedAt: authTokens.usedAt }).from(authTokens).where(eq(authTokens.id, row.id)).limit(1))[0];
-  if (consumed?.usedAt !== marker) throw new AuthError("链接无效或已过期");
-}
-
 export function createAccountLifecycle({
   config = testRegistrationConfig,
   store = drizzleD1AccountStore,
@@ -273,6 +215,39 @@ export function createAccountLifecycle({
   clock?: () => Date;
   telemetry?: RegistrationTelemetry;
 } = {}) {
+  async function createSession(userId: string, request: Request) {
+    const token = randomToken();
+    const expiresAt = new Date(clock().getTime() + SESSION_DAYS * 86_400_000).toISOString();
+    await store.createSession({ id: crypto.randomUUID(), userId, tokenHash: await hashToken(token), expiresAt });
+    const secure = new URL(request.url).protocol === "https:";
+    return `${AUTH_SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}${secure ? "; Secure" : ""}`;
+  }
+
+  async function revokeCurrentSession(request: Request) {
+    const token = cookieValue(request, AUTH_SESSION_COOKIE);
+    if (token) await store.revokeSession(await hashToken(token));
+  }
+
+  async function createPasswordResetToken(userId: string) {
+    const token = randomToken();
+    await store.createPasswordResetToken({
+      id: crypto.randomUUID(), userId, tokenHash: await hashToken(token), type: "reset_password",
+      expiresAt: new Date(clock().getTime() + resetTokenLifetimeMs).toISOString(),
+    });
+    return token;
+  }
+
+  async function consumePasswordReset(token: string, passwordHash: string) {
+    const now = clock().toISOString();
+    const consumed = await store.consumePasswordReset({
+      tokenHash: await hashToken(token),
+      usedMarker: `${now}:${crypto.randomUUID()}`,
+      now,
+      passwordHash,
+    });
+    if (!consumed) throw new AuthError("链接无效或已过期");
+  }
+
   async function recordIfAllowed(allowed: boolean | undefined, event: RegistrationTelemetryEvent) {
     if (allowed === true) await telemetry.record(event);
   }
@@ -280,6 +255,7 @@ export function createAccountLifecycle({
   async function executeWithReceipt(
     operationId: string,
     kind: "register" | "resend" | "restart",
+    requestHash: string,
     operation: (retryingUncertain: boolean, operationToken: string, externalIdempotencyBase: string) => Promise<AccountResult>,
   ): Promise<AccountResult> {
     if (!operationId || operationId.length > 128) throw new AuthError("操作标识无效");
@@ -287,9 +263,17 @@ export function createAccountLifecycle({
     const operationToken = await hashToken(`verification:${operationId}`);
     const externalIdempotencyBase = await hashToken(`external:${operationId}`);
     let receipt = await store.findOperationReceipt(idempotencyHash);
-    if (receipt?.status === "succeeded") return JSON.parse(receipt.resultJson) as AccountResult;
+    const receiptBody = receipt ? JSON.parse(receipt.resultJson) as {
+      requestHash?: string;
+      result?: AccountResult;
+      failure?: { error?: string; status?: number; retryAfterSeconds?: number };
+    } : null;
+    if (receipt && (receipt.kind !== kind || receiptBody?.requestHash !== requestHash)) {
+      throw new AuthError("操作标识与当前请求不匹配，请重新提交", 409, undefined, "operation_mismatch");
+    }
+    if (receipt?.status === "succeeded" && receiptBody?.result) return receiptBody.result;
     if (receipt?.status === "failed") {
-      const failure = JSON.parse(receipt.resultJson) as { error?: string; status?: number; retryAfterSeconds?: number };
+      const failure = receiptBody?.failure || {};
       throw new AuthError(failure.error || "账号操作失败", failure.status || 400, failure.retryAfterSeconds);
     }
     if (receipt?.status === "processing") return { status: 202, body: { state: "processing" } };
@@ -302,12 +286,12 @@ export function createAccountLifecycle({
     if (!receipt) {
       try {
         await store.createOperationReceipt({
-          id: crypto.randomUUID(), idempotencyHash, kind, status: "processing", resultJson: "{}",
+          id: crypto.randomUUID(), idempotencyHash, kind, status: "processing", resultJson: JSON.stringify({ requestHash }),
           expiresAt: new Date(nowDate.getTime() + 24 * 60 * 60_000).toISOString(), updatedAt: nowDate.toISOString(),
         });
       } catch {
         receipt = await store.findOperationReceipt(idempotencyHash);
-        if (receipt) return executeWithReceipt(operationId, kind, operation);
+        if (receipt) return executeWithReceipt(operationId, kind, requestHash, operation);
         throw new AuthError("账号操作暂时不可用", 503);
       }
     }
@@ -317,16 +301,16 @@ export function createAccountLifecycle({
       delete safeBody.developmentToken;
       const storedResult = { ...result, body: safeBody };
       await store.finishOperationReceipt(idempotencyHash, {
-        status: "succeeded", resultJson: JSON.stringify(storedResult), updatedAt: clock().toISOString(),
+        status: "succeeded", resultJson: JSON.stringify({ requestHash, result: storedResult }), updatedAt: clock().toISOString(),
       });
       return result;
     } catch (error) {
       const authError = error instanceof AuthError ? error : new AuthError("账号操作失败", 500);
       await store.finishOperationReceipt(idempotencyHash, {
         status: authError.status === 504 ? "uncertain" : "failed",
-        resultJson: JSON.stringify({
+        resultJson: JSON.stringify({ requestHash, failure: {
           error: authError.message, status: authError.status, retryAfterSeconds: authError.retryAfterSeconds,
-        }),
+        } }),
         updatedAt: clock().toISOString(),
       });
       throw error;
@@ -334,7 +318,6 @@ export function createAccountLifecycle({
   }
 
   async function execute(command: AccountCommand): Promise<AccountResult> {
-    const db = getDb();
     if ("request" in command) assertSameOrigin(command.request);
     if (command.action === "record-registration-event") {
       await recordIfAllowed(command.analyticsAllowed, command.event);
@@ -376,22 +359,39 @@ export function createAccountLifecycle({
       if (!command.operationId || command.operationId.length > 128) throw new AuthError("操作标识无效");
       const receipt = await store.findOperationReceipt(await hashToken(command.operationId));
       if (!receipt) return { body: { state: "not_found" } };
-      if (receipt.status === "succeeded") return { body: { state: "succeeded", result: JSON.parse(receipt.resultJson) } };
-      if (receipt.status === "failed") return { body: { state: "failed", result: JSON.parse(receipt.resultJson) } };
+      const stored = JSON.parse(receipt.resultJson) as { result?: AccountResult; failure?: Record<string, unknown> };
+      if (receipt.status === "succeeded") return { body: { state: "succeeded", result: stored.result || {} } };
+      if (receipt.status === "failed") return { body: { state: "failed", result: stored.failure || {} } };
       return { body: { state: receipt.status === "processing" ? "processing" : "uncertain" } };
     }
     if (command.action === "register" && command.operationId) {
-      return executeWithReceipt(command.operationId, "register", (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
+      const requestHash = await hashToken(JSON.stringify({
+        kind: "register", email: normalizeEmail(command.email), displayName: command.displayName.trim(),
+        passwordHash: await hashToken(command.password), ageConfirmed: command.ageConfirmed === true,
+        termsAccepted: command.termsAccepted === true, privacyAccepted: command.privacyAccepted === true,
+        analyticsAllowed: command.analyticsAllowed === true, termsVersion: config.termsVersion, privacyVersion: config.privacyVersion,
+      }));
+      return executeWithReceipt(command.operationId, "register", requestHash, (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
         ...command, operationId: undefined, retryingUncertain, operationToken, externalIdempotencyBase,
       }));
     }
     if (command.action === "resend-verification" && command.operationId) {
-      return executeWithReceipt(command.operationId, "resend", (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
+      const requestHash = await hashToken(JSON.stringify({
+        kind: "resend", email: normalizeEmail(command.email), analyticsAllowed: command.analyticsAllowed === true,
+      }));
+      return executeWithReceipt(command.operationId, "resend", requestHash, (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
         ...command, operationId: undefined, retryingUncertain, operationToken, externalIdempotencyBase,
       }));
     }
     if (command.action === "restart-registration" && command.operationId) {
-      return executeWithReceipt(command.operationId, "restart", (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
+      const requestHash = await hashToken(JSON.stringify({
+        kind: "restart", currentEmail: normalizeEmail(command.currentEmail), email: normalizeEmail(command.email),
+        displayName: command.displayName.trim(), passwordHash: await hashToken(command.password),
+        ageConfirmed: command.ageConfirmed === true, termsAccepted: command.termsAccepted === true,
+        privacyAccepted: command.privacyAccepted === true, analyticsAllowed: command.analyticsAllowed === true,
+        termsVersion: config.termsVersion, privacyVersion: config.privacyVersion,
+      }));
+      return executeWithReceipt(command.operationId, "restart", requestHash, (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
         ...command, operationId: undefined, retryingUncertain, operationToken, externalIdempotencyBase,
       }));
     }
@@ -630,7 +630,7 @@ export function createAccountLifecycle({
       const email = normalizeEmail(command.email);
       if (email.length > 254) throw new AuthError("邮箱格式无效");
       await enforceRateLimit(command.request, "login", email, 10, 15, clock);
-      const user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+      const user = await store.findByEmail(email);
       if (!user || !await verifyPassword(command.password, user.passwordHash)) throw new AuthError("邮箱或密码错误", 401);
       if (user.status === "pending") throw new AuthError("请先验证邮箱", 403);
       if (user.status === "disabled") throw new AuthError("账号已被禁用", 403);
@@ -650,11 +650,11 @@ export function createAccountLifecycle({
         }),
         externalTimeoutMs, externalRetries, () => new AuthError("人机验证超时，请重试", 504),
       );
-      const user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+      const user = await store.findByEmail(email);
       let developmentToken: string | undefined;
       if (user?.status === "active") {
         try {
-          const token = await createAuthToken(user.id, "reset_password", resetTokenLifetimeMs);
+          const token = await createPasswordResetToken(user.id);
           const mailIdempotencyKey = crypto.randomUUID();
           developmentToken = (await executeExternal(
             (signal) => mailer.send(command.request, email, "reset_password", token, {
@@ -673,13 +673,13 @@ export function createAccountLifecycle({
       if (passwordError) throw new AuthError(passwordError);
       if (!command.token || command.token.length > 256) throw new AuthError("重置链接无效");
       const passwordHash = await hashPassword(command.password);
-      await consumeToken(command.token, "reset_password", passwordHash);
+      await consumePasswordReset(command.token, passwordHash);
       return { body: { ok: true } };
     }
     if (command.action === "profile") {
       const displayName = command.displayName.trim();
       if (!displayName || displayName.length > 40) throw new AuthError("昵称需要为 1–40 个字符");
-      await db.update(users).set({ displayName, updatedAt: new Date().toISOString() }).where(eq(users.id, command.actorId));
+      await store.updateDisplayName(command.actorId, displayName, clock().toISOString());
       return { body: { ok: true } };
     }
     if (command.action === "logout") {
@@ -687,21 +687,18 @@ export function createAccountLifecycle({
       return { body: { ok: true } };
     }
     if (command.action === "list-users") {
-      const rows = await db.select({
-        id: users.id, email: users.email, displayName: users.displayName, role: users.role, status: users.status,
-        emailVerifiedAt: users.emailVerifiedAt, createdAt: users.createdAt, updatedAt: users.updatedAt,
-      }).from(users).orderBy(desc(users.createdAt));
-      return { body: { users: rows } };
+      const rows = await store.listUsers();
+      return { body: { users: rows.map((user) => ({
+        id: user.id, email: user.email, displayName: user.displayName, role: user.role, status: user.status,
+        emailVerifiedAt: user.emailVerifiedAt, createdAt: user.createdAt, updatedAt: user.updatedAt,
+      })) } };
     }
-    const user = (await db.select().from(users).where(eq(users.id, command.id)).limit(1))[0];
+    const user = await store.findById(command.id);
     if (!user) throw new AuthError("用户不存在", 404);
     const role = command.role && ["reader", "author", "admin"].includes(command.role) ? command.role : undefined;
     const status = command.status && ["active", "disabled"].includes(command.status) ? command.status : undefined;
     if (!role && !status) throw new AuthError("没有可更新的字段");
-    await db.batch([
-      db.update(users).set({ role, status, updatedAt: new Date().toISOString() }).where(eq(users.id, command.id)),
-      ...(status === "disabled" ? [db.delete(sessions).where(eq(sessions.userId, command.id))] : []),
-    ]);
+    await store.updateUser({ id: command.id, role, status, updatedAt: clock().toISOString() });
     return { body: { ok: true } };
   }
   return { execute, registrationConfig: () => ({ ...config, allowedHostnames: [...config.allowedHostnames] }) };

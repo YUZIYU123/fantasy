@@ -31,6 +31,7 @@ async function authPost(action: string, body: Record<string, unknown>) {
     retryAfterSeconds?: number;
     state?: string;
     nextActions?: string[];
+    code?: string;
     user?: AuthUser;
   };
   if (!response.ok) throw new AuthRequestError(
@@ -38,6 +39,8 @@ async function authPost(action: string, body: Record<string, unknown>) {
     data.retryAfterSeconds,
     data.state,
     data.nextActions,
+    response.status,
+    data.code,
   );
   return data;
 }
@@ -48,6 +51,8 @@ class AuthRequestError extends Error {
     readonly retryAfterSeconds?: number,
     readonly state?: string,
     readonly nextActions?: string[],
+    readonly status?: number,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -196,6 +201,11 @@ function RegistrationGuide() {
       setStep(registrationSteps.length);
     } catch (error) {
       try {
+        if (error instanceof AuthRequestError && error.code === "operation_mismatch") {
+          operationId.current = "";
+          setMessage(error.message);
+          return;
+        }
         const outcome = operationId.current
           ? await fetch(`/api/auth/registration-outcome?operationId=${encodeURIComponent(operationId.current)}`).then((response) => response.json() as Promise<{ state?: string }>)
           : null;
@@ -228,8 +238,15 @@ function RegistrationGuide() {
       <MistGuide mood="happy" />
       <p>我会在这里等你回来。验证链接二十四小时内有效。</p>
       {developmentToken && <a className="primary link-button" href={`/verify-email?token=${encodeURIComponent(developmentToken)}`}>本地确认并进入幻界</a>}
-      <button className="ghost" type="button" onClick={() => setStep(3)}>修改邮箱</button>
+      <button className="ghost" type="button" onClick={() => {
+        operationId.current = "";
+        setCurrentEmail(email);
+        setRecovery(false);
+        setRestarting(true);
+        setStep(1);
+      }}>修改邮箱</button>
       {recovery && <button className="ghost" type="button" onClick={() => {
+        operationId.current = "";
         setCurrentEmail(email);
         setRecovery(false);
         setRestarting(true);

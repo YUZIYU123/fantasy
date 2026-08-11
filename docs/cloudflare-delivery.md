@@ -37,8 +37,8 @@ Destructive schema changes use expand-contract across separate releases: add com
 
 `pnpm release:check` runs type checking, lint, local D1 migration validation, the production build, Worker/HTTP integration tests, domain tests, React user-flow tests, and the committed Cloudflare configuration contract.
 
-Deployment commands fetch and prune `origin`, require a clean worktree, and require local `HEAD` to equal its GitHub upstream. Production additionally requires the current branch to be `main`. They do not apply migrations automatically; the operator must follow the ordered sequence above.
+Deployment commands fetch and prune `origin`, require a clean worktree, and require local `HEAD` to equal its GitHub upstream. Production additionally requires the current branch to be `main`. Each deployment command reapplies the corresponding ordered migration command as a final no-op-or-apply gate before uploading code, so code cannot be deployed ahead of committed migrations.
 
-The smoke scripts check the homepage, health endpoint, login page, a public D1-backed read, and rejection of an unauthenticated write. Set `SMOKE_SESSION_COOKIE` only for a controlled staging/production test account when validating an authenticated session; the script never prints it.
+The smoke scripts check the environment-attested health endpoint, homepage, login page, a public D1-backed read, rejection of an unauthenticated write, an authenticated session, and an idempotent authenticated guide-memory write. `SMOKE_SESSION_COOKIE` is mandatory and must belong to a controlled staging/production test account; the script never prints it.
 
 If an incident occurs, first establish a replayable failing request, minimize it, test falsifiable hypotheses against Workers logs/traces, add a regression test, fix, rerun the original request, remove temporary logging, and record the root cause and prevention.
