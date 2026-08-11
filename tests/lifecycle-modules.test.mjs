@@ -123,7 +123,8 @@ test("账号注册 composition root 在必要配置缺失时保持关闭", async
   const payload = await response.json();
   assert.equal(payload.incomplete.registrationEnabled, false);
   assert.equal(payload.localPreview.registrationEnabled, true);
-  assert.deepEqual(payload.localPreview.allowedHostnames, ["localhost", "127.0.0.1"]);
+  assert.deepEqual(payload.localPreview.allowedHostnames, ["127.0.0.1"]);
+  assert.equal(payload.unsafeBypass.registrationEnabled, false);
   assert.equal(payload.productionReady.registrationEnabled, true);
   assert.deepEqual(payload.productionReady.allowedHostnames, ["preview.example.com"]);
   assert.deepEqual(payload.turnstile, { accepted: true, missingAction: false, wrongHostname: false });
@@ -288,6 +289,7 @@ test("AccountLifecycle 对邮件超时执行有限重试并返回稳定错误", 
   assert.equal(payload.status, 504);
   assert.equal(payload.message, "邮件发送超时，请稍后重试");
   assert.equal(payload.calls, 2);
+  assert.ok(payload.pendingExpiresAt);
 });
 
 test("AccountLifecycle 的 Turnstile 超时与邮件瞬时失败可通过 port 验证", async () => {

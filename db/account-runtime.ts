@@ -29,7 +29,9 @@ export function accountRegistrationConfigFrom(values: AccountRuntimeEnv): Accoun
   }
   const termsVersion = values.TERMS_VERSION || "draft";
   const privacyVersion = values.PRIVACY_VERSION || "draft";
-  const localBypass = values.LOCAL_AUTH_BYPASS === "true";
+  const localBypass = values.LOCAL_AUTH_BYPASS === "true"
+    && allowedHostnames.length > 0
+    && allowedHostnames.every((hostname) => hostname === "localhost" || hostname === "127.0.0.1");
   const productionReady = allowedHostnames.length > 0
     && termsVersion !== "draft"
     && privacyVersion !== "draft"
@@ -42,7 +44,7 @@ export function accountRegistrationConfigFrom(values: AccountRuntimeEnv): Accoun
     registrationEnabled: values.REGISTRATION_ENABLED === "true" && (localBypass || productionReady),
     termsVersion,
     privacyVersion,
-    allowedHostnames: localBypass && allowedHostnames.length === 0 ? ["localhost", "127.0.0.1"] : allowedHostnames,
+    allowedHostnames,
   };
 }
 

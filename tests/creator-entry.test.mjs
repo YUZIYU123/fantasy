@@ -14,6 +14,7 @@ const runtime = createCloudflareRuntime({
     LOCAL_ADMIN_BYPASS: "true",
     LOCAL_AUTH_BYPASS: "true",
     REGISTRATION_ENABLED: "true",
+    APP_ORIGIN: `http://127.0.0.1:${port}`,
   },
 });
 

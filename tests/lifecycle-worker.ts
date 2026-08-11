@@ -384,6 +384,12 @@ const lifecycleWorker = {
       });
       const localPreview = accountRegistrationConfigFrom({
         REGISTRATION_ENABLED: "true", LOCAL_AUTH_BYPASS: "true",
+        APP_ORIGIN: "http://127.0.0.1:8787",
+        TERMS_VERSION: "preview", PRIVACY_VERSION: "preview",
+      });
+      const unsafeBypass = accountRegistrationConfigFrom({
+        REGISTRATION_ENABLED: "true", LOCAL_AUTH_BYPASS: "true",
+        APP_ORIGIN: "https://production.example.com",
         TERMS_VERSION: "preview", PRIVACY_VERSION: "preview",
       });
       const productionReady = accountRegistrationConfigFrom({
@@ -392,7 +398,7 @@ const lifecycleWorker = {
         RESEND_API_KEY: "resend", AUTH_FROM_EMAIL: "小雾 <guide@example.com>", ACCOUNT_CONTACT_EMAIL: "support@example.com",
       });
       return Response.json({
-        incomplete, localPreview, productionReady,
+        incomplete, localPreview, unsafeBypass, productionReady,
         turnstile: {
           accepted: acceptsTurnstileResult({
             success: true, action: "register", hostname: "preview.example.com",
@@ -1009,7 +1015,11 @@ const lifecycleWorker = {
         throw new Error("邮件超时没有失败");
       } catch (error) {
         if (!(error instanceof AuthError)) throw error;
-        return Response.json({ status: error.status, message: error.message, calls: mailer.calls.length });
+        const pending = await drizzleD1AccountStore.findByEmail(email);
+        return Response.json({
+          status: error.status, message: error.message, calls: mailer.calls.length,
+          pendingExpiresAt: pending?.pendingExpiresAt || null,
+        });
       }
     }
 

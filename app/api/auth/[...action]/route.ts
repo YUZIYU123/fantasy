@@ -33,11 +33,13 @@ export async function GET(request: Request, context: Context) {
   if (action === "verify-email") {
     const token = new URL(request.url).searchParams.get("token") || "";
     const actor = await sessionAuthorization.optional(request);
-    return accountLifecycle.execute({ action: "inspect-email-verification", token, actorId: actor?.id }).then(accountLifecycleResponse);
+    return accountLifecycleResponse(await accountLifecycle.execute({
+      action: "inspect-email-verification", token, actorId: actor?.id,
+    }));
   }
   if (action === "registration-outcome") {
     const operationId = new URL(request.url).searchParams.get("operationId") || "";
-    return accountLifecycle.execute({ action: "get-registration-outcome", operationId }).then(accountLifecycleResponse);
+    return accountLifecycleResponse(await accountLifecycle.execute({ action: "get-registration-outcome", operationId }));
   }
   if (action === "me") return Response.json({ user: await sessionAuthorization.optional(request) });
   if (action === "config") {
@@ -113,12 +115,13 @@ export async function POST(request: Request, context: Context) {
     if (action === "profile") {
       const body = await request.json() as Record<string, unknown>;
       const actor = await sessionAuthorization.require(request);
-      return accountLifecycle.execute({ action, actorId: actor.id, displayName: String(body.displayName || "") }).then(accountLifecycleResponse);
+      return accountLifecycleResponse(await accountLifecycle.execute({
+        action, actorId: actor.id, displayName: String(body.displayName || ""),
+      }));
     }
     const command = commandFor(action, request, await request.json() as Record<string, unknown>);
     if (!command) return Response.json({ error: "不支持的账号操作" }, { status: 404 });
-    // Keep the existing route's asynchronous error mapping behavior for HTTP compatibility.
-    return accountLifecycle.execute(command).then(accountLifecycleResponse);
+    return accountLifecycleResponse(await accountLifecycle.execute(command));
   } catch (error) {
     return authErrorResponse(error);
   }

@@ -5,7 +5,9 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AuthForm, VerifyEmail } from "../app/auth-forms";
 import { FantasyTerminal } from "../app/fantasy-terminal";
+import { StoryStudio } from "../app/story-studio";
 import { browserRegistrationInvitationStore } from "../lib/registration-invitation";
+import { createBlankStory } from "../lib/story";
 
 let dom: JSDOM;
 let root: Root;
@@ -19,13 +21,36 @@ beforeEach(() => {
     self: window,
     document: window.document,
     localStorage: window.localStorage,
+    sessionStorage: window.sessionStorage,
     HTMLElement: window.HTMLElement,
+    HTMLMediaElement: window.HTMLMediaElement,
+    HTMLVideoElement: window.HTMLVideoElement,
+    Image: window.Image,
+    Audio: window.Audio,
     Event: window.Event,
     MouseEvent: window.MouseEvent,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   Object.assign(window.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: window.navigator });
+  window.matchMedia = () => ({
+    matches: false,
+    media: "",
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => false,
+  });
+  Object.defineProperty(window.HTMLElement.prototype, "scrollTo", { configurable: true, value() {} });
+  Object.defineProperty(window.HTMLMediaElement.prototype, "play", {
+    configurable: true,
+    value() { return Promise.reject(new Error("media unavailable")); },
+  });
+  Object.defineProperty(window.HTMLMediaElement.prototype, "pause", { configurable: true, value() {} });
+  globalThis.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now() + 10_000), 0) as unknown as number;
+  globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
   globalThis.fetch = async () => Response.json({ turnstileSiteKey: "" });
   container = window.document.querySelector("#root") as HTMLDivElement;
   root = createRoot(container);
@@ -203,4 +228,31 @@ test("已使用链接只在匹配账号会话中显示欢迎回来", async () =>
   assert.match(container.textContent || "", /仍在自己的账号会话中/);
   assert.equal(container.querySelector<HTMLAnchorElement>('a[href="/account"]')?.textContent, "进入账号");
   assert.doesNotMatch(container.textContent || "", /重新发送验证邮件/);
+});
+
+test("进度注册意图由阅读界面所有者接回目标章节", async () => {
+  window.history.replaceState({}, "", "/?resume=progress&target=chapter-42");
+  const story = createBlankStory();
+  story.title = "接续章节";
+  story.nodes[0].body = "回到原来的阅读位置。";
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === "/api/novels") return Response.json({ novels: [{
+      id: "novel-42", sortOrder: 1, version: 1,
+      published: {
+        name: "接续小说", summary: "接续简介", coverUrl: "", coverAlt: "",
+        coverPresentation: { fit: "cover", positionX: 50, positionY: 50 },
+      },
+      chapters: [{ id: "chapter-42", title: story.title, summary: story.summary, version: 1, published: story }],
+    }] });
+    if (url === "/api/auth/me") return Response.json({ user: { displayName: "旅伴", role: "reader" } });
+    if (url.startsWith("/api/account/progress")) return Response.json({ progress: [] });
+    if (url === "/api/account/guide-memory") return Response.json({ memory: { preferences: [], guideCompletedAt: null } });
+    return Response.json({});
+  };
+  await act(async () => root.render(<StoryStudio />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 80)));
+  assert.ok(container.querySelector(".reader"));
+  assert.match(container.textContent || "", /接续章节/);
+  assert.equal(window.location.search, "");
 });

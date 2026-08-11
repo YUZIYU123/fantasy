@@ -426,7 +426,13 @@ export function createAccountLifecycle({
       if (!existing) {
         await store.createPendingRegistration({
           user: {
-            id: userId, email, displayName, passwordHash: await hashPassword(command.password), role: "reader", status: "pending",
+            id: userId,
+            email,
+            displayName,
+            passwordHash: await hashPassword(command.password),
+            role: "reader",
+            status: "pending",
+            pendingExpiresAt: new Date(nowDate.getTime() + 7 * 86_400_000).toISOString(),
           },
           consent: {
             id: crypto.randomUUID(), userId, ageConfirmedAt: now,

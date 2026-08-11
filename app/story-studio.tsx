@@ -12,6 +12,7 @@ import {
 import { Brand } from "./brand";
 import { FantasyTerminal } from "./fantasy-terminal";
 import { Reader } from "./reader";
+import { normalizeRegistrationIntent } from "../lib/registration-intent";
 
 export { Reader } from "./reader";
 
@@ -44,6 +45,39 @@ export function StoryStudio() {
     setBusy(false);
   }, []);
   useEffect(() => { queueMicrotask(() => load().catch(() => setBusy(false))); }, [load]);
+  useEffect(() => {
+    if (busy || novels.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const intent = normalizeRegistrationIntent({ kind: params.get("resume"), targetId: params.get("target") });
+    if (!intent?.targetId) return;
+    const consumeIntent = () => {
+      params.delete("resume");
+      params.delete("target");
+      const query = params.toString();
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    };
+    if (intent.kind === "bookshelf") {
+      const targetNovel = novels.find((item) => item.id === intent.targetId);
+      if (!targetNovel) return;
+      consumeIntent();
+      queueMicrotask(() => {
+        setNovelId(targetNovel.id);
+        setView("novel");
+      });
+      return;
+    }
+    if (intent.kind === "progress") {
+      const targetNovel = novels.find((item) => item.chapters.some((chapter) => chapter.id === intent.targetId));
+      const targetChapter = targetNovel?.chapters.find((chapter) => chapter.id === intent.targetId);
+      if (!targetNovel || !targetChapter?.published) return;
+      consumeIntent();
+      queueMicrotask(() => {
+        setNovelId(targetNovel.id);
+        setChapterId(targetChapter.id);
+        setView("reader");
+      });
+    }
+  }, [busy, novels]);
 
   if (view === "novel" && novel) {
     return <><NovelHome novel={novel} onBack={() => setView("library")} onRead={(selected) => {
