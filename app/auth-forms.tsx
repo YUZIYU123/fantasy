@@ -24,9 +24,33 @@ async function authPost(action: string, body: Record<string, unknown>) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await response.json() as { error?: string; message?: string; developmentToken?: string; user?: AuthUser };
-  if (!response.ok) throw new Error(data.error || "操作失败");
+  const data = await response.json() as {
+    error?: string;
+    message?: string;
+    developmentToken?: string;
+    retryAfterSeconds?: number;
+    state?: string;
+    nextActions?: string[];
+    user?: AuthUser;
+  };
+  if (!response.ok) throw new AuthRequestError(
+    data.error || (data.state === "existing_account" ? "这个邮箱已经属于正常账号" : "操作失败"),
+    data.retryAfterSeconds,
+    data.state,
+    data.nextActions,
+  );
   return data;
+}
+
+class AuthRequestError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterSeconds?: number,
+    readonly state?: string,
+    readonly nextActions?: string[],
+  ) {
+    super(message);
+  }
 }
 
 type GuideMemory = {
@@ -65,7 +89,9 @@ function RegistrationGuide() {
   const [intent, setIntent] = useState<RegistrationIntent | null>(null);
   const [recovery, setRecovery] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [showExistingAccountActions, setShowExistingAccountActions] = useState(false);
   const [currentEmail, setCurrentEmail] = useState("");
+  const [resumeAfterConsent, setResumeAfterConsent] = useState(0);
   const operationId = useRef("");
 
   useEffect(() => {
@@ -77,7 +103,8 @@ function RegistrationGuide() {
     const draft = browserRegistrationDraftStore.load();
     queueMicrotask(() => {
       if (draft) {
-        setStep(draft.step);
+        setStep(draft.step > 1 ? 1 : draft.step);
+        setResumeAfterConsent(draft.step > 1 ? draft.step : 0);
         setDisplayName(draft.displayName);
         setEmail(draft.email);
         setIntent(draft.intent || null);
@@ -115,6 +142,11 @@ function RegistrationGuide() {
       setMessage("请分别完成年龄确认、服务条款和隐私政策确认。");
       return;
     }
+    if (step === 1 && resumeAfterConsent > 1) {
+      setStep(resumeAfterConsent);
+      setResumeAfterConsent(0);
+      return;
+    }
     if (recovery && step === 3) {
       recordTelemetry({ flow: "resend", stage: "step", outcome: "continued" });
       setStep(5);
@@ -132,6 +164,7 @@ function RegistrationGuide() {
     }
     setBusy(true);
     setMessage("");
+    setShowExistingAccountActions(false);
     try {
       if (!operationId.current) operationId.current = crypto.randomUUID();
       const result = recovery
@@ -145,6 +178,20 @@ function RegistrationGuide() {
           email, displayName, password, turnstileToken,
           ageConfirmed, termsAccepted, privacyAccepted, analyticsAllowed, operationId: operationId.current,
           });
+      if (result.state === "processing" || result.state === "uncertain") {
+        setMessage("上一次操作的结果仍在确认中。请稍后再次提交，我会使用同一个操作标识安全重试。");
+        return;
+      }
+      if (result.state === "recovery_unavailable") {
+        operationId.current = "";
+        setMessage("如果这个邮箱有待验证账号，现在可以稍后重试；我们不会透露账号状态。");
+        return;
+      }
+      if (result.state !== "awaiting_email") {
+        operationId.current = "";
+        setMessage(result.message || "暂时无法完成账号注册，请重试。");
+        return;
+      }
       setDevelopmentToken(result.developmentToken || "");
       setStep(registrationSteps.length);
     } catch (error) {
@@ -152,10 +199,23 @@ function RegistrationGuide() {
         const outcome = operationId.current
           ? await fetch(`/api/auth/registration-outcome?operationId=${encodeURIComponent(operationId.current)}`).then((response) => response.json() as Promise<{ state?: string }>)
           : null;
-        setMessage(outcome?.state === "uncertain" || outcome?.state === "processing"
-          ? "还在确认上一次操作的结果，请稍后再试。"
+        if (outcome?.state === "succeeded") {
+          setStep(registrationSteps.length);
+          return;
+        }
+        if (outcome?.state === "uncertain" || outcome?.state === "processing") {
+          setMessage("还在确认上一次操作的结果。请稍后再次提交，我会安全重试同一次操作。");
+          return;
+        }
+        operationId.current = "";
+        if (error instanceof AuthRequestError && error.state === "existing_account") {
+          setShowExistingAccountActions(true);
+        }
+        setMessage(error instanceof AuthRequestError && error.retryAfterSeconds
+          ? `${error.message}，请在 ${error.retryAfterSeconds} 秒后重试。`
           : error instanceof Error ? error.message : "账号注册失败");
       } catch {
+        operationId.current = "";
         setMessage(error instanceof Error ? error.message : "账号注册失败");
       }
     } finally {
@@ -189,7 +249,7 @@ function RegistrationGuide() {
     </div>}
     {step === 1 && <fieldset>
       <legend>开始前，有几件重要的事要和你说清楚。</legend>
-      <label><input type="checkbox" checked={ageConfirmed} onChange={(event) => setAgeConfirmed(event.target.checked)} />我确认已满十四周岁</label>
+      <label><input autoFocus type="checkbox" checked={ageConfirmed} onChange={(event) => setAgeConfirmed(event.target.checked)} />我确认已满十四周岁</label>
       <label><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} />我已阅读并同意当前服务条款</label>
       <label><input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} />我已阅读并同意当前隐私政策</label>
       <label><input name="registrationAnalytics" type="checkbox" checked={analyticsAllowed} onChange={(event) => {
@@ -205,20 +265,21 @@ function RegistrationGuide() {
       <small>拒绝不会影响注册，之后也可以在账号页更改。</small>
     </fieldset>}
     {step === 2 && <label>我该怎么称呼你？以后随时可以修改。
-      <input name="displayName" required maxLength={40} autoComplete="nickname" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+      <input autoFocus name="displayName" required maxLength={40} autoComplete="nickname" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
     </label>}
     {step === 3 && <label>邮箱是你回到账号的路标，我也会把验证邮件送到这里。
-      <input name="email" required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+      <input autoFocus name="email" required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
     </label>}
     {step === 4 && <label>给账号设一把只有你知道的钥匙。我不会朗读或保存输入内容。
-      <input name="password" required minLength={15} maxLength={128} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+      <input autoFocus name="password" required minLength={15} maxLength={128} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
       <small>至少十五个字符，可以使用中文、空格和密码管理器。</small>
     </label>}
     {step === 5 && <div className="registration-security">
       <p>最后确认一下是你本人在操作。</p>
-      <Turnstile action="register" onToken={setTurnstileToken} />
+      <Turnstile action={recovery ? "resend-verification" : restarting ? "restart-registration" : "register"} onToken={setTurnstileToken} />
     </div>}
     {message && <p className="auth-message" role="alert">{message}</p>}
+    {showExistingAccountActions && <div className="auth-links"><a href="/login">登录已有账号</a><a href="/forgot-password">找回密码</a></div>}
     <div className="registration-actions">
       {step > 0 && <button className="ghost" type="button" onClick={() => setStep((current) => current - 1)}>返回</button>}
       {step === 0 && <Link className="ghost link-button" href="/">暂时不用</Link>}
@@ -269,7 +330,7 @@ function Turnstile({ action, onToken }: { action: string; onToken: (token: strin
       if (widgetId && window.turnstile) window.turnstile.remove(widgetId);
     };
   }, [action, onToken, siteKey]);
-  return <div className="turnstile-wrap" ref={container}>{!siteKey && <small>本地开发可启用 LOCAL_AUTH_BYPASS</small>}</div>;
+  return <div className="turnstile-wrap" data-action={action} ref={container}>{!siteKey && <small>本地开发可启用 LOCAL_AUTH_BYPASS</small>}</div>;
 }
 
 export function AuthForm({
@@ -332,7 +393,7 @@ export function AuthForm({
 }
 
 export function VerifyEmail() {
-  const [state, setState] = useState<"loading" | "ready" | "expired" | "used" | "invalid" | "active" | "error">("loading");
+  const [state, setState] = useState<"loading" | "ready" | "expired" | "used" | "active_session" | "invalid" | "active" | "error">("loading");
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [resumeDirective, setResumeDirective] = useState<RegistrationResumeDirective | null>(null);
@@ -392,6 +453,10 @@ export function VerifyEmail() {
       }}>{memoryChoice === "saving" ? "正在同步…" : "同步阅读偏好"}</button>
       <button className="ghost" type="button" onClick={() => setMemoryChoice("done")}>暂不同步</button>
     </fieldset> : <a className="primary link-button" href={resumeDirective?.targetId ? `/?resume=${resumeDirective.kind}&target=${encodeURIComponent(resumeDirective.targetId)}` : "/account"}>{resumeDirective ? "继续刚才的旅程" : "进入幻界"}</a>}
+  </div></AuthShell>;
+  if (state === "active_session") return <AuthShell title="欢迎回来"><div className="auth-result registration-awaiting">
+    <MistGuide mood="happy" /><p>这个邮箱已经确认好了，你仍在自己的账号会话中。</p>
+    <a className="primary link-button" href="/account">进入账号</a>
   </div></AuthShell>;
   const copy = state === "loading" ? "正在检查验证链接…"
     : state === "ready" ? "邮箱确认好了。准备继续刚才的旅程吗？"

@@ -1,4 +1,7 @@
 import { createAccountLifecycle, MockAuthMailer, MockTurnstileVerifier } from "../db/account-lifecycle";
+import { accountRegistrationConfigFrom } from "../db/account-runtime";
+import { acceptsTurnstileResult } from "../db/account-providers";
+import { drizzleD1AccountStore } from "../db/account-store";
 import { MockRegistrationTelemetry } from "../lib/registration-telemetry";
 import { AssetLifecycleError, assetLifecycle } from "../db/assets";
 import { creationLifecycle } from "../db/creation-lifecycle";
@@ -375,6 +378,35 @@ const lifecycleWorker = {
       }
     }
 
+    if (pathname === "/account-registration-runtime-config" && request.method === "POST") {
+      const incomplete = accountRegistrationConfigFrom({
+        REGISTRATION_ENABLED: "true", TERMS_VERSION: "draft", PRIVACY_VERSION: "draft",
+      });
+      const localPreview = accountRegistrationConfigFrom({
+        REGISTRATION_ENABLED: "true", LOCAL_AUTH_BYPASS: "true",
+        TERMS_VERSION: "preview", PRIVACY_VERSION: "preview",
+      });
+      const productionReady = accountRegistrationConfigFrom({
+        REGISTRATION_ENABLED: "true", TERMS_VERSION: "2026-08-11", PRIVACY_VERSION: "2026-08-11",
+        APP_ORIGIN: "https://preview.example.com", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret",
+        RESEND_API_KEY: "resend", AUTH_FROM_EMAIL: "小雾 <guide@example.com>", ACCOUNT_CONTACT_EMAIL: "support@example.com",
+      });
+      return Response.json({
+        incomplete, localPreview, productionReady,
+        turnstile: {
+          accepted: acceptsTurnstileResult({
+            success: true, action: "register", hostname: "preview.example.com",
+          }, "register", ["preview.example.com"]),
+          missingAction: acceptsTurnstileResult({
+            success: true, hostname: "preview.example.com",
+          }, "register", ["preview.example.com"]),
+          wrongHostname: acceptsTurnstileResult({
+            success: true, action: "register", hostname: "evil.example.com",
+          }, "register", ["preview.example.com"]),
+        },
+      });
+    }
+
     if (pathname === "/account-registration-create" && request.method === "POST") {
       const turnstile = new MockTurnstileVerifier();
       const mailer = new MockAuthMailer();
@@ -458,6 +490,9 @@ const lifecycleWorker = {
         intent: { kind: "bookshelf", targetId: "novel-42" },
       });
       const identity = activation.cookie ? await sessionAuthorization.optional(lifecycleRequest(activation.cookie)) : null;
+      const usedWithMatchingSession = identity
+        ? await lifecycle.execute({ action: "inspect-email-verification", token, actorId: identity.id })
+        : null;
       let repeated = 0;
       try {
         await lifecycle.execute({ action: "activate-account", request: lifecycleRequest(), token });
@@ -465,7 +500,27 @@ const lifecycleWorker = {
         if (!(error instanceof AuthError)) throw error;
         repeated = error.status;
       }
-      return Response.json({ inspection, pendingLogin, activation, identity, repeated });
+
+      const disabledEmail = `disabled-activation-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: disabledEmail, displayName: "禁用旅伴",
+        password: "disabled-activation-password-123", turnstileToken: "disabled-activation-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const disabledToken = mailer.calls.at(-1)?.token;
+      if (!disabledToken) throw new Error("没有禁用账号 token");
+      const listed = await lifecycle.execute({ action: "list-users" });
+      const disabledId = (listed.body.users as Array<{ id: string; email: string }>).find((user) => user.email === disabledEmail)?.id;
+      if (!disabledId) throw new Error("没有禁用账号");
+      await lifecycle.execute({ action: "update-user", id: disabledId, status: "disabled" });
+      let disabledActivation = 0;
+      try {
+        await lifecycle.execute({ action: "activate-account", request: lifecycleRequest(), token: disabledToken });
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        disabledActivation = error.status;
+      }
+      return Response.json({ inspection, pendingLogin, activation, identity, usedWithMatchingSession, repeated, disabledActivation });
     }
 
     if (pathname === "/account-resend" && request.method === "POST") {
@@ -525,28 +580,85 @@ const lifecycleWorker = {
       if (!newToken) throw new Error("没有新 token");
       const oldInspection = await lifecycle.execute({ action: "inspect-email-verification", token: oldToken });
       const newInspection = await lifecycle.execute({ action: "inspect-email-verification", token: newToken });
-      return Response.json({ restarted, oldInspection, newInspection, mailCalls: mailer.calls.length });
+      const successfulMailCalls = mailer.calls.length;
+
+      now = new Date("2026-08-12T00:00:00.000Z");
+      const failureEmail = `restart-failure-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: failureEmail, displayName: "失败前昵称",
+        password: "restart-failure-password-123", turnstileToken: "failure-initial-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const expiryBeforeFailure = (await drizzleD1AccountStore.findByEmail(failureEmail))?.pendingExpiresAt;
+      now = new Date("2026-08-13T00:00:00.000Z");
+      const failedNewEmail = `restart-failed-new-${crypto.randomUUID()}@example.com`;
+      const failingLifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(),
+        mailer: new MockAuthMailer({}, new AuthError("邮件发送失败，请稍后重试", 502)),
+        clock: () => now,
+        externalRetries: 0,
+      });
+      let failedStatus = 0;
+      try {
+        await failingLifecycle.execute({
+          action: "restart-registration", request: lifecycleRequest(), currentEmail: failureEmail, email: failedNewEmail,
+          displayName: "失败后昵称", password: "restart-failed-new-password-123", turnstileToken: "failure-restart-token",
+          ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+        });
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        failedStatus = error.status;
+      }
+      const expiryAfterFailure = (await drizzleD1AccountStore.findByEmail(failedNewEmail))?.pendingExpiresAt;
+      return Response.json({
+        restarted, oldInspection, newInspection, mailCalls: successfulMailCalls,
+        failedStatus, expiryBeforeFailure, expiryAfterFailure,
+      });
     }
 
     if (pathname === "/account-operation-receipt" && request.method === "POST") {
       const requestForLifecycle = () => new Request(request.url, {
         method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.42" },
       });
-      const hangingMailer = new MockAuthMailer({}, undefined, true);
+      const recoveryMailKeys: string[] = [];
+      let recoveryMailCalls = 0;
+      const recoveringMailer = {
+        async send(
+          _request: Request,
+          _to: string,
+          _type: "verify_email" | "reset_password",
+          _token: string,
+          attempt?: { signal: AbortSignal; idempotencyKey: string; allowedHostnames: string[] },
+        ) {
+          recoveryMailCalls += 1;
+          if (attempt) recoveryMailKeys.push(attempt.idempotencyKey);
+          if (recoveryMailCalls === 1) {
+            await new Promise<never>((_resolve, reject) => {
+              attempt?.signal.addEventListener("abort", () => reject(new Error("external request aborted")), { once: true });
+            });
+          }
+          return {};
+        },
+      };
       const timeoutLifecycle = createAccountLifecycle({
-        turnstile: new MockTurnstileVerifier(), mailer: hangingMailer, externalTimeoutMs: 5, externalRetries: 0,
+        turnstile: new MockTurnstileVerifier(), mailer: recoveringMailer, externalTimeoutMs: 5, externalRetries: 0,
       });
       const timeoutOperationId = crypto.randomUUID();
+      const timeoutEmail = `uncertain-${crypto.randomUUID()}@example.com`;
+      const timeoutCommand = {
+        action: "register" as const, request: requestForLifecycle(), email: timeoutEmail,
+        displayName: "不确定旅伴", password: "uncertain-password-123", turnstileToken: "uncertain-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true, operationId: timeoutOperationId,
+      };
       try {
-        await timeoutLifecycle.execute({
-          action: "register", request: requestForLifecycle(), email: `uncertain-${crypto.randomUUID()}@example.com`,
-          displayName: "不确定旅伴", password: "uncertain-password-123", turnstileToken: "uncertain-token",
-          ageConfirmed: true, termsAccepted: true, privacyAccepted: true, operationId: timeoutOperationId,
-        });
+        await timeoutLifecycle.execute(timeoutCommand);
       } catch (error) {
         if (!(error instanceof AuthError) || error.status !== 504) throw error;
       }
       const uncertain = await timeoutLifecycle.execute({ action: "get-registration-outcome", operationId: timeoutOperationId });
+      const recovered = await timeoutLifecycle.execute(timeoutCommand);
+      const recoveredOutcome = await timeoutLifecycle.execute({ action: "get-registration-outcome", operationId: timeoutOperationId });
+      const recoveredAccounts = (await timeoutLifecycle.execute({ action: "list-users" }).then((result) => result.body.users)) as Array<{ email: string }>;
 
       const successMailer = new MockAuthMailer();
       const successLifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer: successMailer });
@@ -558,7 +670,12 @@ const lifecycleWorker = {
       };
       const first = await successLifecycle.execute(command);
       const repeated = await successLifecycle.execute(command);
-      return Response.json({ uncertain, first, repeated, successMailCalls: successMailer.calls.length });
+      return Response.json({
+        uncertain, recovered, recoveredOutcome,
+        recoveryMailCalls, recoveryMailSameKey: new Set(recoveryMailKeys).size === 1,
+        recoveredAccountCount: recoveredAccounts.filter((account) => account.email === timeoutEmail).length,
+        first, repeated, successMailCalls: successMailer.calls.length,
+      });
     }
 
     if (pathname === "/account-registration-rate-limit" && request.method === "POST") {
@@ -636,7 +753,20 @@ const lifecycleWorker = {
       const activeLogin = await lifecycle.execute({
         action: "login", request: lifecycleRequest(), email: activeEmail, password: activePassword,
       });
-      return Response.json({ cleanup, expiredInspection, activeStatus: (activeLogin.body.user as { status: string }).status });
+      const notYetEmail = `not-yet-expired-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email: notYetEmail, displayName: "未到期旅伴",
+        password: "not-yet-expired-password-123", turnstileToken: "not-yet-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const notYetToken = mailer.calls.at(-1)?.token;
+      if (!notYetToken) throw new Error("没有未到期 token");
+      const repeatedCleanup = await lifecycle.execute({ action: "cleanup-expired-pending-accounts" });
+      const notYetInspection = await lifecycle.execute({ action: "inspect-email-verification", token: notYetToken });
+      return Response.json({
+        cleanup, expiredInspection, repeatedCleanup, notYetInspection,
+        activeStatus: (activeLogin.body.user as { status: string }).status,
+      });
     }
 
     if (pathname === "/account-registration-telemetry" && request.method === "POST") {

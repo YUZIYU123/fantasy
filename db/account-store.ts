@@ -19,7 +19,6 @@ export interface AccountStore {
     email: string;
     displayName: string;
     passwordHash: string;
-    pendingExpiresAt: string;
     consent: { ageConfirmedAt: string; termsVersion: string; privacyVersion: string; confirmedAt: string };
     analyticsAllowed: boolean;
     revokedMarker: string;
@@ -42,6 +41,7 @@ export interface AccountStore {
     resultJson: string;
     updatedAt: string;
   }): Promise<void>;
+  claimUncertainOperationReceipt(idempotencyHash: string, updatedAt: string): Promise<boolean>;
   cleanupExpired(now: string): Promise<{ removedPendingAccounts: number; removedOperationReceipts: number }>;
   setRegistrationAnalyticsPreference(userId: string, allowed: boolean, updatedAt: string): Promise<void>;
   findAccountPreferences(userId: string): Promise<typeof accountPreferences.$inferSelect | undefined>;
@@ -94,9 +94,9 @@ export const drizzleD1AccountStore: AccountStore = {
       d1.prepare(`INSERT INTO auth_tokens (id, user_id, token_hash, type, expires_at)
         SELECT ?, ?, ?, 'verify_email', ? WHERE ${pendingGuard}`)
         .bind(input.token.id, input.userId, input.token.tokenHash, input.token.expiresAt, input.userId),
-      d1.prepare(`UPDATE users SET email = ?, display_name = ?, password_hash = ?, pending_expires_at = ?, updated_at = ?
+      d1.prepare(`UPDATE users SET email = ?, display_name = ?, password_hash = ?, updated_at = ?
         WHERE id = ? AND status = 'pending'`)
-        .bind(input.email, input.displayName, input.passwordHash, input.pendingExpiresAt, input.consent.confirmedAt, input.userId),
+        .bind(input.email, input.displayName, input.passwordHash, input.consent.confirmedAt, input.userId),
       d1.prepare(`UPDATE account_preferences SET registration_analytics_allowed = ?, updated_at = ?
         WHERE user_id = ? AND ${pendingGuard}`)
         .bind(input.analyticsAllowed ? 1 : 0, input.consent.confirmedAt, input.userId, input.userId),
@@ -120,16 +120,19 @@ export const drizzleD1AccountStore: AccountStore = {
     const d1 = getD1Binding();
     await d1.batch([
       d1.prepare(`INSERT INTO sessions (id, user_id, token_hash, expires_at)
-        SELECT ?, user_id, ?, ? FROM auth_tokens
-        WHERE token_hash = ? AND type = 'verify_email' AND used_at IS NULL AND expires_at > ?`)
+        SELECT ?, token.user_id, ?, ? FROM auth_tokens token
+        JOIN users account ON account.id = token.user_id
+        WHERE token.token_hash = ? AND token.type = 'verify_email' AND token.used_at IS NULL
+          AND token.expires_at > ? AND account.status = 'pending'`)
         .bind(input.session.id, input.session.tokenHash, input.session.expiresAt, input.tokenHash, input.now),
-      d1.prepare(`UPDATE users SET status = 'active', email_verified_at = ?, pending_expires_at = NULL, updated_at = ?
-        WHERE id = (SELECT user_id FROM auth_tokens
-          WHERE token_hash = ? AND type = 'verify_email' AND used_at IS NULL AND expires_at > ?)`)
-        .bind(input.now, input.now, input.tokenHash, input.now),
       d1.prepare(`UPDATE auth_tokens SET used_at = ?
-        WHERE token_hash = ? AND type = 'verify_email' AND used_at IS NULL AND expires_at > ?`)
+        WHERE token_hash = ? AND type = 'verify_email' AND used_at IS NULL AND expires_at > ?
+          AND EXISTS (SELECT 1 FROM users WHERE users.id = auth_tokens.user_id AND users.status = 'pending')`)
         .bind(input.usedMarker, input.tokenHash, input.now),
+      d1.prepare(`UPDATE users SET status = 'active', email_verified_at = ?, pending_expires_at = NULL, updated_at = ?
+        WHERE status = 'pending' AND id = (SELECT user_id FROM auth_tokens
+          WHERE token_hash = ? AND type = 'verify_email' AND used_at = ?)`)
+        .bind(input.now, input.now, input.tokenHash, input.usedMarker),
     ]);
     const token = (await getDb().select().from(authTokens).where(eq(authTokens.tokenHash, input.tokenHash)).limit(1))[0];
     if (token?.usedAt !== input.usedMarker) return undefined;
@@ -145,6 +148,12 @@ export const drizzleD1AccountStore: AccountStore = {
   async finishOperationReceipt(idempotencyHash, input) {
     await getDb().update(accountOperationReceipts).set(input)
       .where(eq(accountOperationReceipts.idempotencyHash, idempotencyHash));
+  },
+  async claimUncertainOperationReceipt(idempotencyHash, updatedAt) {
+    const result = await getD1Binding().prepare(`UPDATE account_operation_receipts
+      SET status = 'processing', updated_at = ?
+      WHERE idempotency_hash = ? AND status = 'uncertain'`).bind(updatedAt, idempotencyHash).run();
+    return Number(result.meta.changes ?? 0) === 1;
   },
   async cleanupExpired(now) {
     const d1 = getD1Binding();

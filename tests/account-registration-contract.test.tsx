@@ -4,6 +4,8 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AuthForm, VerifyEmail } from "../app/auth-forms";
+import { FantasyTerminal } from "../app/fantasy-terminal";
+import { browserRegistrationInvitationStore } from "../lib/registration-invitation";
 
 let dom: JSDOM;
 let root: Root;
@@ -22,6 +24,7 @@ beforeEach(() => {
     MouseEvent: window.MouseEvent,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
+  Object.assign(window.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: window.navigator });
   globalThis.fetch = async () => Response.json({ turnstileSiteKey: "" });
   container = window.document.querySelector("#root") as HTMLDivElement;
@@ -83,6 +86,15 @@ test("当前设备只恢复二十四小时内且不含秘密的注册草稿", as
   }));
   await act(async () => root.render(<AuthForm mode="register" registrationEnabled />));
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.match(container.textContent || "", /年龄确认/);
+  const requiredConfirmations = [...container.querySelectorAll<HTMLInputElement>('fieldset input[type="checkbox"]')].slice(0, 3);
+  assert.equal(requiredConfirmations.length, 3);
+  for (const confirmation of requiredConfirmations) {
+    await act(async () => confirmation.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  }
+  const continueButton = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("继续"));
+  assert.ok(continueButton);
+  await act(async () => continueButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   const password = container.querySelector<HTMLInputElement>('input[name="password"]');
   assert.ok(password);
   assert.equal(password.value, "");
@@ -138,4 +150,57 @@ test("账号激活后单独询问阅读偏好且拒绝不阻塞使用", async ()
   await act(async () => skip.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   assert.match(container.textContent || "", /进入幻界/);
   assert.equal(calls.some((call) => call.url === "/api/account/guide-memory"), false);
+});
+
+test("重发恢复使用与服务端一致的 Turnstile action", async () => {
+  window.history.replaceState({}, "", "/register?recovery=1");
+  await act(async () => root.render(<AuthForm mode="register" registrationEnabled />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  const email = container.querySelector<HTMLInputElement>('input[name="email"]');
+  assert.ok(email);
+  await act(async () => {
+    email.value = "recovery@example.com";
+    email.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  const next = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("继续"));
+  assert.ok(next);
+  await act(async () => next.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.equal(container.querySelector(".turnstile-wrap")?.getAttribute("data-action"), "resend-verification");
+});
+
+test("三类账号意图使用情境邀请且明确表达后可以重新邀请", async () => {
+  await act(async () => root.render(<FantasyTerminal
+    readingContextId="chapter-42"
+    novels={[{ id: "novel-42", published: { name: "雾中书", summary: "奇幻旅程" } }]}
+  />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  const open = container.querySelector<HTMLButtonElement>(".terminal-fab");
+  assert.ok(open);
+  await act(async () => open.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.match(container.textContent || "", /跨设备继续/);
+  assert.match(container.textContent || "", /同步当前阅读进度/);
+  const crossDevice = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("跨设备继续"));
+  assert.ok(crossDevice);
+  await act(async () => crossDevice.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.match(container.textContent || "", /不同设备继续这段旅程/);
+  assert.equal(container.querySelector<HTMLAnchorElement>('a[href="/register?intent=cross-device"]')?.textContent, "建立账号");
+  const dismiss = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("暂时不用"));
+  assert.ok(dismiss);
+  await act(async () => dismiss.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.equal(browserRegistrationInvitationStore.shouldProactivelyInvite(), false);
+  const explicitAgain = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("跨设备继续"));
+  assert.ok(explicitAgain);
+  await act(async () => explicitAgain.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.match(container.textContent || "", /不同设备继续这段旅程/);
+});
+
+test("已使用链接只在匹配账号会话中显示欢迎回来", async () => {
+  window.history.replaceState({}, "", "/verify-email?token=used-token");
+  globalThis.fetch = async () => Response.json({ state: "active_session" });
+  await act(async () => root.render(<VerifyEmail />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.match(container.textContent || "", /欢迎回来/);
+  assert.match(container.textContent || "", /仍在自己的账号会话中/);
+  assert.equal(container.querySelector<HTMLAnchorElement>('a[href="/account"]')?.textContent, "进入账号");
+  assert.doesNotMatch(container.textContent || "", /重新发送验证邮件/);
 });

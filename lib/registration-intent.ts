@@ -22,5 +22,5 @@ export function registrationResumeDirective(value: unknown): RegistrationResumeD
   const intent = normalizeRegistrationIntent(value);
   if (!intent) return null;
   if (intent.kind === "cross-device") return { ...intent, mode: "welcome" };
-  return { ...intent, mode: intent.kind === "bookshelf" ? "automatic" : "confirm" };
+  return { ...intent, mode: "confirm" };
 }

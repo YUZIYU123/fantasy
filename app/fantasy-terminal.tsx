@@ -21,9 +21,15 @@ import {
   type ReaderPreference,
   type RecommendableNovel,
 } from "../lib/terminal";
+import { normalizeRegistrationIntent, type RegistrationIntent } from "../lib/registration-intent";
+import {
+  browserRegistrationInvitationStore,
+  registrationInvitationCopy,
+  registrationInvitationHref,
+} from "../lib/registration-invitation";
 
 type TerminalUser = { displayName: string; role: string };
-type TerminalSection = "home" | "preferences" | "message" | "task" | "playback";
+type TerminalSection = "home" | "preferences" | "message" | "task" | "playback" | "registration" | "resume";
 type TerminalPlaybackPhase = "boot" | "message" | "collapse";
 type NarrationMode = "audio" | "device" | "text";
 
@@ -54,6 +60,7 @@ function selectDeviceVoice(voices: SpeechSynthesisVoice[]) {
 export function FantasyTerminal({
   novels = [],
   onOpenNovel,
+  readingContextId = "",
   config = DEFAULT_STORY_TERMINAL,
   event,
   eventKey = "",
@@ -68,6 +75,7 @@ export function FantasyTerminal({
 }: {
   novels?: RecommendableNovel[];
   onOpenNovel?: (id: string) => void;
+  readingContextId?: string;
   config?: StoryTerminalConfig;
   event?: StoryTerminalEvent;
   eventKey?: string;
@@ -87,6 +95,8 @@ export function FantasyTerminal({
   const [user, setUser] = useState<TerminalUser | null>(null);
   const [preferences, setPreferences] = useState<ReaderPreference[]>([]);
   const [cloudPreferencesEnabled, setCloudPreferencesEnabled] = useState(false);
+  const [registrationIntent, setRegistrationIntent] = useState<RegistrationIntent | null>(null);
+  const [resumeIntent, setResumeIntent] = useState<RegistrationIntent | null>(null);
   const [ready, setReady] = useState(false);
   const [playbackPhase, setPlaybackPhase] = useState<TerminalPlaybackPhase>("boot");
   const [revealedMessage, setRevealedMessage] = useState("");
@@ -122,6 +132,18 @@ export function FantasyTerminal({
     timers.current.forEach(clearTimeout);
     timers.current = [];
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const params = new URLSearchParams(window.location.search);
+    const intent = normalizeRegistrationIntent({ kind: params.get("resume"), targetId: params.get("target") });
+    if (!intent) return;
+    queueMicrotask(() => {
+      setResumeIntent(intent);
+      setSection("resume");
+      setOpen(true);
+    });
+  }, [user]);
   const stopNarration = useCallback(() => {
     narrationToken.current += 1;
     const audio = playbackAudio.current;
@@ -334,6 +356,11 @@ export function FantasyTerminal({
     }).catch(() => {});
   };
   const openTask = () => { setSection("task"); setSignal(false); setOpen(true); };
+  const inviteToRegister = (intent: RegistrationIntent) => {
+    setRegistrationIntent(intent);
+    setSection("registration");
+    setOpen(true);
+  };
   const collapseTarget = activeTask?.title ? "task" : "fab";
   const narrationLabel = narrationMode === "audio" ? "AI VOICE" : narrationMode === "device" ? "DEVICE VOICE" : "TEXT MODE";
 
@@ -368,9 +395,9 @@ export function FantasyTerminal({
           {activeTask?.title && <TaskDetails task={activeTask} compact />}
           {needsVoicePlay && <button type="button" onClick={() => void startNarration()}>重新尝试播报</button>}
         </>}
-      </div> : section === "message" && displayedEvent ? <div className="terminal-message"><span>节点信号已接入</span><p>{displayedEvent.message}</p><div>{displayedEvent.speak && <button onClick={() => playPassiveEventVoice(displayedEvent)}>♫ 播放拟人语音</button>}<button onClick={() => setSection("home")}>打开终端</button></div></div> : section === "task" && activeTask ? <div className="terminal-task-panel"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><TaskDetails task={activeTask} /></div> : section === "preferences" ? <div className="terminal-preferences"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><h3>你想进入怎样的世界？</h3><p>选择最多六项，偏好只保存在当前设备。</p><div>{READER_PREFERENCE_OPTIONS.map((item) => <button className={preferences.includes(item) ? "selected" : ""} key={item} onClick={() => togglePreference(item)}>{item}</button>)}</div><h4>为你推荐</h4>{recommendations.length ? recommendations.map((novel) => <button className="terminal-recommendation" key={novel.id} onClick={() => onOpenNovel?.(novel.id)}><span>{novel.published?.name}</span><i>→</i></button>) : <small>书架暂时还没有已发布小说。</small>}</div> : <div className="terminal-home">
+      </div> : section === "message" && displayedEvent ? <div className="terminal-message"><span>节点信号已接入</span><p>{displayedEvent.message}</p><div>{displayedEvent.speak && <button onClick={() => playPassiveEventVoice(displayedEvent)}>♫ 播放拟人语音</button>}<button onClick={() => setSection("home")}>打开终端</button></div></div> : section === "task" && activeTask ? <div className="terminal-task-panel"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><TaskDetails task={activeTask} /></div> : section === "registration" && registrationIntent ? <div className="terminal-message registration-invitation"><span>小雾 · 账号邀请</span><p>{registrationInvitationCopy(registrationIntent)}</p><div><a className="primary link-button" href={registrationInvitationHref(registrationIntent)}>建立账号</a><button onClick={() => { browserRegistrationInvitationStore.dismissProactiveInvitation(); setSection("home"); }}>暂时不用</button></div></div> : section === "resume" && resumeIntent ? <div className="terminal-message registration-invitation"><span>小雾 · 旅程已接续</span><p>{resumeIntent.kind === "bookshelf" ? "账号已经建立。你可以回到目标小说，再确认是否加入书架。" : "账号已经建立。回到阅读界面后，可以确认并同步这段进度。"}</p><div><button onClick={() => { if (resumeIntent.kind === "bookshelf" && resumeIntent.targetId) onOpenNovel?.(resumeIntent.targetId); window.history.replaceState({}, "", window.location.pathname); setSection("home"); }}>回到刚才的位置</button></div></div> : section === "preferences" ? <div className="terminal-preferences"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><h3>你想进入怎样的世界？</h3><p>选择最多六项，偏好只保存在当前设备。</p><div>{READER_PREFERENCE_OPTIONS.map((item) => <button className={preferences.includes(item) ? "selected" : ""} key={item} onClick={() => togglePreference(item)}>{item}</button>)}</div><h4>为你推荐</h4>{recommendations.length ? recommendations.map((novel) => <div key={novel.id}><button className="terminal-recommendation" onClick={() => onOpenNovel?.(novel.id)}><span>{novel.published?.name}</span><i>→</i></button>{!user && <button onClick={() => inviteToRegister({ kind: "bookshelf", targetId: novel.id })}>加入书架</button>}</div>) : <small>书架暂时还没有已发布小说。</small>}</div> : <div className="terminal-home">
         <p>{ready && user ? `欢迎回来，${user.displayName}。终端已同步你的身份。` : "旅人，要保存进度并在不同设备继续吗？"}</p>
-        {!user && <div className="terminal-auth"><a href="/register?intent=cross-device">建立账号</a><a href="/login?next=/">登录</a></div>}
+        {!user && <><div className="terminal-auth"><button onClick={() => inviteToRegister({ kind: "cross-device" })}>跨设备继续</button><a href="/login?next=/">登录</a></div>{readingContextId && <button className="terminal-menu" onClick={() => inviteToRegister({ kind: "progress", targetId: readingContextId })}><span>◇ 同步当前阅读进度<small>在其他设备继续这段旅程</small></span><i>→</i></button>}</>}
         {activeTask?.title && <button className="terminal-menu" onClick={openTask}><span>⌁ 当前任务<small>{activeTask.title} · {completedObjectives}/{activeTask.objectives.length}</small></span><i>→</i></button>}
         <button className="terminal-menu" onClick={() => setSection("preferences")}><span>◇ 偏好与小说推荐<small>{preferences.length ? `已选择 ${preferences.join("、")}` : "回答几个问题，寻找适合你的世界"}</small></span><i>→</i></button>
         {config.voiceName && <small>AI VOICE · {config.voiceName}</small>}

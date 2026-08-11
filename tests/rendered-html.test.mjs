@@ -311,6 +311,22 @@ test("读者注册验证登录后可访问云端进度，管理员可升级为�
   const me = await fetch(`${origin}/api/auth/me`, { headers: { cookie: cookie.split(";")[0] } });
   assert.equal((await me.json()).user.role, "reader");
   const sessionCookie = cookie.split(";")[0];
+  const unauthorizedMemory = await fetch(`${origin}/api/account/guide-memory`);
+  assert.equal(unauthorizedMemory.status, 401);
+  const initialMemory = await requestJson("/api/account/guide-memory", { cookie: sessionCookie });
+  assert.deepEqual(initialMemory.payload.memory.preferences, []);
+  const savedMemory = await requestJson("/api/account/guide-memory", {
+    method: "PATCH",
+    cookie: sessionCookie,
+    body: { actorId: "another-account", preferences: ["奇幻", "非法偏好", "轻松"], completeGuide: true },
+  });
+  assert.equal(savedMemory.response.status, 200);
+  assert.deepEqual(savedMemory.payload.memory.preferences, ["奇幻", "轻松"]);
+  const crossDeviceMemory = await requestJson("/api/account/guide-memory", { cookie: sessionCookie });
+  assert.deepEqual(crossDeviceMemory.payload.memory.preferences, ["奇幻", "轻松"]);
+  const clearedMemory = await requestJson("/api/account/guide-memory", { method: "DELETE", cookie: sessionCookie });
+  assert.deepEqual(clearedMemory.payload.memory.preferences, []);
+  assert.equal(clearedMemory.payload.memory.guideCompletedAt, null);
   const progress = await fetch(`${origin}/api/account/progress`, { headers: { cookie: sessionCookie } });
   assert.equal(progress.status, 200);
   assert.deepEqual((await progress.json()).progress, []);

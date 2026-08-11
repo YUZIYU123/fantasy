@@ -32,7 +32,8 @@ export async function GET(request: Request, context: Context) {
   await ensureSchema();
   if (action === "verify-email") {
     const token = new URL(request.url).searchParams.get("token") || "";
-    return accountLifecycle.execute({ action: "inspect-email-verification", token }).then(accountLifecycleResponse);
+    const actor = await sessionAuthorization.optional(request);
+    return accountLifecycle.execute({ action: "inspect-email-verification", token, actorId: actor?.id }).then(accountLifecycleResponse);
   }
   if (action === "registration-outcome") {
     const operationId = new URL(request.url).searchParams.get("operationId") || "";

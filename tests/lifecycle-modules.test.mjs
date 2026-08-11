@@ -117,6 +117,18 @@ test("账号注册关闭时 AccountLifecycle 返回稳定不可用状态", async
   });
 });
 
+test("账号注册 composition root 在必要配置缺失时保持关闭", async () => {
+  const response = await fetch(`${runtime.origin}/account-registration-runtime-config`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.equal(payload.incomplete.registrationEnabled, false);
+  assert.equal(payload.localPreview.registrationEnabled, true);
+  assert.deepEqual(payload.localPreview.allowedHostnames, ["localhost", "127.0.0.1"]);
+  assert.equal(payload.productionReady.registrationEnabled, true);
+  assert.deepEqual(payload.productionReady.allowedHostnames, ["preview.example.com"]);
+  assert.deepEqual(payload.turnstile, { accepted: true, missingAction: false, wrongHostname: false });
+});
+
 test("访客确认资格与注册同意后创建待验证账号", async () => {
   const response = await fetch(`${runtime.origin}/account-registration-create`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);
@@ -143,11 +155,13 @@ test("访客明确确认邮箱后原子激活账号并建立会话", async () =>
   assert.deepEqual(payload.activation.body.resumeDirective, {
     kind: "bookshelf",
     targetId: "novel-42",
-    mode: "automatic",
+    mode: "confirm",
   });
   assert.match(payload.activation.cookie, /^mist_session=/);
   assert.equal(payload.identity.status, "active");
+  assert.deepEqual(payload.usedWithMatchingSession.body, { state: "active_session" });
   assert.equal(payload.repeated, 400);
+  assert.equal(payload.disabledActivation, 400);
 });
 
 test("待验证账号在六十秒后可重发验证邮件", async () => {
@@ -170,6 +184,8 @@ test("待验证账号重新开始会原子替换凭据并作废旧链接", async
   assert.equal(payload.oldInspection.body.state, "used");
   assert.equal(payload.newInspection.body.state, "ready");
   assert.equal(payload.mailCalls, 2);
+  assert.equal(payload.failedStatus, 502);
+  assert.equal(payload.expiryAfterFailure, payload.expiryBeforeFailure);
 });
 
 test("注册操作超时可查询结果且重复提交保持幂等", async () => {
@@ -177,6 +193,11 @@ test("注册操作超时可查询结果且重复提交保持幂等", async () =>
   assert.equal(response.status, 200, runtime.output);
   const payload = await response.json();
   assert.equal(payload.uncertain.body.state, "uncertain");
+  assert.equal(payload.recovered.status, 201);
+  assert.equal(payload.recoveredOutcome.body.state, "succeeded");
+  assert.equal(payload.recoveryMailCalls, 2);
+  assert.equal(payload.recoveryMailSameKey, true);
+  assert.equal(payload.recoveredAccountCount, 1);
   assert.equal(payload.first.status, 201);
   assert.deepEqual(payload.repeated.body, payload.first.body);
   assert.equal(payload.successMailCalls, 1);
@@ -199,6 +220,8 @@ test("AccountLifecycle 清理七天未验证账号且保留正常账号", async 
   assert.ok(payload.cleanup.body.removedPendingAccounts >= 1);
   assert.equal(payload.expiredInspection.body.state, "invalid");
   assert.equal(payload.activeStatus, "active");
+  assert.equal(payload.repeatedCleanup.body.removedPendingAccounts, 0);
+  assert.equal(payload.notYetInspection.body.state, "ready");
 });
 
 test("注册分析遵守独立选择且事件不包含个人内容", async () => {
