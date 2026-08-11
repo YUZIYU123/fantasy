@@ -47,6 +47,7 @@ test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
   const secretNames = [
     "CREATOR_PASSWORD_HASH",
     "CREATOR_SESSION_SECRET",
+    "ACCOUNT_OPERATION_SECRET",
     "ELEVENLABS_API_KEY",
     "TURNSTILE_SECRET_KEY",
     "RESEND_API_KEY",

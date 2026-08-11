@@ -187,6 +187,7 @@ test("待验证账号重新开始会原子替换凭据并作废旧链接", async
   assert.equal(payload.mailCalls, 2);
   assert.equal(payload.failedStatus, 502);
   assert.equal(payload.expiryAfterFailure, payload.expiryBeforeFailure);
+  assert.match(payload.restartRateLimitIdentity, /^restarted-/);
 });
 
 test("注册操作超时可查询结果且重复提交保持幂等", async () => {
@@ -203,6 +204,7 @@ test("注册操作超时可查询结果且重复提交保持幂等", async () =>
   assert.deepEqual(payload.repeated.body, payload.first.body);
   assert.equal(payload.successMailCalls, 1);
   assert.equal(payload.receiptMatchesOfflinePasswordGuess, false);
+  assert.equal(payload.receiptMatchesOfflinePersonalGuess, false);
 });
 
 test("注册与重发共享频控且拒绝发生在外部调用之前", async () => {
@@ -226,6 +228,7 @@ test("AccountLifecycle 清理七天未验证账号且保留正常账号", async 
   assert.equal(response.status, 200, runtime.output);
   const payload = await response.json();
   assert.ok(payload.cleanup.body.removedPendingAccounts >= 1);
+  assert.ok(payload.cleanup.body.removedRateLimitAttempts >= 1);
   assert.equal(payload.expiredInspection.body.state, "invalid");
   assert.equal(payload.activeStatus, "active");
   assert.equal(payload.repeatedCleanup.body.removedPendingAccounts, 0);

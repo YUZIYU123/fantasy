@@ -5,6 +5,7 @@ const root = new URL("../", import.meta.url);
 const secretNames = [
   "CREATOR_PASSWORD_HASH",
   "CREATOR_SESSION_SECRET",
+  "ACCOUNT_OPERATION_SECRET",
   "ELEVENLABS_API_KEY",
   "TURNSTILE_SECRET_KEY",
   "RESEND_API_KEY",

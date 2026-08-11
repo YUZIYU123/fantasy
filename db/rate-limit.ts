@@ -11,6 +11,7 @@ export interface AccountRateLimiter {
     minutes?: number,
     clock?: () => Date,
   ): Promise<void>;
+  cleanupExpired(before: string): Promise<number>;
 }
 
 function isLocalBypass(request: Request) {
@@ -40,6 +41,10 @@ export const d1AccountRateLimiter: AccountRateLimiter = {
     const oldestTime = oldest ? Date.parse(`${oldest.createdAt.replace(" ", "T")}Z`) : now.getTime();
     const retryAfterSeconds = Math.max(1, Math.ceil((oldestTime + minutes * 60_000 - now.getTime()) / 1000));
     throw new AuthError("操作过于频繁，请稍后再试", 429, retryAfterSeconds);
+  },
+  async cleanupExpired(before) {
+    const result = await getD1Binding().prepare("DELETE FROM auth_attempts WHERE created_at <= ?").bind(before).run();
+    return Number(result.meta.changes ?? 0);
   },
 };
 

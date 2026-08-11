@@ -397,6 +397,7 @@ const lifecycleWorker = {
         REGISTRATION_ENABLED: "true", TERMS_VERSION: "2026-08-11", PRIVACY_VERSION: "2026-08-11",
         APP_ORIGIN: "https://preview.example.com", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret",
         RESEND_API_KEY: "resend", AUTH_FROM_EMAIL: "小雾 <guide@example.com>", ACCOUNT_CONTACT_EMAIL: "support@example.com",
+        ACCOUNT_OPERATION_SECRET: "preview-operation-fingerprint-secret-32-bytes",
       });
       return Response.json({
         incomplete, localPreview, unsafeBypass, productionReady,
@@ -564,7 +565,14 @@ const lifecycleWorker = {
     if (pathname === "/account-restart" && request.method === "POST") {
       let now = new Date("2026-08-11T00:00:00.000Z");
       const mailer = new MockAuthMailer();
-      const lifecycle = createAccountLifecycle({ turnstile: new MockTurnstileVerifier(), mailer, clock: () => now });
+      const rateLimitIdentities: string[] = [];
+      const lifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(), mailer, clock: () => now,
+        rateLimiter: {
+          async enforce(_request, _action, identity) { rateLimitIdentities.push(identity); },
+          async cleanupExpired() { return 0; },
+        },
+      });
       const lifecycleRequest = () => new Request(request.url, {
         method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.41" },
       });
@@ -583,6 +591,7 @@ const lifecycleWorker = {
         displayName: "新昵称", password: "replacement-password-456", turnstileToken: "restart-token",
         ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
       });
+      const restartRateLimitIdentity = rateLimitIdentities.at(-1);
       const newToken = mailer.calls.at(-1)?.token;
       if (!newToken) throw new Error("没有新 token");
       const oldInspection = await lifecycle.execute({ action: "inspect-email-verification", token: oldToken });
@@ -620,6 +629,7 @@ const lifecycleWorker = {
       return Response.json({
         restarted, oldInspection, newInspection, mailCalls: successfulMailCalls,
         failedStatus, expiryBeforeFailure, expiryAfterFailure,
+        restartRateLimitIdentity,
       });
     }
 
@@ -685,12 +695,18 @@ const lifecycleWorker = {
         termsAccepted: true, privacyAccepted: true, analyticsAllowed: false,
         termsVersion: "development", privacyVersion: "development",
       }));
+      const offlinePersonalGuess = await hashToken(JSON.stringify({
+        kind: "register", email: command.email, displayName: command.displayName,
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true, analyticsAllowed: false,
+        termsVersion: "development", privacyVersion: "development",
+      }));
       return Response.json({
         uncertain, recovered, recoveredOutcome,
         recoveryMailCalls, recoveryMailSameKey: new Set(recoveryMailKeys).size === 1,
         recoveredAccountCount: recoveredAccounts.filter((account) => account.email === timeoutEmail).length,
         first, repeated, successMailCalls: successMailer.calls.length,
         receiptMatchesOfflinePasswordGuess: receiptBody.requestHash === offlinePasswordGuess,
+        receiptMatchesOfflinePersonalGuess: receiptBody.requestHash === offlinePersonalGuess,
       });
     }
 
@@ -759,6 +775,10 @@ const lifecycleWorker = {
         },
       });
       const pendingEmail = `expired-pending-${crypto.randomUUID()}@example.com`;
+      await d1AccountRateLimiter.enforce(
+        lifecycleRequest(), "expired-attempt", pendingEmail, 5, 30,
+        () => new Date("2026-08-01T00:00:00.000Z"),
+      );
       await lifecycle.execute({
         action: "register", request: lifecycleRequest(), email: pendingEmail, displayName: "过期待验证旅伴",
         password: "expired-pending-password-123", turnstileToken: "pending-token",

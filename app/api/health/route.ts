@@ -19,7 +19,7 @@ export async function GET() {
   try {
     const platform = env as unknown as { ASSET_BUCKET?: R2Bucket; DEPLOYMENT_ENV?: string };
     const bucket = platform.ASSET_BUCKET;
-    if (!bucket) throw new Error("missing_r2_binding");
+    if (!bucket) throw new PlatformDependencyError("R2");
     await Promise.all([
       checkDependency("D1", () => getD1Binding().prepare("SELECT 1 AS healthy").first()),
       checkDependency("R2", () => bucket.head("__platform_healthcheck__")),

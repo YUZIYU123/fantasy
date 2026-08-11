@@ -12,7 +12,7 @@
 
 The staging D1 `database_id` is intentionally absent until that independent resource is provisioned. `pnpm cf:ready:staging`, remote migration, and deployment fail before making changes while it is absent. After creating the database, commit its public resource ID to `wrangler.jsonc`. Never reuse the production ID.
 
-Local development uses `.dev.vars` only. Copy `.dev.vars.example` to `.dev.vars`; never create `.env` files for this project. Real secrets are set per remote environment with commands such as `wrangler secret put RESEND_API_KEY --env staging` and are never stored in `vars` or Git.
+Local development uses `.dev.vars` only. Copy `.dev.vars.example` to `.dev.vars`; never create `.env` files for this project. Real secrets are set per remote environment with commands such as `wrangler secret put RESEND_API_KEY --env staging` and are never stored in `vars` or Git. `ACCOUNT_OPERATION_SECRET` must be an independent random value of at least 32 characters so persisted idempotency fingerprints cannot be used to enumerate account inputs offline.
 
 Remote deployment also runs `cf:secrets:<environment>` against Cloudflare and refuses to deploy when any declared secret name is absent. This requires an authenticated Wrangler session or `CLOUDFLARE_API_TOKEN`; the token itself is never written to the repository.
 

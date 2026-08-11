@@ -192,6 +192,15 @@ function validEmail(value: string) {
   return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+async function requestFingerprint(secret: string, value: Record<string, unknown>) {
+  if (secret.length < 32) throw new AuthError("账号操作暂时不可用", 503);
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(JSON.stringify(value)));
+  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function createAccountLifecycle({
   config = testRegistrationConfig,
   store = drizzleD1AccountStore,
@@ -204,6 +213,7 @@ export function createAccountLifecycle({
   clock = () => new Date(),
   telemetry = workerRegistrationTelemetry,
   rateLimiter = d1AccountRateLimiter,
+  operationFingerprintSecret = "test-operation-fingerprint-secret-32-bytes",
 }: {
   config?: AccountRegistrationConfig;
   store?: AccountStore;
@@ -216,6 +226,7 @@ export function createAccountLifecycle({
   clock?: () => Date;
   telemetry?: RegistrationTelemetry;
   rateLimiter?: AccountRateLimiter;
+  operationFingerprintSecret?: string;
 } = {}) {
   async function createSession(userId: string, request: Request) {
     const token = randomToken();
@@ -326,7 +337,11 @@ export function createAccountLifecycle({
       return { body: { ok: true } };
     }
     if (command.action === "cleanup-expired-pending-accounts") {
-      return { body: await store.cleanupExpired(clock().toISOString()) };
+      const now = clock();
+      const accountCleanup = await store.cleanupExpired(now.toISOString());
+      const rateLimitBefore = new Date(now.getTime() - 2 * 86_400_000).toISOString().replace("T", " ").slice(0, 19);
+      const removedRateLimitAttempts = await rateLimiter.cleanupExpired(rateLimitBefore);
+      return { body: { ...accountCleanup, removedRateLimitAttempts } };
     }
     if (command.action === "get-guide-memory") {
       const preference = await store.findAccountPreferences(command.actorId);
@@ -367,32 +382,33 @@ export function createAccountLifecycle({
       return { body: { state: receipt.status === "processing" ? "processing" : "uncertain" } };
     }
     if (command.action === "register" && command.operationId) {
-      const requestHash = await hashToken(JSON.stringify({
+      const requestHash = await requestFingerprint(operationFingerprintSecret, {
         kind: "register", email: normalizeEmail(command.email), displayName: command.displayName.trim(),
+        password: command.password,
         ageConfirmed: command.ageConfirmed === true,
         termsAccepted: command.termsAccepted === true, privacyAccepted: command.privacyAccepted === true,
         analyticsAllowed: command.analyticsAllowed === true, termsVersion: config.termsVersion, privacyVersion: config.privacyVersion,
-      }));
+      });
       return executeWithReceipt(command.operationId, "register", requestHash, (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
         ...command, operationId: undefined, retryingUncertain, operationToken, externalIdempotencyBase,
       }));
     }
     if (command.action === "resend-verification" && command.operationId) {
-      const requestHash = await hashToken(JSON.stringify({
+      const requestHash = await requestFingerprint(operationFingerprintSecret, {
         kind: "resend", email: normalizeEmail(command.email), analyticsAllowed: command.analyticsAllowed === true,
-      }));
+      });
       return executeWithReceipt(command.operationId, "resend", requestHash, (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
         ...command, operationId: undefined, retryingUncertain, operationToken, externalIdempotencyBase,
       }));
     }
     if (command.action === "restart-registration" && command.operationId) {
-      const requestHash = await hashToken(JSON.stringify({
+      const requestHash = await requestFingerprint(operationFingerprintSecret, {
         kind: "restart", currentEmail: normalizeEmail(command.currentEmail), email: normalizeEmail(command.email),
-        displayName: command.displayName.trim(),
+        displayName: command.displayName.trim(), password: command.password,
         ageConfirmed: command.ageConfirmed === true, termsAccepted: command.termsAccepted === true,
         privacyAccepted: command.privacyAccepted === true, analyticsAllowed: command.analyticsAllowed === true,
         termsVersion: config.termsVersion, privacyVersion: config.privacyVersion,
-      }));
+      });
       return executeWithReceipt(command.operationId, "restart", requestHash, (retryingUncertain, operationToken, externalIdempotencyBase) => execute({
         ...command, operationId: undefined, retryingUncertain, operationToken, externalIdempotencyBase,
       }));
@@ -535,7 +551,7 @@ export function createAccountLifecycle({
       if (!account || account.status !== "pending") throw new AuthError("待验证账号不可恢复", 409);
       const conflicting = await store.findByEmail(email);
       if (conflicting && conflicting.id !== account.id) throw new AuthError("此邮箱已注册", 409);
-      await rateLimiter.enforce(command.request, "registration-email", currentEmail, 5, 30, clock);
+      await rateLimiter.enforce(command.request, "registration-email", email, 5, 30, clock);
       const turnstileIdempotencyKey = command.externalIdempotencyBase
         ? `${command.externalIdempotencyBase}:turnstile`
         : crypto.randomUUID();

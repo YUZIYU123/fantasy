@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { createAccountLifecycle, type AccountRegistrationConfig } from "./account-lifecycle";
 
 export type AccountRuntimeEnv = {
+  ACCOUNT_OPERATION_SECRET?: string;
   ACCOUNT_CONTACT_EMAIL?: string;
   APP_ORIGIN?: string;
   AUTH_FROM_EMAIL?: string;
@@ -40,8 +41,9 @@ export function accountRegistrationConfigFrom(values: AccountRuntimeEnv): Accoun
     && Boolean(values.RESEND_API_KEY)
     && Boolean(values.AUTH_FROM_EMAIL)
     && Boolean(values.ACCOUNT_CONTACT_EMAIL);
+  const operationSecurityReady = (values.ACCOUNT_OPERATION_SECRET?.length ?? 0) >= 32;
   return {
-    registrationEnabled: values.REGISTRATION_ENABLED === "true" && (localBypass || productionReady),
+    registrationEnabled: values.REGISTRATION_ENABLED === "true" && (localBypass || (productionReady && operationSecurityReady)),
     termsVersion,
     privacyVersion,
     allowedHostnames,
@@ -52,4 +54,10 @@ export function accountRegistrationConfig(): AccountRegistrationConfig {
   return accountRegistrationConfigFrom(runtimeValues());
 }
 
-export const accountLifecycle = createAccountLifecycle({ config: accountRegistrationConfig() });
+const values = runtimeValues();
+export const accountLifecycle = createAccountLifecycle({
+  config: accountRegistrationConfigFrom(values),
+  operationFingerprintSecret: values.ACCOUNT_OPERATION_SECRET || (values.LOCAL_AUTH_BYPASS === "true"
+    ? "local-operation-fingerprint-secret-32-bytes"
+    : ""),
+});
