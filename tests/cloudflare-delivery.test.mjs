@@ -95,6 +95,10 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
   assert.match(sourceGate, /upstream\.startsWith\("origin\/"\)/);
   assert.match(smoke, /desiredAnalyticsAllowed = !originalAnalyticsAllowed/);
   assert.match(smoke, /恢复核心写流程前态/);
+  assert.match(smoke, /mode === "closed"/);
+  assert.match(smoke, /registrationEnabled !== false/);
+  assert.match(smoke, /注册关闭拒绝/);
+  assert.match(packageJson.scripts["test:smoke:staging:closed"], /smoke-cloudflare\.mjs staging closed/);
 });
 
 test("AccountLifecycle 业务规则只依赖 AccountStore interface", async () => {

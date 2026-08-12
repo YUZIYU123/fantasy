@@ -2,12 +2,16 @@ import { readFile } from "node:fs/promises";
 
 const target = process.argv[2];
 if (target !== "staging" && target !== "production") throw new Error("冒烟测试只接受 staging 或 production");
+const mode = process.argv[3] || "full";
+if (mode !== "full" && mode !== "closed") throw new Error("冒烟模式只接受 full 或 closed");
 const config = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
 const configuredOrigin = config.env[target].vars.APP_ORIGIN;
 const overrideName = `${target.toUpperCase()}_SMOKE_URL`;
 const origin = String(process.env[overrideName] || configuredOrigin).replace(/\/$/, "");
 const sessionCookie = process.env.SMOKE_SESSION_COOKIE || "";
-if (!sessionCookie) throw new Error("SMOKE_SESSION_COOKIE 必须指向受控测试账号，不能跳过登录与写流程");
+if (mode === "full" && !sessionCookie) {
+  throw new Error("SMOKE_SESSION_COOKIE 必须指向受控测试账号，不能跳过登录与写流程");
+}
 
 async function request(path, init = {}) {
   const response = await fetch(`${origin}${path}`, { ...init, signal: AbortSignal.timeout(10_000) });
@@ -37,6 +41,31 @@ const deniedWrite = await request("/studio/api/novels", {
   body: "{}",
 });
 expectStatus(deniedWrite, [401, 403], "未授权核心写流程");
+
+if (mode === "closed") {
+  const registrationConfig = await request("/api/auth/config");
+  expectStatus(registrationConfig, [200], "注册关闭配置");
+  if ((await registrationConfig.json()).registrationEnabled !== false) throw new Error("staging 注册未保持关闭");
+
+  const registration = await request("/api/auth/register", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({
+      email: "closed-smoke@example.invalid",
+      displayName: "关闭注册冒烟",
+      password: "closed-registration-smoke-password",
+      turnstileToken: "must-not-be-used",
+      ageConfirmed: true,
+      termsAccepted: true,
+      privacyAccepted: true,
+    }),
+  });
+  expectStatus(registration, [503], "注册关闭拒绝");
+  const registrationPayload = await registration.json();
+  if (registrationPayload.error !== "账号注册尚未开放") throw new Error("注册关闭错误响应不稳定");
+  process.stdout.write(`${target} closed 冒烟测试通过：${origin}\n`);
+  process.exit(0);
+}
 
 const identity = await request("/api/auth/me", { headers: { cookie: sessionCookie } });
 expectStatus(identity, [200], "登录会话");

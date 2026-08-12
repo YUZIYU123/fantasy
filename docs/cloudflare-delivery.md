@@ -41,4 +41,6 @@ Deployment commands fetch and prune `origin`, require a clean worktree, and requ
 
 The smoke scripts check the environment-attested health endpoint, homepage, login page, a public D1-backed read, rejection of an unauthenticated write, an authenticated session, and an authenticated guide-memory write followed by a read-back assertion and restoration of the original value. `SMOKE_SESSION_COOKIE` is mandatory and must belong to a controlled staging/production test account; the script never prints it.
 
+While registration is intentionally disabled, `pnpm test:smoke:staging:closed` runs the public subset without a session cookie and additionally proves both the published registration config and a real registration request remain closed with a stable 503. Passing this subset does not satisfy the authenticated-write portion of the staging Definition of Done.
+
 If an incident occurs, first establish a replayable failing request, minimize it, test falsifiable hypotheses against Workers logs/traces, add a regression test, fix, rerun the original request, remove temporary logging, and record the root cause and prevention.
