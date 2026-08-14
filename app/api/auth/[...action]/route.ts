@@ -1,12 +1,15 @@
 import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../../db";
-import { accountLifecycle, type AccountCommand } from "../../../../db/account-lifecycle";
+import type { AccountCommand } from "../../../../db/account-lifecycle";
+import { accountLifecycle, accountRegistrationConfig } from "../../../../db/account-runtime";
 import { accountLifecycleResponse } from "../../../_account-lifecycle-http";
 import { authErrorResponse, clearSessionCookie } from "../../../../lib/auth";
 import { sessionAuthorization } from "../../../../lib/session-authorization";
 import { sessionAuthorizationResponse } from "../../../_session-authorization-http";
+import { normalizeRegistrationTelemetryEvent } from "../../../../lib/registration-telemetry";
 
 type Context = { params: Promise<{ action: string[] }> };
+const privateResponse = { "cache-control": "private, no-store" };
 
 function actionName(values: string[]) {
   return values.join("/");
@@ -28,17 +31,75 @@ export async function GET(request: Request, context: Context) {
     }
   }
   await ensureSchema();
-  if (action === "me") return Response.json({ user: await sessionAuthorization.optional(request) });
-  if (action === "config") {
-    return Response.json({ turnstileSiteKey: (env as unknown as { TURNSTILE_SITE_KEY?: string }).TURNSTILE_SITE_KEY || "" });
+  if (action === "verify-email") {
+    const token = new URL(request.url).searchParams.get("token") || "";
+    const actor = await sessionAuthorization.optional(request);
+    return accountLifecycleResponse(await accountLifecycle.execute({
+      action: "inspect-email-verification", token, actorId: actor?.id,
+    }));
   }
-  return Response.json({ error: "不支持的账号操作" }, { status: 404 });
+  if (action === "registration-outcome") {
+    const operationId = new URL(request.url).searchParams.get("operationId") || "";
+    return accountLifecycleResponse(await accountLifecycle.execute({ action: "get-registration-outcome", operationId }));
+  }
+  if (action === "me") return Response.json({ user: await sessionAuthorization.optional(request) }, { headers: privateResponse });
+  if (action === "config") {
+    return Response.json({
+      turnstileSiteKey: (env as unknown as { TURNSTILE_SITE_KEY?: string }).TURNSTILE_SITE_KEY || "",
+      registrationEnabled: accountRegistrationConfig().registrationEnabled,
+    }, { headers: privateResponse });
+  }
+  return Response.json({ error: "不支持的账号操作" }, { status: 404, headers: privateResponse });
 }
 
 function commandFor(action: string, request: Request, body: Record<string, unknown>): AccountCommand | null {
-  if (action === "register") return { action, request, email: String(body.email || ""), displayName: String(body.displayName || ""), password: String(body.password || ""), turnstileToken: String(body.turnstileToken || "") };
+  if (action === "register") return {
+    action,
+    request,
+    email: String(body.email || ""),
+    displayName: String(body.displayName || ""),
+    password: String(body.password || ""),
+    turnstileToken: String(body.turnstileToken || ""),
+    ageConfirmed: body.ageConfirmed === true,
+    termsAccepted: body.termsAccepted === true,
+    privacyAccepted: body.privacyAccepted === true,
+    analyticsAllowed: body.analyticsAllowed === true,
+    operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+  };
   if (action === "login") return { action, request, email: String(body.email || ""), password: String(body.password || "") };
-  if (action === "verify-email") return { action, request, token: String(body.token || "") };
+  if (action === "verify-email" || action === "activate-account") return {
+    action: "activate-account",
+    request,
+    token: String(body.token || ""),
+    intent: body.intent && typeof body.intent === "object" ? body.intent as never : null,
+    analyticsAllowed: body.analyticsAllowed === true,
+  };
+  if (action === "resend-verification") return {
+    action,
+    request,
+    email: String(body.email || ""),
+    turnstileToken: String(body.turnstileToken || ""),
+    analyticsAllowed: body.analyticsAllowed === true,
+    operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+  };
+  if (action === "restart-registration") return {
+    action,
+    request,
+    currentEmail: String(body.currentEmail || ""),
+    email: String(body.email || ""),
+    displayName: String(body.displayName || ""),
+    password: String(body.password || ""),
+    turnstileToken: String(body.turnstileToken || ""),
+    ageConfirmed: body.ageConfirmed === true,
+    termsAccepted: body.termsAccepted === true,
+    privacyAccepted: body.privacyAccepted === true,
+    analyticsAllowed: body.analyticsAllowed === true,
+    operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+  };
+  if (action === "record-registration-event") {
+    const event = normalizeRegistrationTelemetryEvent(body.event);
+    return event ? { action, event, analyticsAllowed: body.analyticsAllowed === true } : null;
+  }
   if (action === "forgot-password") return { action, request, email: String(body.email || ""), turnstileToken: String(body.turnstileToken || "") };
   if (action === "reset-password") return { action, request, token: String(body.token || ""), password: String(body.password || "") };
   return null;
@@ -50,17 +111,20 @@ export async function POST(request: Request, context: Context) {
     const action = actionName((await context.params).action);
     if (action === "logout") {
       const result = await accountLifecycle.execute({ action, request });
-      return Response.json(result.body, { headers: { "set-cookie": clearSessionCookie(request) } });
+      return Response.json(result.body, {
+        headers: { ...privateResponse, "set-cookie": clearSessionCookie(request) },
+      });
     }
     if (action === "profile") {
       const body = await request.json() as Record<string, unknown>;
       const actor = await sessionAuthorization.require(request);
-      return accountLifecycle.execute({ action, actorId: actor.id, displayName: String(body.displayName || "") }).then(accountLifecycleResponse);
+      return accountLifecycleResponse(await accountLifecycle.execute({
+        action, actorId: actor.id, displayName: String(body.displayName || ""),
+      }));
     }
     const command = commandFor(action, request, await request.json() as Record<string, unknown>);
-    if (!command) return Response.json({ error: "不支持的账号操作" }, { status: 404 });
-    // Keep the existing route's asynchronous error mapping behavior for HTTP compatibility.
-    return accountLifecycle.execute(command).then(accountLifecycleResponse);
+    if (!command) return Response.json({ error: "不支持的账号操作" }, { status: 404, headers: privateResponse });
+    return accountLifecycleResponse(await accountLifecycle.execute(command));
   } catch (error) {
     return authErrorResponse(error);
   }

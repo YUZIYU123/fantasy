@@ -1,4 +1,4 @@
-import { accountLifecycle } from "../../../../db/account-lifecycle";
+import { accountLifecycle } from "../../../../db/account-runtime";
 import { accountLifecycleResponse } from "../../../_account-lifecycle-http";
 import { AuthError, authErrorResponse, type UserRole } from "../../../../lib/auth";
 import { SessionAuthorizationError, sessionAuthorization } from "../../../../lib/session-authorization";

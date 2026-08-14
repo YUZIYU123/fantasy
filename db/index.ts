@@ -12,6 +12,11 @@ export function getDb() {
   return drizzle(env.DB, { schema });
 }
 
+export function getD1Binding() {
+  if (!env.DB) throw new Error("Cloudflare D1 binding `DB` is unavailable.");
+  return env.DB;
+}
+
 let schemaReady: Promise<unknown> | null = null;
 
 export function ensureSchema() {
@@ -30,6 +35,9 @@ export function ensureSchema() {
     d1.prepare("SELECT id FROM users LIMIT 0"),
     d1.prepare("SELECT id FROM sessions LIMIT 0"),
     d1.prepare("SELECT id FROM auth_tokens LIMIT 0"),
+    d1.prepare("SELECT id FROM registration_consents LIMIT 0"),
+    d1.prepare("SELECT id FROM account_operation_receipts LIMIT 0"),
+    d1.prepare("SELECT user_id FROM account_preferences LIMIT 0"),
     d1.prepare("SELECT id, terminal_event_ids_json FROM reading_progress LIMIT 0"),
     d1.prepare("SELECT id FROM auth_attempts LIMIT 0"),
   ]).catch((error: unknown) => {

@@ -28,7 +28,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# Local environment files: this project uses .dev.vars only, never .env.
 .env*
 .dev.vars*
 !.dev.vars.example

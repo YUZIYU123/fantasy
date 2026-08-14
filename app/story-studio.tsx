@@ -12,6 +12,7 @@ import {
 import { Brand } from "./brand";
 import { FantasyTerminal } from "./fantasy-terminal";
 import { Reader } from "./reader";
+import { normalizeRegistrationIntent } from "../lib/registration-intent";
 
 export { Reader } from "./reader";
 
@@ -44,6 +45,39 @@ export function StoryStudio() {
     setBusy(false);
   }, []);
   useEffect(() => { queueMicrotask(() => load().catch(() => setBusy(false))); }, [load]);
+  useEffect(() => {
+    if (busy || novels.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const intent = normalizeRegistrationIntent({ kind: params.get("resume"), targetId: params.get("target") });
+    if (!intent?.targetId) return;
+    const consumeIntent = () => {
+      params.delete("resume");
+      params.delete("target");
+      const query = params.toString();
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    };
+    if (intent.kind === "bookshelf") {
+      const targetNovel = novels.find((item) => item.id === intent.targetId);
+      if (!targetNovel) return;
+      consumeIntent();
+      queueMicrotask(() => {
+        setNovelId(targetNovel.id);
+        setView("novel");
+      });
+      return;
+    }
+    if (intent.kind === "progress") {
+      const targetNovel = novels.find((item) => item.chapters.some((chapter) => chapter.id === intent.targetId));
+      const targetChapter = targetNovel?.chapters.find((chapter) => chapter.id === intent.targetId);
+      if (!targetNovel || !targetChapter?.published) return;
+      consumeIntent();
+      queueMicrotask(() => {
+        setNovelId(targetNovel.id);
+        setChapterId(targetChapter.id);
+        setView("reader");
+      });
+    }
+  }, [busy, novels]);
 
   if (view === "novel" && novel) {
     return <><NovelHome novel={novel} onBack={() => setView("library")} onRead={(selected) => {
@@ -72,7 +106,7 @@ export function StoryStudio() {
 
 function Library({ novels, onOpen }: { novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
   return <div className="library fantasy-library">
-    <header className="topbar"><Brand /><div className="topbar-actions"><a className="ghost link-button" href="/login">登录</a><a className="ghost link-button" href="/creator">创作中心 ↗</a></div></header>
+    <header className="topbar"><Brand /><div className="topbar-actions"><a className="ghost link-button" href="/register">注册</a><a className="ghost link-button" href="/login">登录</a><a className="ghost link-button" href="/creator">创作中心 ↗</a></div></header>
     <section className="hero"><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="portal-orbit" aria-hidden="true"><i /><i /><b>F</b></div><div className="scroll-cue"><span>探索书架</span><i /></div></section>
     <section className="shelf"><div className="section-heading"><div><span>01</span><p>已发布世界</p></div><h2>幻界书架</h2></div>
       <div className="novel-shelf-grid">{novels.map((novel) => <article className="novel-card" key={novel.id}>

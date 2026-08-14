@@ -18,11 +18,16 @@ const runtime = createCloudflareRuntime({
     CREATOR_SESSION_SECRET: "test-session-secret-that-is-at-least-32-characters",
     LOCAL_ADMIN_BYPASS: "false",
     LOCAL_AUTH_BYPASS: "true",
+    REGISTRATION_ENABLED: "true",
+    APP_ORIGIN: `http://127.0.0.1:${port}`,
+    TERMS_VERSION: "test-terms",
+    PRIVACY_VERSION: "test-privacy",
   },
 });
 const origin = runtime.origin;
 let adminCookie = "";
 let adminNovelId = "";
+const requiredRegistrationConsent = { ageConfirmed: true, termsAccepted: true, privacyAccepted: true };
 
 async function requestText(path, { method = "GET", cookie = "", body } = {}) {
   const response = await fetch(`${origin}${path}`, {
@@ -79,7 +84,7 @@ async function createAuthorAccount(label) {
   const email = `${label}-${process.pid}@example.com`;
   const registration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email, displayName: label, password: "test-password-123", turnstileToken: "" },
+    body: { email, displayName: label, password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(registration.response.status, 201);
   const verification = await requestJson("/api/auth/verify-email", {
@@ -116,6 +121,51 @@ test("公开页面与后台页面由 Vinext Worker 正常渲染", async () => {
   assert.match(admin.headers.get("content-type") ?? "", /^text\/html\b/i);
   assert.match(await home.text(), /幻界|Fantasy/i);
   assert.match(await admin.text(), /创作后台/);
+});
+
+test("平台健康检查验证 D1 与 R2 bindings 且禁止缓存", async () => {
+  const response = await fetch(`${origin}/api/health`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), { ok: true, environment: "local" });
+});
+
+test("账号身份、配置和错误响应禁止进入共享缓存", async () => {
+  for (const path of ["/api/auth/me", "/api/auth/config"]) {
+    const response = await fetch(`${origin}${path}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+  }
+  const rejected = await fetch(`${origin}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ email: "missing@example.com", password: "not-a-real-password" }),
+  });
+  assert.equal(rejected.status, 401);
+  assert.equal(rejected.headers.get("cache-control"), "private, no-store");
+});
+
+test("向导记忆的领域拒绝由 HTTP adapter 映射为稳定错误", async () => {
+  const email = `guide-rejection-${process.pid}@example.com`;
+  const registration = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: {
+      email, displayName: "向导拒绝测试", password: "guide-rejection-password-123",
+      turnstileToken: "", ...requiredRegistrationConsent,
+    },
+  });
+  const activation = await requestJson("/api/auth/activate-account", {
+    method: "POST", body: { token: registration.payload.developmentToken },
+  });
+  const cookie = activation.response.headers.get("set-cookie")?.split(";")[0] || "";
+  const rejected = await requestJson("/api/account/guide-memory", {
+    method: "PATCH",
+    cookie,
+    body: { preferences: ["奇幻"], completeGuide: false },
+  });
+  assert.equal(rejected.response.status, 400);
+  assert.equal(rejected.payload.error, "需要明确确认同步阅读偏好");
+  assert.equal(rejected.response.headers.get("cache-control"), "private, no-store");
 });
 
 test("公开页面统一通过创作中心解析工作台入口", async () => {
@@ -226,7 +276,7 @@ test("创作入口按账号最新角色进入对应工作台", async () => {
   const email = `creator-entry-${process.pid}@example.com`;
   const registration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email, displayName: "入口角色测试", password: "test-password-123", turnstileToken: "" },
+    body: { email, displayName: "入口角色测试", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(registration.response.status, 201);
   assert.equal((await requestJson("/api/auth/verify-email", {
@@ -283,7 +333,7 @@ test("读者注册验证登录后可访问云端进度，管理员可升级为�
   const register = await fetch(`${origin}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json", origin },
-    body: JSON.stringify({ email, displayName: "测试读者", password: "test-password-123", turnstileToken: "" }),
+    body: JSON.stringify({ email, displayName: "测试读者", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent }),
   });
   assert.equal(register.status, 201);
   const registration = await register.json();
@@ -307,6 +357,22 @@ test("读者注册验证登录后可访问云端进度，管理员可升级为�
   const me = await fetch(`${origin}/api/auth/me`, { headers: { cookie: cookie.split(";")[0] } });
   assert.equal((await me.json()).user.role, "reader");
   const sessionCookie = cookie.split(";")[0];
+  const unauthorizedMemory = await fetch(`${origin}/api/account/guide-memory`);
+  assert.equal(unauthorizedMemory.status, 401);
+  const initialMemory = await requestJson("/api/account/guide-memory", { cookie: sessionCookie });
+  assert.deepEqual(initialMemory.payload.memory.preferences, []);
+  const savedMemory = await requestJson("/api/account/guide-memory", {
+    method: "PATCH",
+    cookie: sessionCookie,
+    body: { actorId: "another-account", preferences: ["奇幻", "非法偏好", "轻松"], completeGuide: true },
+  });
+  assert.equal(savedMemory.response.status, 200);
+  assert.deepEqual(savedMemory.payload.memory.preferences, ["奇幻", "轻松"]);
+  const crossDeviceMemory = await requestJson("/api/account/guide-memory", { cookie: sessionCookie });
+  assert.deepEqual(crossDeviceMemory.payload.memory.preferences, ["奇幻", "轻松"]);
+  const clearedMemory = await requestJson("/api/account/guide-memory", { method: "DELETE", cookie: sessionCookie });
+  assert.deepEqual(clearedMemory.payload.memory.preferences, []);
+  assert.equal(clearedMemory.payload.memory.guideCompletedAt, null);
   const progress = await fetch(`${origin}/api/account/progress`, { headers: { cookie: sessionCookie } });
   assert.equal(progress.status, 200);
   assert.deepEqual((await progress.json()).progress, []);
@@ -784,22 +850,22 @@ test("平台与作者素材的归属、整理和历史引用保护保持兼容",
 test("账号验证、重置、角色状态和管理员能力的安全契约保持兼容", async () => {
   const invalidRegistration = await requestText("/api/auth/register", {
     method: "POST",
-    body: { email: "invalid", displayName: "无效账号", password: "test-password-123", turnstileToken: "" },
+    body: { email: "invalid", displayName: "无效账号", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
-  assert.equal(invalidRegistration.response.status, 500);
-  assert.equal(invalidRegistration.text, "");
+  assert.equal(invalidRegistration.response.status, 400);
+  assert.equal(JSON.parse(invalidRegistration.text).error, "请输入有效邮箱");
   const pendingEmail = `pending-${process.pid}@example.com`;
   const pendingRegistration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email: pendingEmail, displayName: "待验证账号", password: "test-password-123", turnstileToken: "" },
+    body: { email: pendingEmail, displayName: "待验证账号", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(pendingRegistration.response.status, 201);
   const pendingLogin = await requestText("/api/auth/login", {
     method: "POST",
     body: { email: pendingEmail, password: "test-password-123" },
   });
-  assert.equal(pendingLogin.response.status, 500);
-  assert.equal(pendingLogin.text, "");
+  assert.equal(pendingLogin.response.status, 403);
+  assert.equal(JSON.parse(pendingLogin.text).error, "请先验证邮箱");
   const verified = await requestJson("/api/auth/verify-email", {
     method: "POST",
     body: { token: pendingRegistration.payload.developmentToken },
@@ -809,8 +875,8 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     method: "POST",
     body: { token: pendingRegistration.payload.developmentToken },
   });
-  assert.equal(reusedVerification.response.status, 500);
-  assert.equal(reusedVerification.text, "");
+  assert.equal(reusedVerification.response.status, 400);
+  assert.equal(JSON.parse(reusedVerification.text).error, "验证链接无效或已过期");
 
   const accountLogin = await requestJson("/api/auth/login", {
     method: "POST",
@@ -842,13 +908,13 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     method: "POST",
     body: { email: pendingEmail, password: "test-password-123" },
   });
-  assert.equal(disabledLogin.response.status, 500);
-  assert.equal(disabledLogin.text, "");
+  assert.equal(disabledLogin.response.status, 403);
+  assert.equal(JSON.parse(disabledLogin.text).error, "账号已被禁用");
 
   const resetEmail = `reset-${process.pid}@example.com`;
   const resetRegistration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email: resetEmail, displayName: "重置账号", password: "old-password-123", turnstileToken: "" },
+    body: { email: resetEmail, displayName: "重置账号", password: "old-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(resetRegistration.response.status, 201);
   assert.equal((await requestJson("/api/auth/verify-email", {
@@ -877,8 +943,8 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     method: "POST",
     body: { token: knownRecovery.payload.developmentToken, password: "short" },
   });
-  assert.equal(weakReset.response.status, 500);
-  assert.equal(weakReset.text, "");
+  assert.equal(weakReset.response.status, 400);
+  assert.equal(JSON.parse(weakReset.text).error, "密码至少需要 15 个字符");
   assert.equal((await requestJson("/api/auth/reset-password", {
     method: "POST",
     body: { token: knownRecovery.payload.developmentToken, password: "new-password-456" },
@@ -888,11 +954,11 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     method: "POST",
     body: { token: knownRecovery.payload.developmentToken, password: "another-password-789" },
   });
-  assert.equal(reusedReset.response.status, 500);
-  assert.equal(reusedReset.text, "");
+  assert.equal(reusedReset.response.status, 400);
+  assert.equal(JSON.parse(reusedReset.text).error, "链接无效或已过期");
   assert.equal((await requestText("/api/auth/login", {
     method: "POST", body: { email: resetEmail, password: "old-password-123" },
-  })).response.status, 500);
+  })).response.status, 401);
   assert.equal((await requestJson("/api/auth/login", {
     method: "POST", body: { email: resetEmail, password: "new-password-456" },
   })).response.status, 200);
@@ -900,7 +966,7 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
   const expiredEmail = `expired-${process.pid}@example.com`;
   const expiredRegistration = await requestJson("/api/auth/register", {
     method: "POST",
-    body: { email: expiredEmail, displayName: "过期验证账号", password: "test-password-123", turnstileToken: "" },
+    body: { email: expiredEmail, displayName: "过期验证账号", password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
   });
   assert.equal(expiredRegistration.response.status, 201);
   runtime.executeD1(`UPDATE auth_tokens SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = (SELECT id FROM users WHERE email = '${expiredEmail}') AND type = 'verify_email'`);
@@ -908,8 +974,8 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     method: "POST",
     body: { token: expiredRegistration.payload.developmentToken },
   });
-  assert.equal(expiredVerification.response.status, 500);
-  assert.equal(expiredVerification.text, "");
+  assert.equal(expiredVerification.response.status, 400);
+  assert.equal(JSON.parse(expiredVerification.text).error, "验证链接无效或已过期");
 
   const expiringReset = await requestJson("/api/auth/forgot-password", {
     method: "POST",
@@ -921,8 +987,8 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
     method: "POST",
     body: { token: expiringReset.payload.developmentToken, password: "expired-password-123" },
   });
-  assert.equal(expiredReset.response.status, 500);
-  assert.equal(expiredReset.text, "");
+  assert.equal(expiredReset.response.status, 400);
+  assert.equal(JSON.parse(expiredReset.text).error, "链接无效或已过期");
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const rejected = await requestJson("/admin/api/session", {
@@ -938,6 +1004,83 @@ test("账号验证、重置、角色状态和管理员能力的安全契约保�
   assert.equal(limited.response.status, 429);
   assert.equal(limited.payload.error, "登录尝试过多，请稍后再试");
   assert.ok(Number(limited.response.headers.get("retry-after")) > 0);
+});
+
+test("正式账号 HTTP 路由覆盖确认、恢复、重启与操作结果查询", async () => {
+  const email = `route-recovery-${process.pid}@example.com`;
+  const registration = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: {
+      email, displayName: "路由恢复旅伴", password: "route-recovery-password-123", turnstileToken: "",
+      ...requiredRegistrationConsent,
+    },
+  });
+  assert.equal(registration.response.status, 201);
+  const initialToken = registration.payload.developmentToken;
+  const inspection = await fetch(`${origin}/api/auth/verify-email?token=${encodeURIComponent(initialToken)}`);
+  assert.equal(inspection.status, 200);
+  assert.deepEqual(await inspection.json(), { state: "ready" });
+  assert.equal(inspection.headers.get("set-cookie"), null);
+
+  runtime.executeD1(`UPDATE users SET last_verification_sent_at = '2000-01-01T00:00:00.000Z' WHERE email = '${email}'`);
+  const resent = await requestJson("/api/auth/resend-verification", {
+    method: "POST", body: { email, turnstileToken: "", operationId: `resend-${process.pid}` },
+  });
+  assert.equal(resent.response.status, 200);
+  assert.equal(resent.payload.state, "awaiting_email");
+
+  const restartedEmail = `route-restarted-${process.pid}@example.com`;
+  const restarted = await requestJson("/api/auth/restart-registration", {
+    method: "POST",
+    body: {
+      currentEmail: email, email: restartedEmail, displayName: "重启后的旅伴",
+      password: "route-restarted-password-456", turnstileToken: "", operationId: `restart-${process.pid}`,
+      ...requiredRegistrationConsent,
+    },
+  });
+  assert.equal(restarted.response.status, 200);
+  assert.equal(restarted.payload.state, "awaiting_email");
+  assert.deepEqual(await (await fetch(`${origin}/api/auth/verify-email?token=${encodeURIComponent(initialToken)}`)).json(), { state: "used" });
+  assert.deepEqual(await (await fetch(`${origin}/api/auth/verify-email?token=${encodeURIComponent(restarted.payload.developmentToken)}`)).json(), { state: "ready" });
+
+  const activated = await requestJson("/api/auth/activate-account", {
+    method: "POST",
+    body: { token: restarted.payload.developmentToken, intent: { kind: "progress", targetId: "chapter-route" } },
+  });
+  assert.equal(activated.response.status, 200);
+  assert.equal(activated.payload.state, "active");
+  assert.deepEqual(activated.payload.resumeDirective, {
+    kind: "progress", targetId: "chapter-route", mode: "confirm",
+  });
+  const activatedCookie = activated.response.headers.get("set-cookie")?.split(";")[0] || "";
+  const usedInMatchingSession = await fetch(`${origin}/api/auth/verify-email?token=${encodeURIComponent(restarted.payload.developmentToken)}`, {
+    headers: { cookie: activatedCookie },
+  });
+  assert.deepEqual(await usedInMatchingSession.json(), { state: "active_session" });
+
+  const operationId = `register-operation-${process.pid}`;
+  const operationEmail = `route-operation-${process.pid}@example.com`;
+  const operationBody = {
+    email: operationEmail, displayName: "操作结果旅伴", password: "route-operation-password-123",
+    turnstileToken: "", operationId, ...requiredRegistrationConsent,
+  };
+  const operationRegistration = await requestJson("/api/auth/register", { method: "POST", body: operationBody });
+  assert.equal(operationRegistration.response.status, 201);
+  const outcome = await requestJson(`/api/auth/registration-outcome?operationId=${encodeURIComponent(operationId)}`);
+  assert.equal(outcome.payload.state, "succeeded");
+  const repeated = await requestJson("/api/auth/register", { method: "POST", body: operationBody });
+  assert.equal(repeated.response.status, 201);
+  assert.equal(repeated.payload.state, "awaiting_email");
+  const changedRequest = await requestJson("/api/auth/register", {
+    method: "POST", body: { ...operationBody, email: `changed-${operationEmail}` },
+  });
+  assert.equal(changedRequest.response.status, 409);
+  assert.equal(changedRequest.payload.code, "operation_mismatch");
+  const changedKind = await requestJson("/api/auth/resend-verification", {
+    method: "POST", body: { email: operationEmail, turnstileToken: "", operationId },
+  });
+  assert.equal(changedKind.response.status, 409);
+  assert.equal(changedKind.payload.code, "operation_mismatch");
 });
 
 test("未配置 AI 提供商密钥时明确拒绝生成且不回退本地合成", async () => {

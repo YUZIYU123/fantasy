@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+
+async function json(path) {
+  return JSON.parse(await readFile(new URL(path, root), "utf8"));
+}
+
+test("Cloudflare local、staging 与 production 配置和资源彼此隔离", async () => {
+  const config = await json("wrangler.jsonc");
+  const environments = {
+    local: config.env?.local,
+    staging: config.env?.staging,
+    production: config.env?.production,
+  };
+  assert.equal(config.name, "mist-page-fiction-unconfigured");
+  assert.match(config.compatibility_date, /^\d{4}-\d{2}-\d{2}$/);
+
+  for (const [name, environment] of Object.entries(environments)) {
+    assert.ok(environment, `缺少 ${name} Wrangler 环境`);
+    assert.equal(environment.d1_databases?.[0]?.binding, "DB");
+    assert.equal(environment.d1_databases?.[0]?.migrations_dir, "drizzle");
+    assert.equal(environment.r2_buckets?.[0]?.binding, "ASSET_BUCKET");
+    assert.equal(typeof environment.vars?.REGISTRATION_ENABLED, "string");
+    assert.equal(environment.vars?.DEPLOYMENT_ENV, name);
+  }
+
+  assert.equal(environments.staging.name, "mist-page-fiction-staging");
+  assert.equal(environments.local.name, "mist-page-fiction-local");
+  assert.equal(environments.production.name, "mist-page-fiction");
+  assert.notEqual(environments.local.d1_databases[0].database_name, environments.staging.d1_databases[0].database_name);
+  assert.notEqual(environments.staging.d1_databases[0].database_name, environments.production.d1_databases[0].database_name);
+  assert.notEqual(environments.local.r2_buckets[0].bucket_name, environments.staging.r2_buckets[0].bucket_name);
+  assert.notEqual(environments.staging.r2_buckets[0].bucket_name, environments.production.r2_buckets[0].bucket_name);
+  assert.equal(environments.production.observability.logs.enabled, true);
+  assert.equal(environments.production.observability.traces.enabled, true);
+});
+
+test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
+  const [config, ignored, example] = await Promise.all([
+    json("wrangler.jsonc"),
+    readFile(new URL(".gitignore", root), "utf8"),
+    readFile(new URL(".dev.vars.example", root), "utf8"),
+  ]);
+  const secretNames = [
+    "CREATOR_PASSWORD_HASH",
+    "CREATOR_SESSION_SECRET",
+    "ACCOUNT_OPERATION_SECRET",
+    "ELEVENLABS_API_KEY",
+    "TURNSTILE_SECRET_KEY",
+    "RESEND_API_KEY",
+  ];
+  assert.match(ignored, /^\.env\*$/m);
+  assert.match(ignored, /^\.dev\.vars\*$/m);
+  assert.match(ignored, /^!\.dev\.vars\.example$/m);
+  assert.match(example, /LOCAL_AUTH_BYPASS=true/);
+  for (const environment of [config.env.staging, config.env.production]) {
+    for (const name of secretNames) {
+      assert.equal(Object.hasOwn(environment.vars, name), false, `${name} 不得写入 vars`);
+      assert.ok(environment.secrets.required.includes(name), `${name} 必须声明为 secret`);
+    }
+  }
+});
+
+test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环境", async () => {
+  const [files, journal, packageJson, workflow, sourceGate, smoke, delivery] = await Promise.all([
+    readdir(new URL("drizzle", root)),
+    json("drizzle/meta/_journal.json"),
+    json("package.json"),
+    readFile(new URL(".github/workflows/verify.yml", root), "utf8"),
+    readFile(new URL("scripts/verify-release-source.mjs", root), "utf8"),
+    readFile(new URL("scripts/smoke-cloudflare.mjs", root), "utf8"),
+    readFile(new URL("docs/cloudflare-delivery.md", root), "utf8"),
+  ]);
+  const migrations = files.filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
+  assert.deepEqual(migrations.map((file) => Number(file.slice(0, 4))), migrations.map((_, index) => index));
+  assert.equal(journal.entries.length, migrations.length);
+  assert.match(packageJson.scripts["db:migrate:staging"], /--env staging/);
+  assert.match(packageJson.scripts["db:migrate:production"], /--env production/);
+  assert.match(packageJson.scripts["db:migrate:staging"], /release:source:staging/);
+  assert.match(packageJson.scripts["db:migrate:production"], /release:source:production/);
+  assert.match(packageJson.scripts["deploy:staging"], /--env staging/);
+  assert.match(packageJson.scripts["deploy:production"], /--env production/);
+  assert.match(packageJson.scripts["deploy:staging"], /db:migrate:staging/);
+  assert.match(packageJson.scripts["deploy:production"], /db:migrate:production/);
+  assert.match(packageJson.scripts["deploy:staging"], /cf:secrets:staging/);
+  assert.match(packageJson.scripts["deploy:production"], /cf:secrets:production/);
+  assert.match(packageJson.scripts["release:check"], /build:production/);
+  for (const gate of ["typecheck", "lint", "db:migrate:local", "test", "cf:config:check"]) {
+    assert.match(packageJson.scripts["release:check"], new RegExp(gate.replaceAll(":", "\\:")));
+  }
+  assert.match(workflow, /pnpm release:check/);
+  assert.match(sourceGate, /upstream !== "origin\/main"/);
+  assert.match(sourceGate, /upstream\.startsWith\("origin\/"\)/);
+  assert.match(smoke, /desiredAnalyticsAllowed = !originalAnalyticsAllowed/);
+  assert.match(smoke, /恢复核心写流程前态/);
+  assert.match(smoke, /mode === "closed"/);
+  assert.match(smoke, /registrationEnabled !== false/);
+  assert.match(smoke, /注册关闭拒绝/);
+  assert.match(packageJson.scripts["test:smoke:staging:closed"], /smoke-cloudflare\.mjs staging closed/);
+  const stagingMigration = delivery.indexOf("pnpm db:migrate:staging");
+  const mergeApprovedPr = delivery.indexOf("Merge the approved PR");
+  assert.ok(stagingMigration >= 0 && stagingMigration < mergeApprovedPr, "staging 验收必须发生在合并 PR 之前");
+  assert.ok(delivery.lastIndexOf("pnpm deploy:staging") > mergeApprovedPr, "合并后必须从 main 重新部署 staging");
+});
+
+test("AccountLifecycle 业务规则只依赖 AccountStore interface", async () => {
+  const lifecycle = await readFile(new URL("db/account-lifecycle.ts", root), "utf8");
+  assert.doesNotMatch(lifecycle, /from "drizzle-orm"/);
+  assert.doesNotMatch(lifecycle, /from "\."/);
+  assert.doesNotMatch(lifecycle, /from "\.\/schema"/);
+  assert.doesNotMatch(lifecycle, /\bgetDb\(/);
+});

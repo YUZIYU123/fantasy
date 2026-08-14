@@ -217,6 +217,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     <FantasyTerminal
       novels={novels}
       onOpenNovel={onOpenNovel}
+      readingContextId={chapterId}
       config={story.terminal}
       event={sessionView.terminalEvent}
       eventKey={`${chapterId}:${node.id}:${node.terminalEvent?.trigger || "none"}`}

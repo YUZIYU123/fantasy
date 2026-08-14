@@ -1,33 +1,161 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "mist-page-fiction",
+  "name": "mist-page-fiction-unconfigured",
   "compatibility_date": "2026-05-15",
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
-  "vars": {
-    "SFX_PROVIDER": "elevenlabs"
-  },
-  "routes": [
-    {
-      "pattern": "fantasy.bytesucceed.com",
-      "custom_domain": true
+  "env": {
+    "local": {
+      "name": "mist-page-fiction-local",
+      "workers_dev": true,
+      "preview_urls": false,
+      "vars": {
+        "SFX_PROVIDER": "elevenlabs",
+        "DEPLOYMENT_ENV": "local",
+        "REGISTRATION_ENABLED": "true",
+        "TERMS_VERSION": "local-dev",
+        "PRIVACY_VERSION": "local-dev",
+        "APP_ORIGIN": "http://localhost:3000"
+      },
+      "triggers": {
+        "crons": ["17 3 * * *"]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mist-page-fiction-local-db",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "ASSET_BUCKET",
+          "bucket_name": "mist-page-fiction-local-assets"
+        }
+      ],
+      "observability": {
+        "enabled": false
+      }
+    },
+    "staging": {
+      "name": "mist-page-fiction-staging",
+      "workers_dev": true,
+      "preview_urls": true,
+      "vars": {
+        "SFX_PROVIDER": "elevenlabs",
+        "DEPLOYMENT_ENV": "staging",
+        "REGISTRATION_ENABLED": "false",
+        "TERMS_VERSION": "draft",
+        "PRIVACY_VERSION": "draft",
+        "APP_ORIGIN": "https://staging.fantasy.bytesucceed.com"
+      },
+      "secrets": {
+        "required": [
+          "CREATOR_PASSWORD_HASH",
+          "CREATOR_SESSION_SECRET",
+          "ACCOUNT_OPERATION_SECRET",
+          "ELEVENLABS_API_KEY",
+          "TURNSTILE_SECRET_KEY",
+          "RESEND_API_KEY"
+        ]
+      },
+      "routes": [
+        {
+          "pattern": "staging.fantasy.bytesucceed.com",
+          "custom_domain": true
+        }
+      ],
+      "triggers": {
+        "crons": ["17 3 * * *"]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mist-page-fiction-staging-db",
+          "database_id": "1727c968-4690-44a4-94bb-52fe5e0e9716",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "ASSET_BUCKET",
+          "bucket_name": "mist-page-fiction-staging-assets"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "invocation_logs": true,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        }
+      }
+    },
+    "production": {
+      "name": "mist-page-fiction",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "SFX_PROVIDER": "elevenlabs",
+        "DEPLOYMENT_ENV": "production",
+        "REGISTRATION_ENABLED": "false",
+        "TERMS_VERSION": "draft",
+        "PRIVACY_VERSION": "draft",
+        "APP_ORIGIN": "https://fantasy.bytesucceed.com"
+      },
+      "secrets": {
+        "required": [
+          "CREATOR_PASSWORD_HASH",
+          "CREATOR_SESSION_SECRET",
+          "ACCOUNT_OPERATION_SECRET",
+          "ELEVENLABS_API_KEY",
+          "TURNSTILE_SECRET_KEY",
+          "RESEND_API_KEY"
+        ]
+      },
+      "routes": [
+        {
+          "pattern": "fantasy.bytesucceed.com",
+          "custom_domain": true
+        }
+      ],
+      "triggers": {
+        "crons": ["17 3 * * *"]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mist-page-fiction-db",
+          "database_id": "7ee4bac3-6a43-459b-868a-bf5321144c04",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "ASSET_BUCKET",
+          "bucket_name": "mist-page-fiction-assets"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "invocation_logs": true,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      }
     }
-  ],
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "mist-page-fiction-db",
-      "database_id": "7ee4bac3-6a43-459b-868a-bf5321144c04",
-      "migrations_dir": "drizzle"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "ASSET_BUCKET",
-      "bucket_name": "mist-page-fiction-assets"
-    }
-  ],
-  "observability": {
-    "enabled": true
   }
 }
