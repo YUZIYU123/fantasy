@@ -65,13 +65,14 @@ test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
 });
 
 test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环境", async () => {
-  const [files, journal, packageJson, workflow, sourceGate, smoke] = await Promise.all([
+  const [files, journal, packageJson, workflow, sourceGate, smoke, delivery] = await Promise.all([
     readdir(new URL("drizzle", root)),
     json("drizzle/meta/_journal.json"),
     json("package.json"),
     readFile(new URL(".github/workflows/verify.yml", root), "utf8"),
     readFile(new URL("scripts/verify-release-source.mjs", root), "utf8"),
     readFile(new URL("scripts/smoke-cloudflare.mjs", root), "utf8"),
+    readFile(new URL("docs/cloudflare-delivery.md", root), "utf8"),
   ]);
   const migrations = files.filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   assert.deepEqual(migrations.map((file) => Number(file.slice(0, 4))), migrations.map((_, index) => index));
@@ -99,6 +100,10 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
   assert.match(smoke, /registrationEnabled !== false/);
   assert.match(smoke, /注册关闭拒绝/);
   assert.match(packageJson.scripts["test:smoke:staging:closed"], /smoke-cloudflare\.mjs staging closed/);
+  const stagingMigration = delivery.indexOf("pnpm db:migrate:staging");
+  const mergeApprovedPr = delivery.indexOf("Merge the approved PR");
+  assert.ok(stagingMigration >= 0 && stagingMigration < mergeApprovedPr, "staging 验收必须发生在合并 PR 之前");
+  assert.ok(delivery.lastIndexOf("pnpm deploy:staging") > mergeApprovedPr, "合并后必须从 main 重新部署 staging");
 });
 
 test("AccountLifecycle 业务规则只依赖 AccountStore interface", async () => {
