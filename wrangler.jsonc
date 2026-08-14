@@ -72,6 +72,7 @@
         {
           "binding": "DB",
           "database_name": "mist-page-fiction-staging-db",
+          "database_id": "1727c968-4690-44a4-94bb-52fe5e0e9716",
           "migrations_dir": "drizzle"
         }
       ],
