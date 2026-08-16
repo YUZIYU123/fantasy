@@ -172,10 +172,89 @@ export const readingProgress = sqliteTable("reading_progress", {
   nodeId: text("node_id").notNull(),
   pageIndex: integer("page_index").notNull().default(0),
   terminalEventIdsJson: text("terminal_event_ids_json").notNull().default("[]"),
-  completedAt: text("completed_at"),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("reading_progress_user_chapter_unique").on(table.userId, table.chapterId),
+]);
+
+export const chapterCompletionRecords = sqliteTable("chapter_completion_records", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  chapterId: text("chapter_id").notNull(),
+  chapterVersion: integer("chapter_version").notNull().default(0),
+  completedAt: text("completed_at").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("chapter_completion_records_user_chapter_unique").on(table.userId, table.chapterId),
+  index("chapter_completion_records_user_time_idx").on(table.userId, table.completedAt),
+]);
+
+export const bookshelfEntries = sqliteTable("bookshelf_entries", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  novelId: text("novel_id").notNull(),
+  publicSnapshotJson: text("public_snapshot_json").notNull().default("{}"),
+  addedAt: text("added_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("bookshelf_entries_user_novel_unique").on(table.userId, table.novelId),
+  index("bookshelf_entries_user_added_idx").on(table.userId, table.addedAt),
+]);
+
+export const novelCompletionFrontiers = sqliteTable("novel_completion_frontiers", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  novelId: text("novel_id").notNull(),
+  chapterIdsJson: text("chapter_ids_json").notNull().default("[]"),
+  completedAt: text("completed_at").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("novel_completion_frontiers_user_novel_unique").on(table.userId, table.novelId),
+]);
+
+export const bookshelfOperationReceipts = sqliteTable("bookshelf_operation_receipts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  operationDigest: text("operation_id").notNull(),
+  action: text("action", { enum: ["add", "remove"] }).notNull(),
+  novelId: text("novel_id").notNull(),
+  status: text("status", { enum: ["processing", "succeeded", "failed", "uncertain"] }).notNull(),
+  resultJson: text("result_json").notNull().default("{}"),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("bookshelf_operation_receipts_user_operation_unique").on(table.userId, table.operationDigest),
+  index("bookshelf_operation_receipts_expiry_idx").on(table.expiresAt),
+]);
+
+export const bookshelfRateLimitAttempts = sqliteTable("bookshelf_rate_limit_attempts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  sourceKey: text("source_key").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("bookshelf_rate_limit_attempts_user_time_idx").on(table.userId, table.createdAt),
+  index("bookshelf_rate_limit_attempts_source_time_idx").on(table.sourceKey, table.createdAt),
+]);
+
+export const bookshelfListSnapshots = sqliteTable("bookshelf_list_snapshots", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  total: integer("total").notNull(),
+  expiresAt: text("expires_at").notNull(),
+}, (table) => [
+  index("bookshelf_list_snapshots_user_expiry_idx").on(table.userId, table.expiresAt),
+]);
+
+export const bookshelfListSnapshotChunks = sqliteTable("bookshelf_list_snapshot_chunks", {
+  id: text("id").primaryKey(),
+  snapshotId: text("snapshot_id").notNull(),
+  userId: text("user_id").notNull(),
+  chunkIndex: integer("chunk_index").notNull(),
+  entryIdsJson: text("entry_ids_json").notNull().default("[]"),
+}, (table) => [
+  uniqueIndex("bookshelf_list_snapshot_chunks_snapshot_chunk_unique").on(table.snapshotId, table.chunkIndex),
 ]);
 
 export const authAttempts = sqliteTable("auth_attempts", {

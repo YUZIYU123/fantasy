@@ -156,13 +156,26 @@ test("访客明确确认邮箱后原子激活账号并建立会话", async () =>
   assert.deepEqual(payload.activation.body.resumeDirective, {
     kind: "bookshelf",
     targetId: "novel-42",
-    mode: "confirm",
+    mode: "automatic",
   });
   assert.match(payload.activation.cookie, /^mist_session=/);
   assert.equal(payload.identity.status, "active");
   assert.deepEqual(payload.usedWithMatchingSession.body, { state: "active_session" });
   assert.equal(payload.repeated, 400);
   assert.equal(payload.disabledActivation, 400);
+});
+
+test("同设备激活后通过受限 adapter 自动完成加入书架意图", async () => {
+  const response = await fetch(`${runtime.origin}/account-bookshelf-intent`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.equal(payload.present, true);
+  assert.equal(payload.directive.kind, "bookshelf");
+  assert.equal(payload.directive.mode, "automatic");
+  assert.equal(payload.directive.outcome, "succeeded");
+  assert.equal(payload.exportCount, 1);
+  assert.equal(payload.presentAfterDeletion, false);
+  assert.equal(payload.accountDeleted, true);
 });
 
 test("待验证账号在六十秒后可重发验证邮件", async () => {
@@ -290,6 +303,65 @@ test("ReadingSession 通过公开接口读取云端进度", async () => {
   const response = await fetch(`${runtime.origin}/reading-progress`);
   assert.equal(response.status, 200, runtime.output);
   assert.deepEqual(await response.json(), { progress: [] });
+});
+
+test("ReadingSession 重读章节时保留独立完成证明", async () => {
+  const response = await fetch(`${runtime.origin}/reading-progress-proofs`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    afterCompletion: { resumable: false, completed: true },
+    whileRereading: { resumable: true, completed: true },
+    afterRecompletion: { resumable: false, completed: true, proofRefreshed: true },
+    orphanHidden: true,
+  });
+});
+
+test("BookshelfLifecycle 幂等加入公开小说并隔离私人书架", async () => {
+  const response = await fetch(`${runtime.origin}/bookshelf-membership`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    first: "added",
+    repeated: "already_present",
+    ownerCount: 1,
+    strangerCount: 0,
+    unavailableStatus: 404,
+  });
+});
+
+test("BookshelfLifecycle 幂等移出且保留阅读事实", async () => {
+  const response = await fetch(`${runtime.origin}/bookshelf-removal`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    first: "removed",
+    repeated: "already_absent",
+    remaining: 0,
+    resumePreserved: true,
+  });
+});
+
+test("BookshelfLifecycle 真实 D1 回执重放不覆盖后续意图并执行频控", async () => {
+  const response = await fetch(`${runtime.origin}/bookshelf-operation-order`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    replayed: true,
+    receiptStatus: "succeeded",
+    operationDigestLength: 64,
+    operationStoredRaw: false,
+    unavailableStatus: 404,
+    unavailableReceiptStatus: "failed",
+    finalPresent: false,
+    mismatchStatus: 409,
+    rateLimited: 429,
+    concurrentAccepted: 30,
+    concurrentLimited: 1,
+    orphanSnapshotCount: 0,
+  });
+});
+
+test("章节完成时记录前沿并在后来发布新章节后显示有更新", async () => {
+  const response = await fetch(`${runtime.origin}/bookshelf-update-frontier`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), { status: "updated" });
 });
 
 test("AccountLifecycle 对邮件超时执行有限重试并返回稳定错误", async () => {

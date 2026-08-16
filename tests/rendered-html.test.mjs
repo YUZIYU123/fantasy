@@ -401,8 +401,8 @@ test("读者注册验证登录后可访问云端进度，管理员可升级为�
   assert.equal((await putProgress({ nodeId: "ending-a", pageIndex: 0, updatedAt: completedAt, completed: true })).status, 200);
   assert.equal((await putProgress({ nodeId: "branch-b", pageIndex: 0, updatedAt: new Date(baseTime + 1_000).toISOString(), completed: false })).status, 200);
   const completedRecord = await (await fetch(`${origin}/api/account/progress?chapterId=${adminChapters[0].id}`, { headers: { cookie: sessionCookie } })).json();
-  assert.equal(completedRecord.progress.nodeId, "ending-a");
-  assert.equal(completedRecord.progress.completedAt, completedAt);
+  assert.equal(completedRecord.progress, null);
+  assert.equal(completedRecord.completion.completedAt, completedAt);
   const pendingAfterCompletion = await (await fetch(`${origin}/api/account/progress`, { headers: { cookie: sessionCookie } })).json();
   assert.deepEqual(pendingAfterCompletion.progress, []);
   assert.equal((await putProgress({ nodeId: "start", pageIndex: 0, updatedAt: new Date(baseTime + 3_000).toISOString(), completed: false })).status, 200);

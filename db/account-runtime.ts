@@ -1,5 +1,9 @@
 import { env } from "cloudflare:workers";
 import { createAccountLifecycle, type AccountRegistrationConfig } from "./account-lifecycle";
+import { bookshelfLifecycle } from "./bookshelf-lifecycle";
+import { BookshelfError } from "../lib/bookshelf-lifecycle";
+import { hashToken } from "../lib/auth";
+import { registrationResumeDirective } from "../lib/registration-intent";
 
 export type AccountRuntimeEnv = {
   ACCOUNT_OPERATION_SECRET?: string;
@@ -17,6 +21,16 @@ export type AccountRuntimeEnv = {
 
 function runtimeValues() {
   return env as unknown as AccountRuntimeEnv;
+}
+
+async function registrationBookshelfOperationId(userId: string, novelId: string) {
+  const digest = new Uint8Array(await crypto.subtle.digest(
+    "SHA-256", new TextEncoder().encode(`registration-bookshelf:${userId}:${novelId}`),
+  ));
+  digest[6] = (digest[6] & 0x0f) | 0x50;
+  digest[8] = (digest[8] & 0x3f) | 0x80;
+  const hex = [...digest.slice(0, 16)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export function accountRegistrationConfigFrom(values: AccountRuntimeEnv): AccountRegistrationConfig {
@@ -60,4 +74,38 @@ export const accountLifecycle = createAccountLifecycle({
   operationFingerprintSecret: values.ACCOUNT_OPERATION_SECRET || (values.LOCAL_AUTH_BYPASS === "true"
     ? "local-operation-fingerprint-secret-32-bytes"
     : ""),
+  registrationIntent: {
+    async resume({ userId, intent, request }) {
+      const directive = registrationResumeDirective(intent);
+      if (intent.kind !== "bookshelf" || !intent.targetId || !directive) return directive;
+      const sourceKey = await hashToken(`bookshelf:${request.headers.get("cf-connecting-ip") || "unknown"}`);
+      const operationId = await registrationBookshelfOperationId(userId, intent.targetId);
+      try {
+        await bookshelfLifecycle.execute({ kind: "account", id: userId }, {
+          action: "add", novelId: intent.targetId, operationId, sourceKey,
+        });
+        return { ...directive, outcome: "succeeded" };
+      } catch (error) {
+        if (error instanceof BookshelfError && error.status === 404) return { ...directive, outcome: "unavailable" };
+        try {
+          const result = await bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "result", operationId });
+          if ("status" in result && result.status === "succeeded") return { ...directive, outcome: "succeeded" };
+          if ("status" in result && result.status === "failed") return { ...directive, outcome: "unavailable" };
+        } catch {}
+        return { ...directive, outcome: "failed" };
+      }
+    },
+  },
+  privateData: {
+    async export(userId) {
+      const result = await bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "export" });
+      return { bookshelf: "entries" in result ? result.entries : [] };
+    },
+    async purge(userId) {
+      await bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "purge" });
+    },
+    async cleanupOrphans() {
+      await bookshelfLifecycle.execute({ kind: "system" }, { action: "cleanup" });
+    },
+  },
 });

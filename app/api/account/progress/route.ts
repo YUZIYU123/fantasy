@@ -8,7 +8,11 @@ export async function GET(request: Request) {
     const identity = await sessionAuthorization.require(request);
     const chapterId = new URL(request.url).searchParams.get("chapterId");
     const progress = await readingSessionProgress.list(identity.id, chapterId);
-    return Response.json({ progress: chapterId ? progress[0] || null : progress });
+    if (chapterId) {
+      const facts = await readingSessionProgress.readFacts(identity.id, chapterId);
+      return Response.json({ progress: progress[0] || null, completion: facts.completion });
+    }
+    return Response.json({ progress });
   } catch (error) {
     return authErrorResponse(error);
   }

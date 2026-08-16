@@ -5,6 +5,7 @@ export type RegistrationIntent = {
 
 export type RegistrationResumeDirective = RegistrationIntent & {
   mode: "automatic" | "confirm" | "welcome";
+  outcome?: "succeeded" | "unavailable" | "failed";
 };
 
 const safeTarget = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -22,5 +23,6 @@ export function registrationResumeDirective(value: unknown): RegistrationResumeD
   const intent = normalizeRegistrationIntent(value);
   if (!intent) return null;
   if (intent.kind === "cross-device") return { ...intent, mode: "welcome" };
+  if (intent.kind === "bookshelf") return { ...intent, mode: "automatic" };
   return { ...intent, mode: "confirm" };
 }

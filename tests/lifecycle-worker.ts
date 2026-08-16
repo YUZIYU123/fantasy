@@ -7,11 +7,35 @@ import { MockRegistrationTelemetry } from "../lib/registration-telemetry";
 import { AssetLifecycleError, assetLifecycle } from "../db/assets";
 import { creationLifecycle } from "../db/creation-lifecycle";
 import { readingSessionProgress } from "../db/reading-session-progress";
+import { bookshelfLifecycle } from "../db/bookshelf-lifecycle";
 import { sessionAuthorization } from "../lib/session-authorization";
 import { AuthError, hashToken } from "../lib/auth";
 import { createBlankNovel, createBlankStory } from "../lib/story";
+import { getD1Binding } from "../db";
 
 type TestEnv = { ASSET_BUCKET: R2Bucket };
+
+async function createBookshelfFixture() {
+  const author = { kind: "author" as const, id: crypto.randomUUID() };
+  const administrator = { kind: "administrator" as const };
+  const novelResult = await creationLifecycle.execute(author, { entity: "novel", action: "create" });
+  if (novelResult.kind !== "created") throw new Error("小说创建失败");
+  const novel = createBlankNovel();
+  novel.name = "可靠书架小说"; novel.summary = "验证回执与顺序。";
+  novel.coverUrl = "https://example.com/reliable-bookshelf.jpg"; novel.coverAlt = "可靠书架小说封面";
+  await creationLifecycle.execute(author, { entity: "novel", action: "submit", id: novelResult.id, novel });
+  await creationLifecycle.execute(administrator, { entity: "novel", action: "publish", id: novelResult.id, novel });
+  const chapterResult = await creationLifecycle.execute(author, { entity: "chapter", action: "create", meta: { novelId: novelResult.id } });
+  if (chapterResult.kind !== "created") throw new Error("章节创建失败");
+  const story = createBlankStory();
+  story.title = "可靠书架章节"; story.summary = "验证可靠写入。";
+  story.openingImageUrl = "https://example.com/reliable-opening.jpg"; story.openingImageAlt = "可靠书架章节开场图";
+  story.outroImageUrl = "https://example.com/reliable-outro.jpg"; story.outroImageAlt = "可靠书架章节收尾图";
+  story.nodes[0].body = "可靠写入内容。"; story.nodes[0].canEndChapter = true;
+  await creationLifecycle.execute(author, { entity: "chapter", action: "submit", id: chapterResult.id, story });
+  await creationLifecycle.execute(administrator, { entity: "chapter", action: "publish", id: chapterResult.id, story });
+  return { novelId: novelResult.id, chapterId: chapterResult.id, story, author, administrator };
+}
 
 const lifecycleWorker = {
   async fetch(request: Request, workerEnv: TestEnv) {
@@ -20,6 +44,267 @@ const lifecycleWorker = {
 
     if (pathname === "/reading-progress" && request.method === "GET") {
       return Response.json({ progress: await readingSessionProgress.list(crypto.randomUUID()) });
+    }
+
+    if (pathname === "/reading-progress-proofs" && request.method === "POST") {
+      const actorId = crypto.randomUUID();
+      const author = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const novelResult = await creationLifecycle.execute(author, { entity: "novel", action: "create" });
+      if (novelResult.kind !== "created") throw new Error("小说创建失败");
+      const novel = createBlankNovel();
+      novel.name = "阅读证明小说";
+      novel.summary = "验证重读不会覆盖章节完成证明。";
+      novel.coverUrl = "https://example.com/proof.jpg";
+      novel.coverAlt = "阅读证明小说封面";
+      await creationLifecycle.execute(author, { entity: "novel", action: "submit", id: novelResult.id, novel });
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "publish", id: novelResult.id, novel });
+      const chapterResult = await creationLifecycle.execute(author, {
+        entity: "chapter", action: "create", meta: { novelId: novelResult.id },
+      });
+      if (chapterResult.kind !== "created") throw new Error("章节创建失败");
+      const story = createBlankStory();
+      story.title = "完成证明章节";
+      story.summary = "完成后重读。";
+      story.openingImageUrl = "https://example.com/proof-opening.jpg";
+      story.openingImageAlt = "完成证明章节开场图";
+      story.outroImageUrl = "https://example.com/proof-outro.jpg";
+      story.outroImageAlt = "完成证明章节收尾图";
+      story.nodes[0].body = "读完以后再次从头阅读。";
+      story.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(author, { entity: "chapter", action: "submit", id: chapterResult.id, story });
+      await creationLifecycle.execute(administrator, { entity: "chapter", action: "publish", id: chapterResult.id, story });
+      const firstCompletedAt = "2026-08-16T01:00:00.000Z";
+      await readingSessionProgress.save(actorId, {
+        chapterId: chapterResult.id, nodeId: story.startNodeId, pageIndex: 0,
+        updatedAt: firstCompletedAt, completed: true,
+      });
+      const afterCompletion = await readingSessionProgress.readFacts(actorId, chapterResult.id);
+      await readingSessionProgress.save(actorId, {
+        chapterId: chapterResult.id, nodeId: story.startNodeId, pageIndex: 0,
+        updatedAt: "2026-08-16T01:01:00.000Z", completed: false,
+      });
+      const whileRereading = await readingSessionProgress.readFacts(actorId, chapterResult.id);
+      const secondCompletedAt = "2026-08-16T01:02:00.000Z";
+      await readingSessionProgress.save(actorId, {
+        chapterId: chapterResult.id, nodeId: story.startNodeId, pageIndex: 0,
+        updatedAt: secondCompletedAt, completed: true,
+      });
+      const afterRecompletion = await readingSessionProgress.readFacts(actorId, chapterResult.id);
+      const orphanChapterId = crypto.randomUUID();
+      await getD1Binding().prepare(`INSERT INTO chapter_completion_records
+        (id, user_id, chapter_id, chapter_version, completed_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`)
+        .bind(`${actorId}:${orphanChapterId}`, actorId, orphanChapterId, secondCompletedAt, secondCompletedAt).run();
+      const orphanFacts = await readingSessionProgress.readFacts(actorId, orphanChapterId);
+      return Response.json({
+        afterCompletion: { resumable: Boolean(afterCompletion.resume), completed: Boolean(afterCompletion.completion) },
+        whileRereading: { resumable: Boolean(whileRereading.resume), completed: Boolean(whileRereading.completion) },
+        afterRecompletion: {
+          resumable: Boolean(afterRecompletion.resume), completed: Boolean(afterRecompletion.completion),
+          proofRefreshed: afterRecompletion.completion?.completedAt === secondCompletedAt,
+        },
+        orphanHidden: !orphanFacts.completion && !orphanFacts.resume,
+      });
+    }
+
+    if (pathname === "/bookshelf-membership" && request.method === "POST") {
+      const owner = { kind: "account" as const, id: crypto.randomUUID() };
+      const stranger = { kind: "account" as const, id: crypto.randomUUID() };
+      const author = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const novelResult = await creationLifecycle.execute(author, { entity: "novel", action: "create" });
+      if (novelResult.kind !== "created") throw new Error("小说创建失败");
+      const novel = createBlankNovel();
+      novel.name = "书架小说";
+      novel.summary = "验证私人书架。";
+      novel.coverUrl = "https://example.com/bookshelf.jpg";
+      novel.coverAlt = "书架小说封面";
+      await creationLifecycle.execute(author, { entity: "novel", action: "submit", id: novelResult.id, novel });
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "publish", id: novelResult.id, novel });
+      const chapterResult = await creationLifecycle.execute(author, { entity: "chapter", action: "create", meta: { novelId: novelResult.id } });
+      if (chapterResult.kind !== "created") throw new Error("章节创建失败");
+      const story = createBlankStory();
+      story.title = "书架章节";
+      story.summary = "可加入的公开章节。";
+      story.openingImageUrl = "https://example.com/bookshelf-opening.jpg";
+      story.openingImageAlt = "书架章节开场图";
+      story.outroImageUrl = "https://example.com/bookshelf-outro.jpg";
+      story.outroImageAlt = "书架章节收尾图";
+      story.nodes[0].body = "公开内容。";
+      story.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(author, { entity: "chapter", action: "submit", id: chapterResult.id, story });
+      await creationLifecycle.execute(administrator, { entity: "chapter", action: "publish", id: chapterResult.id, story });
+      const first = await bookshelfLifecycle.execute(owner, { action: "add", novelId: novelResult.id, operationId: crypto.randomUUID(), sourceKey: "membership-owner" });
+      const repeated = await bookshelfLifecycle.execute(owner, { action: "add", novelId: novelResult.id, operationId: crypto.randomUUID(), sourceKey: "membership-owner" });
+      const ownerList = await bookshelfLifecycle.execute(owner, { action: "list" });
+      const strangerList = await bookshelfLifecycle.execute(stranger, { action: "list" });
+      let unavailableStatus = 0;
+      try {
+        await bookshelfLifecycle.execute(owner, { action: "add", novelId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceKey: "membership-owner" });
+      } catch (error) {
+        if (!(error instanceof Error) || !("status" in error)) throw error;
+        unavailableStatus = Number(error.status);
+      }
+      return Response.json({
+        first: first.kind, repeated: repeated.kind,
+        ownerCount: "items" in ownerList ? ownerList.items.length : -1,
+        strangerCount: "items" in strangerList ? strangerList.items.length : -1,
+        unavailableStatus,
+      });
+    }
+
+    if (pathname === "/bookshelf-removal" && request.method === "POST") {
+      const actor = { kind: "account" as const, id: crypto.randomUUID() };
+      const author = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const novelResult = await creationLifecycle.execute(author, { entity: "novel", action: "create" });
+      if (novelResult.kind !== "created") throw new Error("小说创建失败");
+      const novel = createBlankNovel();
+      novel.name = "移出小说"; novel.summary = "验证移出。";
+      novel.coverUrl = "https://example.com/remove.jpg"; novel.coverAlt = "移出小说封面";
+      await creationLifecycle.execute(author, { entity: "novel", action: "submit", id: novelResult.id, novel });
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "publish", id: novelResult.id, novel });
+      const chapterResult = await creationLifecycle.execute(author, { entity: "chapter", action: "create", meta: { novelId: novelResult.id } });
+      if (chapterResult.kind !== "created") throw new Error("章节创建失败");
+      const story = createBlankStory();
+      story.title = "移出章节"; story.summary = "保留进度。";
+      story.openingImageUrl = "https://example.com/remove-opening.jpg"; story.openingImageAlt = "移出章节开场图";
+      story.outroImageUrl = "https://example.com/remove-outro.jpg"; story.outroImageAlt = "移出章节收尾图";
+      story.nodes[0].body = "进度内容。"; story.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(author, { entity: "chapter", action: "submit", id: chapterResult.id, story });
+      await creationLifecycle.execute(administrator, { entity: "chapter", action: "publish", id: chapterResult.id, story });
+      await bookshelfLifecycle.execute(actor, { action: "add", novelId: novelResult.id, operationId: crypto.randomUUID(), sourceKey: "removal-actor" });
+      await readingSessionProgress.save(actor.id, {
+        chapterId: chapterResult.id, nodeId: story.startNodeId, pageIndex: 0,
+        updatedAt: "2026-08-16T02:00:00.000Z", completed: false,
+      });
+      const first = await bookshelfLifecycle.execute(actor, { action: "remove", novelId: novelResult.id, operationId: crypto.randomUUID(), sourceKey: "removal-actor" });
+      const repeated = await bookshelfLifecycle.execute(actor, { action: "remove", novelId: novelResult.id, operationId: crypto.randomUUID(), sourceKey: "removal-actor" });
+      const list = await bookshelfLifecycle.execute(actor, { action: "list" });
+      const facts = await readingSessionProgress.readFacts(actor.id, chapterResult.id);
+      return Response.json({
+        first: first.kind, repeated: repeated.kind,
+        remaining: "items" in list ? list.items.length : -1,
+        resumePreserved: Boolean(facts.resume),
+      });
+    }
+
+    if (pathname === "/bookshelf-operation-order" && request.method === "POST") {
+      const actor = { kind: "account" as const, id: crypto.randomUUID() };
+      const fixture = await createBookshelfFixture();
+      const sourceKey = `source-${crypto.randomUUID()}`;
+      const addOperation = crypto.randomUUID();
+      const removeOperation = crypto.randomUUID();
+      await bookshelfLifecycle.execute(actor, {
+        action: "add", novelId: fixture.novelId, operationId: addOperation, sourceKey,
+      });
+      await bookshelfLifecycle.execute(actor, {
+        action: "remove", novelId: fixture.novelId, operationId: removeOperation, sourceKey,
+      });
+      const replay = await bookshelfLifecycle.execute(actor, {
+        action: "add", novelId: fixture.novelId, operationId: addOperation, sourceKey,
+      });
+      const result = await bookshelfLifecycle.execute(actor, { action: "result", operationId: addOperation });
+      const storedReceipt = await getD1Binding().prepare(`SELECT operation_id AS operationDigest
+        FROM bookshelf_operation_receipts WHERE user_id = ? AND action = 'add' AND novel_id = ? LIMIT 1`)
+        .bind(actor.id, fixture.novelId).first<{ operationDigest: string }>();
+      const membership = await bookshelfLifecycle.execute(actor, { action: "membership", novelId: fixture.novelId });
+      const unavailableOperation = crypto.randomUUID();
+      let unavailableStatus = 0;
+      try {
+        await bookshelfLifecycle.execute(actor, {
+          action: "add", novelId: crypto.randomUUID(), operationId: unavailableOperation, sourceKey,
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || !("status" in error)) throw error;
+        unavailableStatus = Number(error.status);
+      }
+      const unavailableResult = await bookshelfLifecycle.execute(actor, { action: "result", operationId: unavailableOperation });
+      let mismatchStatus = 0;
+      try {
+        await bookshelfLifecycle.execute(actor, {
+          action: "remove", novelId: fixture.novelId, operationId: addOperation, sourceKey,
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || !("status" in error)) throw error;
+        mismatchStatus = Number(error.status);
+      }
+      let rateLimited = 0;
+      for (let index = 0; index < 27; index += 1) {
+        await bookshelfLifecycle.execute(actor, {
+          action: "remove", novelId: fixture.novelId, operationId: crypto.randomUUID(), sourceKey,
+        });
+      }
+      try {
+        await bookshelfLifecycle.execute(actor, {
+          action: "add", novelId: fixture.novelId, operationId: crypto.randomUUID(), sourceKey,
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || !("status" in error)) throw error;
+        rateLimited = Number(error.status);
+      }
+      const concurrentActor = { kind: "account" as const, id: crypto.randomUUID() };
+      const concurrentResults = await Promise.all(Array.from({ length: 31 }, async () => {
+        try {
+          await bookshelfLifecycle.execute(concurrentActor, {
+            action: "remove", novelId: fixture.novelId, operationId: crypto.randomUUID(), sourceKey: `concurrent-${concurrentActor.id}`,
+          });
+          return 200;
+        } catch (error) {
+          if (!(error instanceof Error) || !("status" in error)) throw error;
+          return Number(error.status);
+        }
+      }));
+      const orphanUserId = crypto.randomUUID();
+      const orphanSnapshotId = crypto.randomUUID();
+      await getD1Binding().batch([
+        getD1Binding().prepare(`INSERT INTO bookshelf_list_snapshots (id, user_id, total, expires_at)
+          VALUES (?, ?, 1, '2099-01-01T00:00:00.000Z')`).bind(orphanSnapshotId, orphanUserId),
+        getD1Binding().prepare(`INSERT INTO bookshelf_list_snapshot_chunks
+          (id, snapshot_id, user_id, chunk_index, entry_ids_json) VALUES (?, ?, ?, 0, '[]')`)
+          .bind(`${orphanSnapshotId}:0`, orphanSnapshotId, orphanUserId),
+      ]);
+      await bookshelfLifecycle.execute({ kind: "system" }, { action: "cleanup" });
+      const orphanSnapshots = await getD1Binding().prepare(`SELECT
+        (SELECT COUNT(*) FROM bookshelf_list_snapshots WHERE user_id = ?) +
+        (SELECT COUNT(*) FROM bookshelf_list_snapshot_chunks WHERE user_id = ?) AS count`)
+        .bind(orphanUserId, orphanUserId).first<{ count: number }>();
+      return Response.json({
+        replayed: "replayed" in replay && replay.replayed === true,
+        receiptStatus: "status" in result ? result.status : null,
+        operationDigestLength: storedReceipt?.operationDigest.length ?? 0,
+        operationStoredRaw: storedReceipt?.operationDigest === addOperation,
+        unavailableStatus,
+        unavailableReceiptStatus: "status" in unavailableResult ? unavailableResult.status : null,
+        finalPresent: "present" in membership ? membership.present : null,
+        mismatchStatus, rateLimited,
+        concurrentAccepted: concurrentResults.filter((status) => status === 200).length,
+        concurrentLimited: concurrentResults.filter((status) => status === 429).length,
+        orphanSnapshotCount: orphanSnapshots?.count ?? -1,
+      });
+    }
+
+    if (pathname === "/bookshelf-update-frontier" && request.method === "POST") {
+      const actor = { kind: "account" as const, id: crypto.randomUUID() };
+      const fixture = await createBookshelfFixture();
+      await bookshelfLifecycle.execute(actor, { action: "add", novelId: fixture.novelId, operationId: crypto.randomUUID(), sourceKey: "frontier-actor" });
+      await readingSessionProgress.save(actor.id, {
+        chapterId: fixture.chapterId, nodeId: fixture.story.startNodeId, pageIndex: 0,
+        updatedAt: "2026-08-16T04:00:00.000Z", completed: true,
+      });
+      const nextChapter = await creationLifecycle.execute(fixture.author, {
+        entity: "chapter", action: "create", meta: { novelId: fixture.novelId },
+      });
+      if (nextChapter.kind !== "created") throw new Error("新章节创建失败");
+      const story = createBlankStory();
+      story.title = "后来发布的章节"; story.summary = "应显示有更新。";
+      story.openingImageUrl = "https://example.com/new-opening.jpg"; story.openingImageAlt = "后来发布章节开场图";
+      story.outroImageUrl = "https://example.com/new-outro.jpg"; story.outroImageAlt = "后来发布章节收尾图";
+      story.nodes[0].body = "新章节内容。"; story.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(fixture.author, { entity: "chapter", action: "submit", id: nextChapter.id, story });
+      await creationLifecycle.execute(fixture.administrator, { entity: "chapter", action: "publish", id: nextChapter.id, story });
+      const page = await bookshelfLifecycle.execute(actor, { action: "list" });
+      return Response.json({ status: "items" in page ? page.items[0]?.status : null });
     }
 
     if (pathname === "/creation" && request.method === "POST") {
@@ -529,6 +814,69 @@ const lifecycleWorker = {
         disabledActivation = error.status;
       }
       return Response.json({ inspection, pendingLogin, activation, identity, usedWithMatchingSession, repeated, disabledActivation });
+    }
+
+    if (pathname === "/account-bookshelf-intent" && request.method === "POST") {
+      const fixture = await createBookshelfFixture();
+      const mailer = new MockAuthMailer();
+      const lifecycle = createAccountLifecycle({
+        turnstile: new MockTurnstileVerifier(), mailer,
+        registrationIntent: {
+          async resume({ userId, intent }) {
+            if (intent.kind !== "bookshelf" || !intent.targetId) return { kind: "cross-device" as const, mode: "welcome" as const };
+            await bookshelfLifecycle.execute({ kind: "account", id: userId }, {
+              action: "add", novelId: intent.targetId,
+              operationId: crypto.randomUUID(), sourceKey: "activation-source",
+            });
+            return { ...intent, mode: "automatic" as const, outcome: "succeeded" as const };
+          },
+        },
+        privateData: {
+          async export(userId) {
+            const result = await bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "export" });
+            return { bookshelf: "entries" in result ? result.entries : [] };
+          },
+          async purge(userId) {
+            await bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "purge" });
+          },
+          async cleanupOrphans() {
+            await bookshelfLifecycle.execute({ kind: "system" }, { action: "cleanup" });
+          },
+        },
+      });
+      const lifecycleRequest = () => new Request(request.url, {
+        method: "POST", headers: { origin: new URL(request.url).origin, "cf-connecting-ip": "203.0.113.55" },
+      });
+      const email = `bookshelf-intent-${crypto.randomUUID()}@example.com`;
+      await lifecycle.execute({
+        action: "register", request: lifecycleRequest(), email, displayName: "书架旅伴",
+        password: "bookshelf-intent-password-123", turnstileToken: "intent-token",
+        ageConfirmed: true, termsAccepted: true, privacyAccepted: true,
+      });
+      const token = mailer.calls.at(-1)?.token;
+      if (!token) throw new Error("没有生成验证 token");
+      const activation = await lifecycle.execute({
+        action: "activate-account", request: lifecycleRequest(), token,
+        intent: { kind: "bookshelf", targetId: fixture.novelId },
+      });
+      const user = activation.body.user as { id: string };
+      const membership = await bookshelfLifecycle.execute({ kind: "account", id: user.id }, {
+        action: "membership", novelId: fixture.novelId,
+      });
+      const exported = await lifecycle.execute({ action: "export-account-data", actorId: user.id });
+      await lifecycle.execute({
+        action: "delete-account", request: lifecycleRequest(), actorId: user.id, confirmation: "永久删除我的账号",
+      });
+      const membershipAfterDeletion = await bookshelfLifecycle.execute({ kind: "account", id: user.id }, {
+        action: "membership", novelId: fixture.novelId,
+      });
+      return Response.json({
+        directive: activation.body.resumeDirective,
+        present: "present" in membership && membership.present,
+        exportCount: Array.isArray(exported.body.bookshelf) ? exported.body.bookshelf.length : -1,
+        presentAfterDeletion: "present" in membershipAfterDeletion && membershipAfterDeletion.present,
+        accountDeleted: !(await drizzleD1AccountStore.findById(user.id)),
+      });
     }
 
     if (pathname === "/account-resend" && request.method === "POST") {

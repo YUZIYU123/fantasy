@@ -39,6 +39,13 @@ export function ensureSchema() {
     d1.prepare("SELECT id FROM account_operation_receipts LIMIT 0"),
     d1.prepare("SELECT user_id FROM account_preferences LIMIT 0"),
     d1.prepare("SELECT id, terminal_event_ids_json FROM reading_progress LIMIT 0"),
+    d1.prepare("SELECT id, completed_at FROM chapter_completion_records LIMIT 0"),
+    d1.prepare("SELECT id, public_snapshot_json FROM bookshelf_entries LIMIT 0"),
+    d1.prepare("SELECT id, chapter_ids_json FROM novel_completion_frontiers LIMIT 0"),
+    d1.prepare("SELECT id, operation_id FROM bookshelf_operation_receipts LIMIT 0"),
+    d1.prepare("SELECT id, source_key FROM bookshelf_rate_limit_attempts LIMIT 0"),
+    d1.prepare("SELECT id, total FROM bookshelf_list_snapshots LIMIT 0"),
+    d1.prepare("SELECT id, chunk_index FROM bookshelf_list_snapshot_chunks LIMIT 0"),
     d1.prepare("SELECT id FROM auth_attempts LIMIT 0"),
   ]).catch((error: unknown) => {
     schemaReady = null;

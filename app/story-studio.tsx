@@ -13,6 +13,7 @@ import { Brand } from "./brand";
 import { FantasyTerminal } from "./fantasy-terminal";
 import { Reader } from "./reader";
 import { normalizeRegistrationIntent } from "../lib/registration-intent";
+import { executeBookshelfOperation } from "./bookshelf-operation-client";
 
 export { Reader } from "./reader";
 
@@ -48,6 +49,14 @@ export function StoryStudio() {
   useEffect(() => {
     if (busy || novels.length === 0) return;
     const params = new URLSearchParams(window.location.search);
+    const requestedNovelId = params.get("novel");
+    if (requestedNovelId && novels.some((item) => item.id === requestedNovelId)) {
+      params.delete("novel");
+      const query = params.toString();
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+      queueMicrotask(() => { setNovelId(requestedNovelId); setView("novel"); });
+      return;
+    }
     const intent = normalizeRegistrationIntent({ kind: params.get("resume"), targetId: params.get("target") });
     if (!intent?.targetId) return;
     const consumeIntent = () => {
@@ -106,9 +115,9 @@ export function StoryStudio() {
 
 function Library({ novels, onOpen }: { novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
   return <div className="library fantasy-library">
-    <header className="topbar"><Brand /><div className="topbar-actions"><a className="ghost link-button" href="/register">注册</a><a className="ghost link-button" href="/login">登录</a><a className="ghost link-button" href="/creator">创作中心 ↗</a></div></header>
-    <section className="hero"><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="portal-orbit" aria-hidden="true"><i /><i /><b>F</b></div><div className="scroll-cue"><span>探索书架</span><i /></div></section>
-    <section className="shelf"><div className="section-heading"><div><span>01</span><p>已发布世界</p></div><h2>幻界书架</h2></div>
+    <header className="topbar"><Brand /><div className="topbar-actions"><a className="ghost link-button" href="/bookshelf">我的书架</a><a className="ghost link-button" href="/register">注册</a><a className="ghost link-button" href="/login">登录</a><a className="ghost link-button" href="/creator">创作中心 ↗</a></div></header>
+    <section className="hero"><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="portal-orbit" aria-hidden="true"><i /><i /><b>F</b></div><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
+    <section className="shelf"><div className="section-heading"><div><span>01</span><p>已发布世界</p></div><h2>世界档案</h2></div>
       <div className="novel-shelf-grid">{novels.map((novel) => <article className="novel-card" key={novel.id}>
         <Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || "小说封面"} presentation={novel.published?.coverPresentation} />
         <div className="card-copy"><p>{novel.chapters.length} 个已发布章节</p><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><button onClick={() => onOpen(novel)}>进入小说 <span>→</span></button></div>
@@ -122,7 +131,7 @@ function Library({ novels, onOpen }: { novels: PublicNovel[]; onOpen: (novel: Pu
 function NovelHome({ novel, onBack, onRead }: { novel: PublicNovel; onBack: () => void; onRead: (chapter: PublicChapter) => void }) {
   const data = novel.published!;
   return <main className="novel-home">
-    <header className="topbar"><Brand /><button className="ghost" onClick={onBack}>← 返回书架</button></header>
+    <header className="topbar"><Brand /><div className="topbar-actions"><BookshelfControl novelId={novel.id} /><a className="ghost link-button" href="/bookshelf">我的书架</a><button className="ghost" onClick={onBack}>← 世界档案</button></div></header>
     <section className="novel-hero">
       <div className="novel-home-cover"><Artwork src={data.coverUrl} alt={data.coverAlt || data.name} presentation={data.coverPresentation} priority /></div>
       <div className="novel-home-copy"><p>FANTASY ARCHIVE / {String(novel.sortOrder).slice(-4)}</p><h1>{data.name}</h1><span>{data.summary}</span><small>{novel.chapters.length} CHAPTERS ONLINE</small></div>
@@ -131,6 +140,32 @@ function NovelHome({ novel, onBack, onRead }: { novel: PublicNovel; onBack: () =
       {novel.chapters.map((chapter, index) => <button className="directory-row" key={chapter.id} onClick={() => onRead(chapter)}><span>{String(index + 1).padStart(2, "0")}</span><div><b>{chapter.published?.title || chapter.title}</b><small>{chapter.published?.summary || chapter.summary}</small></div><i>→</i></button>)}
     </section>
   </main>;
+}
+
+function BookshelfControl({ novelId }: { novelId: string }) {
+  const [present, setPresent] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [operationId, setOperationId] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
+  useEffect(() => {
+    queueMicrotask(async () => {
+      const response = await fetch(`/api/account/bookshelf/membership?novelId=${encodeURIComponent(novelId)}`);
+      if (!response.ok) return;
+      const body = await response.json() as { present?: boolean };
+      setPresent(Boolean(body.present));
+    });
+  }, [novelId]);
+  return <div><button className="primary" disabled={busy || present === true} onClick={async () => {
+    setBusy(true); setMessage("正在加入…");
+    const result = await executeBookshelfOperation({ action: "add", novelId, operationId });
+    setOperationId(result.operationId);
+    if (result.status === "succeeded") { setPresent(true); setOperationId(null); setMessage("已加入我的书架"); }
+    else if (result.status === "auth_required") { setAuthRequired(true); setMessage("登录或注册后即可加入"); }
+    else if (result.status === "confirming") setMessage("结果确认中；可以使用同一操作安全重试");
+    else setMessage(result.message);
+    setBusy(false);
+  }}>{present ? "已在书架" : "加入书架"}</button>{authRequired && <><a className="ghost link-button" href={`/login?next=${encodeURIComponent(`/?resume=bookshelf&target=${novelId}`)}`}>登录</a><a className="ghost link-button" href={`/register?intent=bookshelf&target=${encodeURIComponent(novelId)}`}>注册</a></>}<span role="status">{message}</span></div>;
 }
 
 function Artwork({ src, alt, presentation = DEFAULT_COVER_PRESENTATION, priority = false }: {
