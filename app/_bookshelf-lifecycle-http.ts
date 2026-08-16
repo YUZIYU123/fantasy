@@ -1,12 +1,12 @@
 import { BookshelfError } from "../lib/bookshelf-lifecycle";
-import { SessionAuthorizationError } from "../lib/session-authorization-module";
+import { AuthError } from "../lib/auth";
 
 export function bookshelfLifecycleResponse(result: unknown, status = 200) {
   return Response.json(result, { status, headers: { "cache-control": "private, no-store" } });
 }
 
 export function bookshelfLifecycleErrorResponse(error: unknown) {
-  if (error instanceof BookshelfError || error instanceof SessionAuthorizationError) {
+  if (error instanceof BookshelfError || error instanceof AuthError) {
     const retryAfterSeconds = "retryAfterSeconds" in error ? error.retryAfterSeconds : undefined;
     return Response.json({ error: error.message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }, {
       status: error.status,

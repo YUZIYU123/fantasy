@@ -5,6 +5,8 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { BookshelfScreen } from "../app/bookshelf/screen";
 import { executeBookshelfOperation } from "../app/bookshelf-operation-client";
+import { bookshelfLifecycleErrorResponse } from "../app/_bookshelf-lifecycle-http";
+import { AuthError } from "../lib/auth";
 
 let dom: JSDOM;
 let root: Root;
@@ -36,6 +38,12 @@ function click(label: string) {
   assert.ok(button, `找不到按钮：${label}`);
   button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 }
+
+test("书架 HTTP adapter 将未登录 AuthError 保持为 401", async () => {
+  const response = bookshelfLifecycleErrorResponse(new AuthError("请先登录", 401));
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "请先登录" });
+});
 
 test("访客访问我的书架看到登录与注册入口而不是假空状态", async () => {
   globalThis.fetch = async () => Response.json({ error: "需要登录" }, { status: 401 });
