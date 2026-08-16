@@ -77,6 +77,7 @@ export interface AccountStore {
     updatedAt: string;
   }): Promise<void>;
   clearGuideMemory(userId: string, updatedAt: string): Promise<void>;
+  deleteAccount(userId: string): Promise<void>;
 }
 
 export const drizzleD1AccountStore: AccountStore = {
@@ -271,5 +272,16 @@ export const drizzleD1AccountStore: AccountStore = {
         target: accountPreferences.userId,
         set: { readingPreferencesJson: "[]", guideCompletedAt: null, updatedAt },
       });
+  },
+  async deleteAccount(userId) {
+    const d1 = getD1Binding();
+    await d1.batch([
+      d1.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM auth_tokens WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM registration_consents WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM account_preferences WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM account_operation_receipts WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM users WHERE id = ?").bind(userId),
+    ]);
   },
 };

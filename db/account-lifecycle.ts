@@ -41,6 +41,16 @@ export interface AuthMailer {
   send(request: Request, to: string, type: "verify_email" | "reset_password", token: string, attempt?: ExternalAttempt): Promise<{ developmentToken?: string }>;
 }
 
+export interface RegistrationIntentAdapter {
+  resume(input: { userId: string; intent: RegistrationIntent; request: Request }): Promise<ReturnType<typeof registrationResumeDirective>>;
+}
+
+export interface AccountPrivateDataAdapter {
+  export(userId: string): Promise<Record<string, unknown>>;
+  purge(userId: string): Promise<void>;
+  cleanupOrphans(): Promise<void>;
+}
+
 type ExternalAttempt = { signal: AbortSignal; idempotencyKey: string; allowedHostnames: string[] };
 
 export const productionTurnstileVerifier: TurnstileVerifier = { verify: validateTurnstile };
@@ -166,7 +176,9 @@ export type AccountCommand =
   | { action: "profile"; actorId: string; displayName: string }
   | { action: "logout"; request: Request }
   | { action: "list-users" }
-  | { action: "update-user"; id: string; role?: UserRole; status?: Extract<UserStatus, "active" | "disabled"> };
+  | { action: "update-user"; id: string; role?: UserRole; status?: Extract<UserStatus, "active" | "disabled"> }
+  | { action: "export-account-data"; actorId: string }
+  | { action: "delete-account"; request: Request; actorId: string; confirmation: string };
 
 export type AccountResult = {
   status?: number;
@@ -214,6 +226,8 @@ export function createAccountLifecycle({
   telemetry = workerRegistrationTelemetry,
   rateLimiter = d1AccountRateLimiter,
   operationFingerprintSecret = "test-operation-fingerprint-secret-32-bytes",
+  registrationIntent = { async resume(input) { return registrationResumeDirective(input.intent); } } satisfies RegistrationIntentAdapter,
+  privateData = { async export() { return {}; }, async purge() {}, async cleanupOrphans() {} } satisfies AccountPrivateDataAdapter,
 }: {
   config?: AccountRegistrationConfig;
   store?: AccountStore;
@@ -227,6 +241,8 @@ export function createAccountLifecycle({
   telemetry?: RegistrationTelemetry;
   rateLimiter?: AccountRateLimiter;
   operationFingerprintSecret?: string;
+  registrationIntent?: RegistrationIntentAdapter;
+  privateData?: AccountPrivateDataAdapter;
 } = {}) {
   async function createSession(userId: string, request: Request) {
     const token = randomToken();
@@ -341,7 +357,24 @@ export function createAccountLifecycle({
       const accountCleanup = await store.cleanupExpired(now.toISOString());
       const rateLimitBefore = new Date(now.getTime() - 2 * 86_400_000).toISOString().replace("T", " ").slice(0, 19);
       const removedRateLimitAttempts = await rateLimiter.cleanupExpired(rateLimitBefore);
+      await privateData.cleanupOrphans();
       return { body: { ...accountCleanup, removedRateLimitAttempts } };
+    }
+    if (command.action === "export-account-data") {
+      const user = await store.findById(command.actorId);
+      if (!user || user.status !== "active") throw new AuthError("账号不可用", 403);
+      return { body: { account: {
+        id: user.id, email: user.email, displayName: user.displayName, role: user.role,
+        status: user.status, createdAt: user.createdAt,
+      }, ...(await privateData.export(user.id)) } };
+    }
+    if (command.action === "delete-account") {
+      if (command.confirmation !== "永久删除我的账号") throw new AuthError("需要输入完整确认语");
+      const user = await store.findById(command.actorId);
+      if (!user || user.status !== "active") throw new AuthError("账号不可用", 403);
+      await privateData.purge(user.id);
+      await store.deleteAccount(user.id);
+      return { body: { ok: true, deleted: true } };
     }
     if (command.action === "get-guide-memory") {
       const preference = await store.findAccountPreferences(command.actorId);
@@ -627,6 +660,9 @@ export function createAccountLifecycle({
       await recordIfAllowed(command.analyticsAllowed, {
         flow: "activate", stage: "account_activation", outcome: "succeeded",
       });
+      const resumeDirective = command.intent
+        ? await registrationIntent.resume({ userId: user.id, intent: command.intent, request: command.request })
+        : null;
       await recordIfAllowed(command.analyticsAllowed, {
         flow: "activate", stage: "intent_resume", outcome: command.intent ? "succeeded" : "skipped",
       });
@@ -636,7 +672,7 @@ export function createAccountLifecycle({
           ok: true,
           state: "active",
           user: { id: user.id, displayName: user.displayName, role: user.role, status: user.status },
-          resumeDirective: registrationResumeDirective(command.intent),
+          resumeDirective,
         },
         cookie: `${AUTH_SESSION_COOKIE}=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}${secure ? "; Secure" : ""}`,
       };
