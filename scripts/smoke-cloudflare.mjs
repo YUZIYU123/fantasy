@@ -45,7 +45,7 @@ expectStatus(deniedWrite, [401, 403], "未授权核心写流程");
 if (mode === "closed") {
   const registrationConfig = await request("/api/auth/config");
   expectStatus(registrationConfig, [200], "注册关闭配置");
-  if ((await registrationConfig.json()).registrationEnabled !== false) throw new Error("staging 注册未保持关闭");
+  if ((await registrationConfig.json()).registrationEnabled !== false) throw new Error(`${target} 注册未保持关闭`);
 
   const registration = await request("/api/auth/register", {
     method: "POST",

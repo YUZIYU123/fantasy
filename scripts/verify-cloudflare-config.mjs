@@ -2,14 +2,27 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
-const secretNames = [
+const creatorSecretNames = [
   "CREATOR_PASSWORD_HASH",
   "CREATOR_SESSION_SECRET",
+];
+const registrationSecretNames = [
   "ACCOUNT_OPERATION_SECRET",
-  "ELEVENLABS_API_KEY",
   "TURNSTILE_SECRET_KEY",
   "RESEND_API_KEY",
 ];
+const secretNames = [
+  ...creatorSecretNames,
+  ...registrationSecretNames,
+  "ELEVENLABS_API_KEY",
+];
+
+export function requiredSecretsForEnvironment(vars = {}) {
+  return [
+    ...creatorSecretNames,
+    ...(vars.REGISTRATION_ENABLED === "true" ? registrationSecretNames : []),
+  ];
+}
 
 function fail(message) {
   throw new Error(`Cloudflare 配置无效：${message}`);
@@ -50,6 +63,8 @@ export async function verifyCloudflareConfig({ requireRemote, requireRegistratio
       }
       for (const secret of secretNames) {
         if (Object.hasOwn(value.vars || {}, secret)) fail(`${name} 把密钥 ${secret} 写进了 vars`);
+      }
+      for (const secret of requiredSecretsForEnvironment(value.vars)) {
         if (!value.secrets?.required?.includes(secret)) fail(`${name} 未声明 secret ${secret}`);
       }
       for (const key of Object.keys(value.vars || {})) {
