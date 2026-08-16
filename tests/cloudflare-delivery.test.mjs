@@ -38,6 +38,22 @@ test("Cloudflare local、staging 与 production 配置和资源彼此隔离", as
   assert.equal(environments.production.observability.traces.enabled, true);
 });
 
+test("关闭注册环境只要求共享创作者凭据", async () => {
+  const { requiredSecretsForEnvironment } = await import("../scripts/verify-cloudflare-config.mjs");
+
+  assert.deepEqual(requiredSecretsForEnvironment({ REGISTRATION_ENABLED: "false" }), [
+    "CREATOR_PASSWORD_HASH",
+    "CREATOR_SESSION_SECRET",
+  ]);
+  assert.deepEqual(requiredSecretsForEnvironment({ REGISTRATION_ENABLED: "true" }), [
+    "CREATOR_PASSWORD_HASH",
+    "CREATOR_SESSION_SECRET",
+    "ACCOUNT_OPERATION_SECRET",
+    "TURNSTILE_SECRET_KEY",
+    "RESEND_API_KEY",
+  ]);
+});
+
 test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
   const [config, ignored, example] = await Promise.all([
     json("wrangler.jsonc"),
@@ -59,8 +75,8 @@ test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
   for (const environment of [config.env.staging, config.env.production]) {
     for (const name of secretNames) {
       assert.equal(Object.hasOwn(environment.vars, name), false, `${name} 不得写入 vars`);
-      assert.ok(environment.secrets.required.includes(name), `${name} 必须声明为 secret`);
     }
+    assert.deepEqual(environment.secrets.required, ["CREATOR_PASSWORD_HASH", "CREATOR_SESSION_SECRET"]);
   }
 });
 
@@ -100,6 +116,7 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
   assert.match(smoke, /registrationEnabled !== false/);
   assert.match(smoke, /注册关闭拒绝/);
   assert.match(packageJson.scripts["test:smoke:staging:closed"], /smoke-cloudflare\.mjs staging closed/);
+  assert.match(packageJson.scripts["test:smoke:production:closed"], /smoke-cloudflare\.mjs production closed/);
   const stagingMigration = delivery.indexOf("pnpm db:migrate:staging");
   const mergeApprovedPr = delivery.indexOf("Merge the approved PR");
   assert.ok(stagingMigration >= 0 && stagingMigration < mergeApprovedPr, "staging 验收必须发生在合并 PR 之前");

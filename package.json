@@ -18,6 +18,7 @@
     "test:smoke:staging": "node scripts/smoke-cloudflare.mjs staging",
     "test:smoke:staging:closed": "node scripts/smoke-cloudflare.mjs staging closed",
     "test:smoke:production": "node scripts/smoke-cloudflare.mjs production",
+    "test:smoke:production:closed": "node scripts/smoke-cloudflare.mjs production closed",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
     "cf:types": "CLOUDFLARE_ENV=local wrangler types",
