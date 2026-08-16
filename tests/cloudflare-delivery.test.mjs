@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdtemp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
@@ -54,6 +57,42 @@ test("关闭注册环境只要求共享创作者凭据", async () => {
   ]);
 });
 
+test("production migration 前记录可恢复的 D1 bookmark 与 Worker version", async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "fantasy-recovery-test-"));
+  const binaryDirectory = join(temporaryRoot, "bin");
+  const recoveryDirectory = join(temporaryRoot, "recovery");
+  await mkdir(binaryDirectory);
+  const pnpmStub = join(binaryDirectory, "pnpm");
+  await writeFile(pnpmStub, `#!/bin/sh
+case "$*" in
+  *"d1 time-travel info"*) printf '%s\\n' '{"bookmark":"bookmark-before-release"}' ;;
+  *"deployments status"*) printf '%s\\n' '{"id":"deployment-before-release","versions":[{"version_id":"worker-version-before-release","percentage":100}]}' ;;
+  *) exit 64 ;;
+esac
+`);
+  await chmod(pnpmStub, 0o700);
+
+  const result = spawnSync(process.execPath, ["scripts/record-production-recovery.mjs"], {
+    cwd: new URL("../", import.meta.url),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binaryDirectory}:${process.env.PATH}`,
+      FANTASY_RECOVERY_DIR: recoveryDirectory,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const files = await readdir(recoveryDirectory);
+  assert.equal(files.length, 1);
+  const recoveryFile = join(recoveryDirectory, files[0]);
+  const record = JSON.parse(await readFile(recoveryFile, "utf8"));
+  assert.equal(record.d1.bookmark, "bookmark-before-release");
+  assert.equal(record.worker.versions[0].versionId, "worker-version-before-release");
+  assert.equal((await stat(recoveryDirectory)).mode & 0o777, 0o700);
+  assert.equal((await stat(recoveryFile)).mode & 0o777, 0o600);
+});
+
 test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
   const [config, ignored, example] = await Promise.all([
     json("wrangler.jsonc"),
@@ -76,7 +115,8 @@ test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
     for (const name of secretNames) {
       assert.equal(Object.hasOwn(environment.vars, name), false, `${name} 不得写入 vars`);
     }
-    assert.deepEqual(environment.secrets.required, ["CREATOR_PASSWORD_HASH", "CREATOR_SESSION_SECRET"]);
+    const { requiredSecretsForEnvironment } = await import("../scripts/verify-cloudflare-config.mjs");
+    assert.deepEqual(environment.secrets.required, requiredSecretsForEnvironment(environment.vars));
   }
 });
 
@@ -96,7 +136,9 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
   assert.match(packageJson.scripts["db:migrate:staging"], /--env staging/);
   assert.match(packageJson.scripts["db:migrate:production"], /--env production/);
   assert.match(packageJson.scripts["db:migrate:staging"], /release:source:staging/);
-  assert.match(packageJson.scripts["db:migrate:production"], /release:source:production/);
+  assert.match(packageJson.scripts["release:recovery:production"], /release:source:production/);
+  assert.match(packageJson.scripts["release:recovery:production"], /record-production-recovery\.mjs/);
+  assert.match(packageJson.scripts["db:migrate:production"], /release:recovery:production/);
   assert.match(packageJson.scripts["deploy:staging"], /--env staging/);
   assert.match(packageJson.scripts["deploy:production"], /--env production/);
   assert.match(packageJson.scripts["deploy:staging"], /db:migrate:staging/);
@@ -114,6 +156,7 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
   assert.match(smoke, /恢复核心写流程前态/);
   assert.match(smoke, /mode === "closed"/);
   assert.match(smoke, /registrationEnabled !== false/);
+  assert.match(smoke, /\$\{target\} 注册未保持关闭/);
   assert.match(smoke, /注册关闭拒绝/);
   assert.match(packageJson.scripts["test:smoke:staging:closed"], /smoke-cloudflare\.mjs staging closed/);
   assert.match(packageJson.scripts["test:smoke:production:closed"], /smoke-cloudflare\.mjs production closed/);

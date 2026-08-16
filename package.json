@@ -32,10 +32,11 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply mist-page-fiction-local-db --local --env local",
     "db:migrate:staging": "pnpm run release:source:staging && pnpm run cf:ready:staging && wrangler d1 migrations apply mist-page-fiction-staging-db --remote --env staging",
-    "db:migrate:production": "pnpm run release:source:production && pnpm run cf:ready:production && wrangler d1 migrations apply mist-page-fiction-db --remote --env production",
+    "db:migrate:production": "pnpm run release:recovery:production && pnpm run cf:ready:production && wrangler d1 migrations apply mist-page-fiction-db --remote --env production",
     "release:check": "pnpm typecheck && pnpm lint && pnpm db:migrate:local && pnpm test && pnpm build:production && pnpm cf:config:check",
     "release:source:staging": "node scripts/verify-release-source.mjs staging",
     "release:source:production": "node scripts/verify-release-source.mjs production",
+    "release:recovery:production": "pnpm run release:source:production && node scripts/record-production-recovery.mjs",
     "deploy": "pnpm run deploy:staging",
     "deploy:staging": "pnpm run db:migrate:staging && pnpm run cf:secrets:staging && pnpm run build:staging && wrangler deploy --env staging",
     "deploy:production": "pnpm run db:migrate:production && pnpm run cf:secrets:production && pnpm run build:production && wrangler deploy --env production"
