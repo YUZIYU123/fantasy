@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 function run(command, args) {
   const result = spawnSync(command, args, { encoding: "utf8" });
@@ -39,11 +40,11 @@ async function main() {
   const gitCommit = run("git", ["rev-parse", "HEAD"]);
   const recordedAt = new Date().toISOString();
   const recoveryDirectory = process.env.FANTASY_RECOVERY_DIR
-    || fileURLToPath(new URL("../.wrangler/recovery/", import.meta.url));
+    || join(homedir(), ".backups", "fantasy", "recovery");
   await mkdir(recoveryDirectory, { recursive: true, mode: 0o700 });
   await chmod(recoveryDirectory, 0o700);
   const filename = `production-${recordedAt.replaceAll(":", "-")}-${gitCommit.slice(0, 12)}.json`;
-  const path = `${recoveryDirectory}/${filename}`;
+  const path = join(recoveryDirectory, filename);
   const record = {
     recordedAt,
     gitCommit,
