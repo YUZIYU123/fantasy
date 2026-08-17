@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Reader } from "../app/story-studio";
+import { Reader, StoryStudio } from "../app/story-studio";
 import { createTerminalTask, normalizeStory, STORY_PAGE_BREAK, type StoryDocument } from "../lib/story";
 import { storyFixture } from "./story-fixture.mjs";
 
@@ -133,6 +133,69 @@ test("正式阅读选择较新的云端进度", async () => {
   await act(async () => root.render(<Reader story={story} chapterId="progress-chapter" chapterVersion={7} onBack={() => {}} />));
   await settle();
   assert.match(container.textContent || "", /分支乙正文/);
+});
+
+test("正式阅读等待云端进度时显示可读的进入状态", async () => {
+  const story = readerStory();
+  globalThis.fetch = async (input) => {
+    if (String(input).startsWith("/api/account/progress")) return new Promise<Response>(() => {});
+    return Response.json({ ok: true });
+  };
+
+  await act(async () => root.render(<Reader story={story} chapterId="loading-chapter" chapterVersion={7} onBack={() => {}} />));
+
+  assert.match(container.textContent || "", /正在进入章节/);
+  assert.equal(container.querySelector('[role="status"]')?.getAttribute("aria-live"), "polite");
+  assert.equal(container.querySelector<HTMLButtonElement>('button[aria-label="返回章节目录"]')?.textContent, "←");
+});
+
+test("世界档案为读者提供键盘可展开且入口完整的统一导航", async () => {
+  globalThis.fetch = async () => Response.json({ novels: [] });
+  await act(async () => root.render(<StoryStudio />));
+  await settle();
+
+  const disclosure = container.querySelector<HTMLDetailsElement>("details.reader-navigation");
+  assert.ok(disclosure);
+  const summary = disclosure.querySelector("summary");
+  assert.match(summary?.textContent || "", /导航/);
+  const destinations = [...disclosure.querySelectorAll<HTMLAnchorElement>("a")].map((link) => link.getAttribute("href"));
+  assert.deepEqual(destinations, ["/bookshelf", "/register", "/login", "/creator"]);
+  summary?.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  assert.equal(disclosure.open, true);
+});
+
+test("世界档案读取失败时显示错误并允许重试", async () => {
+  let attempts = 0;
+  globalThis.fetch = async (input) => {
+    if (String(input) !== "/api/novels") return Response.json({});
+    attempts += 1;
+    if (attempts === 1) return Response.json({ error: "temporary" }, { status: 503 });
+    return Response.json({ novels: [] });
+  };
+  await act(async () => root.render(<StoryStudio />));
+  await settle();
+
+  assert.match(container.textContent || "", /世界档案暂时没有加载出来/);
+  assert.doesNotMatch(container.textContent || "", /新的世界正在构建/);
+  const retry = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("重试"));
+  assert.ok(retry);
+  await act(async () => retry.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await settle();
+  assert.equal(attempts, 2);
+  assert.match(container.textContent || "", /新的世界正在构建/);
+});
+
+test("云端进度不可用时正式阅读降级到本机起点", async () => {
+  const story = readerStory();
+  globalThis.fetch = async (input) => String(input).startsWith("/api/account/progress")
+    ? Response.json({ error: "temporary" }, { status: 503 })
+    : Response.json({ ok: true });
+
+  await act(async () => root.render(<Reader story={story} chapterId="offline-progress" chapterVersion={7} onBack={() => {}} />));
+  await settle();
+
+  assert.match(container.textContent || "", /起点正文/);
+  assert.doesNotMatch(container.textContent || "", /正在进入章节/);
 });
 
 test("完成记录和章节发布版本变化分别让会话从开头重启", async () => {

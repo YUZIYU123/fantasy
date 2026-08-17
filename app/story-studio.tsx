@@ -20,6 +20,12 @@ export { Reader } from "./reader";
 type PublicChapter = ChapterRecord;
 type PublicNovel = NovelRecord & { chapters: PublicChapter[] };
 type View = "library" | "novel" | "cover" | "reader" | "outro";
+const READER_NAVIGATION_ITEMS = [
+  { href: "/bookshelf", label: "我的书架" },
+  { href: "/register", label: "注册" },
+  { href: "/login", label: "登录" },
+  { href: "/creator", label: "创作中心 ↗" },
+] as const;
 
 export function StoryStudio() {
   const [view, setView] = useState<View>("library");
@@ -27,6 +33,7 @@ export function StoryStudio() {
   const [novelId, setNovelId] = useState("");
   const [chapterId, setChapterId] = useState("");
   const [busy, setBusy] = useState(true);
+  const [libraryError, setLibraryError] = useState("");
   const novel = novels.find((item) => item.id === novelId) ?? null;
   const chapterIndex = novel?.chapters.findIndex((item) => item.id === chapterId) ?? -1;
   const chapter = chapterIndex >= 0 ? novel?.chapters[chapterIndex] ?? null : null;
@@ -40,12 +47,19 @@ export function StoryStudio() {
 
   const load = useCallback(async () => {
     setBusy(true);
-    const response = await fetch("/api/novels");
-    const data = await response.json() as { novels?: PublicNovel[] };
-    setNovels(data.novels || []);
-    setBusy(false);
+    setLibraryError("");
+    try {
+      const response = await fetch("/api/novels");
+      if (!response.ok) throw new Error("小说读取失败");
+      const data = await response.json() as { novels?: PublicNovel[] };
+      setNovels(data.novels || []);
+    } catch {
+      setLibraryError("世界档案暂时没有加载出来");
+    } finally {
+      setBusy(false);
+    }
   }, []);
-  useEffect(() => { queueMicrotask(() => load().catch(() => setBusy(false))); }, [load]);
+  useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => {
     if (busy || novels.length === 0) return;
     const params = new URLSearchParams(window.location.search);
@@ -107,25 +121,37 @@ export function StoryStudio() {
       setView("cover");
     }} />{guide}</>;
   }
-  return <><main className="app-shell">{busy && <div className="loading-bar" aria-label="加载中" />}<Library novels={novels} onOpen={(selected) => {
+  return <><main className="app-shell">{busy && <div className="loading-bar" aria-label="加载中" />}<Library novels={novels} loadError={libraryError} onRetry={() => void load()} onOpen={(selected) => {
     setNovelId(selected.id);
     setView("novel");
   }} /></main>{guide}</>;
 }
 
-function Library({ novels, onOpen }: { novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
+function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]; loadError: string; onRetry: () => void; onOpen: (novel: PublicNovel) => void }) {
   return <div className="library fantasy-library">
-    <header className="topbar"><Brand /><div className="topbar-actions"><a className="ghost link-button" href="/bookshelf">我的书架</a><a className="ghost link-button" href="/register">注册</a><a className="ghost link-button" href="/login">登录</a><a className="ghost link-button" href="/creator">创作中心 ↗</a></div></header>
+    <header className="topbar"><Brand /><ReaderNavigation /></header>
     <section className="hero"><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="portal-orbit" aria-hidden="true"><i /><i /><b>F</b></div><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
     <section className="shelf"><div className="section-heading"><div><span>01</span><p>已发布世界</p></div><h2>世界档案</h2></div>
       <div className="novel-shelf-grid">{novels.map((novel) => <article className="novel-card" key={novel.id}>
         <Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || "小说封面"} presentation={novel.published?.coverPresentation} />
         <div className="card-copy"><p>{novel.chapters.length} 个已发布章节</p><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><button onClick={() => onOpen(novel)}>进入小说 <span>→</span></button></div>
       </article>)}</div>
-      {novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与章节发布后，会在这里出现。</p></div>}
+      {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与章节发布后，会在这里出现。</p></div>}
     </section>
     <footer><Brand /><p>你的选择，构成世界。</p><a className="text-button" href="/creator">进入创作中心</a></footer>
   </div>;
+}
+
+function ReaderNavigation() {
+  return <details className="reader-navigation">
+    <summary onKeyDown={(event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      const details = event.currentTarget.parentElement as HTMLDetailsElement;
+      details.open = !details.open;
+    }}>导航</summary>
+    <nav aria-label="读者导航">{READER_NAVIGATION_ITEMS.map((item) => <a href={item.href} key={item.href}>{item.label}</a>)}</nav>
+  </details>;
 }
 
 function NovelHome({ novel, onBack, onRead }: { novel: PublicNovel; onBack: () => void; onRead: (chapter: PublicChapter) => void }) {
@@ -156,7 +182,7 @@ function BookshelfControl({ novelId }: { novelId: string }) {
       setPresent(Boolean(body.present));
     });
   }, [novelId]);
-  return <div><button className="primary" disabled={busy || present === true} onClick={async () => {
+  return <div className="bookshelf-control"><button className="primary" disabled={busy || present === true} onClick={async () => {
     setBusy(true); setMessage("正在加入…");
     const result = await executeBookshelfOperation({ action: "add", novelId, operationId });
     setOperationId(result.operationId);
