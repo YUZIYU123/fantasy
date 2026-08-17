@@ -128,16 +128,20 @@ export function StoryStudio() {
 
 function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]; loadError: string; onRetry: () => void; onOpen: (novel: PublicNovel) => void }) {
   const [primaryNovel, ...archiveNovels] = novels;
+  const latestChapterTitle = (novel: PublicNovel) => {
+    const latestChapter = novel.chapters.at(-1);
+    return latestChapter?.published?.title || latestChapter?.title;
+  };
   return <div className="library fantasy-library">
     <section className="hero"><FantasyMark className="hero-system-mark" /><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
     <section className="shelf archive-catalog"><div className="section-heading"><div><span>01</span><p>已发布世界</p></div><h2>世界档案</h2></div>
       {primaryNovel && <article className="archive-feature">
         <Artwork src={primaryNovel.published?.coverUrl || ""} alt={primaryNovel.published?.coverAlt || primaryNovel.published?.name || "小说封面"} presentation={primaryNovel.published?.coverPresentation} />
-        <div className="card-copy"><p>主档案 · {primaryNovel.chapters.length} 个已发布章节</p><h3>{primaryNovel.published?.name}</h3><p>{primaryNovel.published?.summary}</p><small>最新章节 · {primaryNovel.chapters.at(-1)?.published?.title || primaryNovel.chapters.at(-1)?.title}</small><button onClick={() => onOpen(primaryNovel)}>进入小说 <span>→</span></button></div>
+        <div className="card-copy"><p>主档案 · {primaryNovel.chapters.length} 个已发布章节</p><h3>{primaryNovel.published?.name}</h3><p>{primaryNovel.published?.summary}</p><small>最新章节 · {latestChapterTitle(primaryNovel)}</small><button onClick={() => onOpen(primaryNovel)}>进入小说 <span>→</span></button></div>
       </article>}
       {archiveNovels.length > 0 && <section className="archive-list" aria-labelledby="archive-list-title"><div className="archive-list-heading"><h2 id="archive-list-title">全部世界档案</h2><span>{novels.length} 部已接入</span></div>{archiveNovels.map((novel) => <article key={novel.id}>
         <div className="archive-list-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || "小说封面"} presentation={novel.published?.coverPresentation} /></div>
-        <button onClick={() => onOpen(novel)}><span><small>{novel.chapters.length} 个章节 · 最新</small><h3>{novel.published?.name}</h3><p>{novel.chapters.at(-1)?.published?.title || novel.chapters.at(-1)?.title}</p></span><i>→</i></button>
+        <button onClick={() => onOpen(novel)}><span><small>{novel.chapters.length} 个章节 · 最新</small><h3>{novel.published?.name}</h3><p>{latestChapterTitle(novel)}</p></span><i>→</i></button>
       </article>)}</section>}
       {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与章节发布后，会在这里出现。</p></div>}
     </section>

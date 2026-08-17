@@ -15,7 +15,7 @@ export type ReaderDestination = "world" | "bookshelf" | "terminal" | "account";
 const destinations = [
   { id: "world", href: "/", label: "世界", icon: PlanetIcon },
   { id: "bookshelf", href: "/bookshelf", label: "书架", icon: BooksIcon },
-  { id: "terminal", href: "/?terminal=open", label: "终端", icon: TerminalWindowIcon },
+  { id: "terminal", label: "终端", icon: TerminalWindowIcon },
   { id: "account", href: "/account", label: "我的", icon: UserCircleIcon },
 ] as const;
 
