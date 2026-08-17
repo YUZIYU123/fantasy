@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { Brand } from "./brand";
+import { ReaderShell } from "./reader-shell";
 import { browserRegistrationDraftStore } from "../lib/registration-draft";
 import { normalizeRegistrationIntent, type RegistrationIntent, type RegistrationResumeDirective } from "../lib/registration-intent";
 import { browserRegistrationAnalyticsPreference, type RegistrationTelemetryEvent } from "../lib/registration-telemetry";
@@ -515,5 +515,5 @@ export function AccountPage() {
 }
 
 function AuthShell({ title, children }: { title: string; children: React.ReactNode }) {
-  return <main className="auth-shell"><Brand href="/" /><section><p>FANTASY ACCOUNT</p><h1>{title}</h1>{children}</section></main>;
+  return <ReaderShell active="account" contextLabel="身份档案"><main className="auth-shell"><section><p>FANTASY ACCOUNT</p><h1>{title}</h1>{children}</section></main></ReaderShell>;
 }

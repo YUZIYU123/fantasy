@@ -14,7 +14,7 @@ export function FantasyMark({ className = "" }: { className?: string }) {
   </svg>;
 }
 
-export function Brand({ href }: { href?: string }) {
-  const body = <><FantasyMark className="brand-logo" /><span className="brand-word"><b>幻界</b><small>FANTASY</small></span></>;
+export function Brand({ href, caption = "FANTASY" }: { href?: string; caption?: string }) {
+  const body = <><FantasyMark className="brand-logo" /><span className="brand-word"><b>幻界</b><small>{caption}</small></span></>;
   return href ? <Link className="brand" href={href}>{body}</Link> : <div className="brand">{body}</div>;
 }

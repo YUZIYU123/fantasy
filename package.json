@@ -42,6 +42,7 @@
     "deploy:production": "pnpm run db:migrate:production && pnpm run cf:secrets:production && pnpm run build:production && wrangler deploy --env production"
   },
   "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
     "@xyflow/react": "^12.11.2",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
