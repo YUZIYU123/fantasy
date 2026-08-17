@@ -139,7 +139,7 @@ function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]
   };
   return <div className="library fantasy-library">
     <section className="hero"><FantasyMark className="hero-system-mark" /><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
-    <section className="shelf archive-catalog"><div className="section-heading"><div><span>01</span><p>已发布世界</p></div><h2>世界档案</h2></div>
+    <section className="shelf archive-catalog"><div className="section-heading"><div><span>/</span><p>当前更新</p></div></div>
       {primaryNovel && <article className="archive-feature">
         <Artwork src={primaryNovel.published?.coverUrl || ""} alt={primaryNovel.published?.coverAlt || primaryNovel.published?.name || "小说封面"} presentation={primaryNovel.published?.coverPresentation} />
         <div className="card-copy"><p>主档案 · {primaryNovel.chapters.length} 个已发布章节</p><h3>{primaryNovel.published?.name}</h3><p>{primaryNovel.published?.summary}</p><small>最新章节 · {latestChapterTitle(primaryNovel)}</small><button onClick={() => onOpen(primaryNovel)}>进入小说 <span>→</span></button></div>
