@@ -28,6 +28,11 @@ export function StoryStudio() {
   const [chapterId, setChapterId] = useState("");
   const [busy, setBusy] = useState(true);
   const [libraryError, setLibraryError] = useState("");
+
+  useEffect(() => {
+    if (window.scrollY > 0) window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [chapterId, novelId, view]);
+
   const novel = novels.find((item) => item.id === novelId) ?? null;
   const chapterIndex = novel?.chapters.findIndex((item) => item.id === chapterId) ?? -1;
   const chapter = chapterIndex >= 0 ? novel?.chapters[chapterIndex] ?? null : null;

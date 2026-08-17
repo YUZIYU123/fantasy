@@ -227,6 +227,24 @@ test("只有一部小说时只显示主档案而不制造重复列表", async ()
   assert.equal([...container.querySelectorAll("h3")].filter((heading) => heading.textContent === "唯一档案").length, 1);
 });
 
+test("从世界档案进入小说时把新页面恢复到顶部", async () => {
+  globalThis.fetch = async (input) => String(input) === "/api/novels"
+    ? Response.json({ novels: [publicNovel("only", "唯一档案", 1, ["入口"])] })
+    : Response.json({ user: null });
+  await act(async () => root.render(<StoryStudio />));
+  await settle();
+
+  let requestedTop: number | undefined;
+  Object.defineProperty(window, "scrollY", { configurable: true, value: 500 });
+  window.scrollTo = ((options: ScrollToOptions) => { requestedTop = options.top; }) as typeof window.scrollTo;
+  const enter = [...container.querySelectorAll<HTMLButtonElement>("button")]
+    .find((button) => button.textContent?.includes("进入小说"));
+  assert.ok(enter);
+
+  await act(async () => enter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.equal(requestedTop, 0);
+});
+
 test("世界档案读取失败时显示错误并允许重试", async () => {
   let attempts = 0;
   globalThis.fetch = async (input) => {
