@@ -72,6 +72,9 @@ export function FantasyTerminal({
   preview = false,
   onPlaybackComplete,
   onDuckingChange,
+  open: controlledOpen,
+  onOpenChange,
+  launcher = "default",
 }: {
   novels?: RecommendableNovel[];
   onOpenNovel?: (id: string) => void;
@@ -87,8 +90,16 @@ export function FantasyTerminal({
   preview?: boolean;
   onPlaybackComplete?: () => void;
   onDuckingChange?: (ducking: boolean) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  launcher?: "default" | "hidden";
 }) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = useCallback((next: boolean) => {
+    if (controlledOpen === undefined) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  }, [controlledOpen, onOpenChange]);
   const [section, setSection] = useState<TerminalSection>("home");
   const [signal, setSignal] = useState(false);
   const [activeMessage, setActiveMessage] = useState<StoryTerminalEvent | null>(null);
@@ -143,7 +154,7 @@ export function FantasyTerminal({
       setSection("resume");
       setOpen(true);
     });
-  }, [user]);
+  }, [setOpen, user]);
   const stopNarration = useCallback(() => {
     narrationToken.current += 1;
     const audio = playbackAudio.current;
@@ -171,7 +182,7 @@ export function FantasyTerminal({
       finishing.current = false;
       onPlaybackCompleteRef.current?.();
     }, reducedMotionRef.current ? 90 : TERMINAL_COLLAPSE_DURATION_MS));
-  }, [clearTimers, stopNarration]);
+  }, [clearTimers, setOpen, stopNarration]);
   const finishAfterMinimum = useCallback(() => {
     const remaining = Math.max(0, messageMinimumUntil.current - Date.now());
     if (remaining === 0) finishPlayback();
@@ -332,7 +343,7 @@ export function FantasyTerminal({
       stopNarration();
       onDuckingChangeRef.current?.(false);
     };
-  }, [clearTimers, playback, reducedMotion, startNarration, stopNarration]);
+  }, [clearTimers, playback, reducedMotion, setOpen, startNarration, stopNarration]);
 
   useEffect(() => {
     const audio = playbackAudio.current;
@@ -381,8 +392,8 @@ export function FantasyTerminal({
         if (!speakWithDevice(current.message, token)) scheduleTextFallback(getTerminalMessageTiming(current.message, reducedMotionRef.current).fallbackDurationMs);
       }}
     />
-    {signal && !open && <button className="terminal-peek" onClick={() => { setSection("message"); setSignal(false); setOpen(true); }}><small>⌁ {config.name} · 新信号</small><span>{displayedEvent?.message}</span></button>}
-    {!open && config.idleMode === "topTask" && activeTask?.title ? <button className={`terminal-task-chip status-${activeTask.status}`} onClick={openTask}><span>⌁ CURRENT TASK</span><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
+    {launcher !== "hidden" && signal && !open && <button className="terminal-peek" onClick={() => { setSection("message"); setSignal(false); setOpen(true); }}><small>⌁ {config.name} · 新信号</small><span>{displayedEvent?.message}</span></button>}
+    {launcher !== "hidden" && !open && config.idleMode === "topTask" && activeTask?.title ? <button className={`terminal-task-chip status-${activeTask.status}`} onClick={openTask}><span>⌁ CURRENT TASK</span><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
     {open && <section className={`terminal-panel terminal-phase-${playbackPhase}`}>
       {playback && <div className="terminal-cinematic-frame" aria-hidden="true"><i className="corner-a" /><i className="corner-b" /><i className="corner-c" /><i className="corner-d" /><b className="scan-line" /><span className="frame-code frame-code-top">FANTASY OS / LINK 07</span><span className="frame-code frame-code-bottom">SECURE NARRATIVE CHANNEL</span></div>}
       {playback?.imageUrl && section === "playback" && <div className="terminal-playback-art"><Image src={playback.imageUrl} alt={playback.imageAlt} fill unoptimized sizes="100vw" style={{ objectFit: playback.imagePresentation.fit, objectPosition: `${playback.imagePresentation.positionX}% ${playback.imagePresentation.positionY}%` }} /></div>}
@@ -403,7 +414,7 @@ export function FantasyTerminal({
         {config.voiceName && <small>AI VOICE · {config.voiceName}</small>}
       </div>}
     </section>}
-    {!open && !(config.idleMode === "topTask" && activeTask?.title) && <button className="terminal-fab" aria-label="打开幻界终端" title="幻界终端" onClick={() => { setSection(signal ? "message" : "home"); setSignal(false); setOpen(true); }}><span className="terminal-core"><i /><b>F</b></span><em>{signal ? "新信号" : "幻界终端"}</em></button>}
+    {launcher !== "hidden" && !open && !(config.idleMode === "topTask" && activeTask?.title) && <button className="terminal-fab" aria-label="打开幻界终端" title="幻界终端" onClick={() => { setSection(signal ? "message" : "home"); setSignal(false); setOpen(true); }}><span className="terminal-core"><i /><b>F</b></span><em>{signal ? "新信号" : "幻界终端"}</em></button>}
   </aside>;
 
   if (playback) return typeof document === "undefined" ? null : createPortal(terminal, document.body);

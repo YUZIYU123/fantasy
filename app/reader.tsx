@@ -16,6 +16,16 @@ import { FantasyTerminal } from "./fantasy-terminal";
 
 type ReaderNovel = NovelRecord & { chapters: unknown[] };
 
+function ReaderEntryState({ kind, onBack }: { kind: "loading" | "empty"; onBack: () => void }) {
+  const loading = kind === "loading";
+  return <section className="reader reader-loading" aria-busy={loading || undefined}>
+    <button className="reader-loading-back" onClick={onBack} aria-label="返回章节目录">←</button>
+    <div role={loading ? "status" : "alert"} aria-live={loading ? "polite" : undefined}>
+      <span aria-hidden="true">{loading ? "✦" : "!"}</span><p>{loading ? "正在进入章节…" : "章节内容为空。"}</p>
+    </div>
+  </section>;
+}
+
 export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplete, preview = false, initialNodeId, novels = [], onOpenNovel }: {
   story: StoryDocument;
   chapterId: string;
@@ -193,7 +203,8 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
 
   const node = story.nodes.find((item) => item.id === state?.nodeId) || story.nodes[0];
   const pages = useMemo(() => paginateStoryBody(node?.body || ""), [node?.body]);
-  if (!state || !node) return <div className="reader"><button onClick={onBack}>返回</button>{node ? null : <p>章节内容为空。</p>}</div>;
+  if (!state) return <ReaderEntryState kind="loading" onBack={onBack} />;
+  if (!node) return <ReaderEntryState kind="empty" onBack={onBack} />;
   const pageIndex = Math.min(state.pageIndex, Math.max(0, pages.length - 1));
   const isLastPage = pageIndex === pages.length - 1;
   const needsAfterImage = node.displayImagePosition === "after" && !state.afterImageDone;

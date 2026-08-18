@@ -52,6 +52,7 @@ test("访客访问我的书架看到登录与注册入口而不是假空状态",
   assert.match(container.textContent || "", /登录后查看我的书架/);
   assert.equal(container.textContent?.includes("书架还是空的"), false);
   assert.equal(container.querySelector('a[href="/login?next=/bookshelf"]')?.textContent, "登录");
+  assert.equal(container.querySelector('nav[aria-label="读者主导航"] [aria-current="page"]')?.textContent?.trim(), "书架");
 });
 
 test("真实空书架提供世界档案入口", async () => {
@@ -59,7 +60,7 @@ test("真实空书架提供世界档案入口", async () => {
   await act(async () => root.render(<BookshelfScreen />));
   await settle();
   assert.match(container.textContent || "", /书架还是空的/);
-  assert.equal(container.querySelector('a[href="/"]')?.textContent?.includes("世界档案"), true);
+  assert.equal([...container.querySelectorAll('a[href="/"]')].some((link) => link.textContent?.includes("世界档案")), true);
 });
 
 test("账号使用者确认移出后条目消失并明确阅读进度保留", async () => {

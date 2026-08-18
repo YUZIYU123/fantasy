@@ -4,8 +4,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { BookshelfItem } from "../../lib/bookshelf-lifecycle";
-import { Brand } from "../brand";
 import { executeBookshelfOperation } from "../bookshelf-operation-client";
+import { ReaderShell } from "../reader-shell";
 
 type Page = { kind: "page"; items: BookshelfItem[]; nextCursor: string | null };
 
@@ -112,8 +112,7 @@ export function BookshelfScreen() {
     setRemovalPending(false);
   };
 
-  return <main className="bookshelf-screen">
-    <header className="topbar"><Brand /><nav aria-label="读者导航"><Link href="/">世界档案</Link><Link aria-current="page" href="/bookshelf">我的书架</Link></nav></header>
+  return <ReaderShell active="bookshelf" contextLabel="私人书架"><main className="bookshelf-screen">
     <section className="bookshelf-content">
       <p className="eyebrow">PRIVATE READING ARCHIVE</p><h1 ref={headingRef} tabIndex={-1}>我的书架</h1>
       <div role="status" aria-live="polite">{state === "loading" ? "正在加载书架…" : message}</div>
@@ -133,5 +132,5 @@ export function BookshelfScreen() {
       <h2 id="remove-title">移出《{removing.public.name}》？</h2><p>阅读进度仍会保留。此操作只移除书架条目。</p>
       <button className="primary" autoFocus disabled={removalPending} onClick={() => void remove()}>{removalPending ? "正在移出…" : "确认移出"}</button><button className="ghost" disabled={removalPending} onClick={closeDialog}>取消</button>
     </div></div>}
-  </main>;
+  </main></ReaderShell>;
 }

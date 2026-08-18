@@ -66,6 +66,7 @@ test("账号注册关闭时访客只看到明确说明且不能提交", async ()
   assert.match(container.textContent || "", /账号注册尚未开放/);
   assert.equal(container.querySelector("form"), null);
   assert.match(container.textContent || "", /仍然可以浏览和阅读公开小说/);
+  assert.equal(container.querySelector('nav[aria-label="读者主导航"] [aria-current="page"]')?.textContent?.trim(), "我的");
 });
 
 test("访客从小雾邀请进入手机单步账号注册", async () => {
