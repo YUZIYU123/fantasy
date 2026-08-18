@@ -10,7 +10,7 @@ import { BooksIcon } from "@phosphor-icons/react/dist/csr/Books";
 import { TerminalWindowIcon } from "@phosphor-icons/react/dist/csr/TerminalWindow";
 import { UserCircleIcon } from "@phosphor-icons/react/dist/csr/UserCircle";
 
-export type ReaderDestination = "world" | "bookshelf" | "terminal" | "account";
+type ReaderDestination = "world" | "bookshelf" | "account";
 
 const destinations = [
   { id: "world", href: "/", label: "世界", icon: PlanetIcon },
