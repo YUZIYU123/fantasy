@@ -1,8 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import type { TerminalReaction } from "../lib/reading-session";
 import {
   DEFAULT_STORY_TERMINAL,
   type ImagePresentation,
@@ -43,9 +43,16 @@ export type TerminalPlayback = {
   imageAlt: string;
   imagePresentation: ImagePresentation;
   task: TerminalTask;
+  reaction?: TerminalReaction;
 };
 
 const taskStatusLabels = { active: "进行中", completed: "已完成", failed: "已失败" } as const;
+
+function XiaowuPortrait({ src }: { src: string }) {
+  // The five local WebP states are already losslessly compressed to their exact display budget.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt="" width={320} height={320} draggable={false} />;
+}
 
 function selectDeviceVoice(voices: SpeechSynthesisVoice[]) {
   const chinese = voices.filter((voice) => /^zh([_-]|$)/i.test(voice.lang));
@@ -67,7 +74,7 @@ export function FantasyTerminal({
   task,
   playback,
   muted = false,
-  reducedMotion = false,
+  reducedMotion: reducedMotionOverride,
   suppressed = false,
   preview = false,
   onPlaybackComplete,
@@ -75,6 +82,7 @@ export function FantasyTerminal({
   open: controlledOpen,
   onOpenChange,
   launcher = "default",
+  returnFocusRef,
 }: {
   novels?: RecommendableNovel[];
   onOpenNovel?: (id: string) => void;
@@ -93,7 +101,20 @@ export function FantasyTerminal({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   launcher?: "default" | "hidden";
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
+  const [systemReducedMotion, setSystemReducedMotion] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!query) return;
+    const syncPreference = () => setSystemReducedMotion(query.matches);
+    syncPreference();
+    query.addEventListener?.("change", syncPreference);
+    return () => query.removeEventListener?.("change", syncPreference);
+  }, []);
+  const reducedMotion = reducedMotionOverride ?? systemReducedMotion;
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = useCallback((next: boolean) => {
@@ -114,6 +135,7 @@ export function FantasyTerminal({
   const [needsVoicePlay, setNeedsVoicePlay] = useState(false);
   const [narrationMode, setNarrationMode] = useState<NarrationMode>("text");
   const proactiveCount = useRef(0);
+  const launcherRef = useRef<HTMLButtonElement>(null);
   const playbackAudio = useRef<HTMLAudioElement>(null);
   const speechUtterance = useRef<SpeechSynthesisUtterance | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -138,6 +160,11 @@ export function FantasyTerminal({
   const recommendations = useMemo(() => recommendNovels(novels, preferences), [novels, preferences]);
   const activeTask = playback?.task ?? task;
   const completedObjectives = activeTask?.objectives.filter((objective) => objective.status === "completed").length ?? 0;
+
+  const closeTerminal = useCallback(() => {
+    setOpen(false);
+    queueMicrotask(() => (returnFocusRef?.current ?? launcherRef.current)?.focus());
+  }, [returnFocusRef, setOpen]);
 
   const clearTimers = useCallback(() => {
     timers.current.forEach(clearTimeout);
@@ -175,14 +202,14 @@ export function FantasyTerminal({
     setPlaybackPhase("collapse");
     onDuckingChangeRef.current?.(false);
     timers.current.push(setTimeout(() => {
-      setOpen(false);
+      closeTerminal();
       setSection("home");
       setPlaybackPhase("boot");
       setRevealedMessage("");
       finishing.current = false;
       onPlaybackCompleteRef.current?.();
-    }, reducedMotionRef.current ? 90 : TERMINAL_COLLAPSE_DURATION_MS));
-  }, [clearTimers, setOpen, stopNarration]);
+    }, reducedMotionRef.current ? 0 : TERMINAL_COLLAPSE_DURATION_MS));
+  }, [clearTimers, closeTerminal, stopNarration]);
   const finishAfterMinimum = useCallback(() => {
     const remaining = Math.max(0, messageMinimumUntil.current - Date.now());
     if (remaining === 0) finishPlayback();
@@ -301,6 +328,18 @@ export function FantasyTerminal({
   }, [config.autoSpeak, event, eventKey, playback, playPassiveEventVoice, preview, suppressed]);
 
   useEffect(() => {
+    if (!suppressed || playback || !open) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setSection("home");
+      setSignal(false);
+      setOpen(false);
+    });
+    return () => { active = false; };
+  }, [open, playback, setOpen, suppressed]);
+
+  useEffect(() => {
     if (!playback) return;
     const generation = ++playbackGeneration.current;
     clearTimers();
@@ -316,7 +355,7 @@ export function FantasyTerminal({
       setRevealedMessage("");
       setNeedsVoicePlay(false);
       setNarrationMode("text");
-      const bootDuration = reducedMotion ? 100 : TERMINAL_BOOT_DURATION_MS;
+      const bootDuration = reducedMotion ? 0 : TERMINAL_BOOT_DURATION_MS;
       timers.current.push(setTimeout(() => {
         const current = playbackRef.current;
         if (!current || generation !== playbackGeneration.current) return;
@@ -374,13 +413,27 @@ export function FantasyTerminal({
   };
   const collapseTarget = activeTask?.title ? "task" : "fab";
   const narrationLabel = narrationMode === "audio" ? "AI VOICE" : narrationMode === "device" ? "DEVICE VOICE" : "TEXT MODE";
+  const legacyName = config.name.trim();
+  const customName = legacyName && legacyName !== "幻界终端" && legacyName !== "小雾" ? legacyName : "";
+  const reaction: TerminalReaction = playback?.reaction ?? "notice";
+  const companionState = playback
+    ? reaction
+    : signal || section === "message"
+      ? "notice"
+      : open
+        ? "greeting"
+        : "idle";
+  const companionImage = `/xiaowu/${companionState}.webp`;
+  const companionClassName = `xiaowu-companion state-${companionState}${open ? " is-open" : " is-peeking"}`;
+  const openFromCompanion = () => {
+    setSection(signal ? "message" : "home");
+    setSignal(false);
+    setOpen(true);
+  };
 
   const terminal = <aside
-    className={`fantasy-terminal${open ? " open" : ""}${playback ? ` terminal-playing terminal-portal interaction-${playback.interactionPreset} collapse-to-${collapseTarget}` : ""}`}
+    className={`fantasy-terminal xiaowu-terminal${open ? " open" : ""}${playback ? ` xiaowu-playing interaction-${playback.interactionPreset} collapse-to-${collapseTarget}` : ""}`}
     aria-live={playback ? "off" : "polite"}
-    role={playback ? "dialog" : undefined}
-    aria-modal={playback ? true : undefined}
-    aria-label={playback ? "幻界终端剧情播报" : undefined}
   >
     <audio
       ref={playbackAudio}
@@ -392,32 +445,38 @@ export function FantasyTerminal({
         if (!speakWithDevice(current.message, token)) scheduleTextFallback(getTerminalMessageTiming(current.message, reducedMotionRef.current).fallbackDurationMs);
       }}
     />
-    {launcher !== "hidden" && signal && !open && <button className="terminal-peek" onClick={() => { setSection("message"); setSignal(false); setOpen(true); }}><small>⌁ {config.name} · 新信号</small><span>{displayedEvent?.message}</span></button>}
-    {launcher !== "hidden" && !open && config.idleMode === "topTask" && activeTask?.title ? <button className={`terminal-task-chip status-${activeTask.status}`} onClick={openTask}><span>⌁ CURRENT TASK</span><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
-    {open && <section className={`terminal-panel terminal-phase-${playbackPhase}`}>
-      {playback && <div className="terminal-cinematic-frame" aria-hidden="true"><i className="corner-a" /><i className="corner-b" /><i className="corner-c" /><i className="corner-d" /><b className="scan-line" /><span className="frame-code frame-code-top">FANTASY OS / LINK 07</span><span className="frame-code frame-code-bottom">SECURE NARRATIVE CHANNEL</span></div>}
-      {playback?.imageUrl && section === "playback" && <div className="terminal-playback-art"><Image src={playback.imageUrl} alt={playback.imageAlt} fill unoptimized sizes="100vw" style={{ objectFit: playback.imagePresentation.fit, objectPosition: `${playback.imagePresentation.positionX}% ${playback.imagePresentation.positionY}%` }} /></div>}
-      <header><div className="terminal-core" aria-hidden="true"><i /><b>F</b></div><div><small>FANTASY SYSTEM</small><strong>{config.name}</strong></div>{section === "playback" ? <button aria-label="跳过终端播报" onClick={finishPlayback}>跳过</button> : <button aria-label="收起幻界终端" onClick={() => setOpen(false)}>×</button>}</header>
+    {launcher !== "hidden" ? <button
+      ref={launcherRef}
+      className={companionClassName}
+      type="button"
+      aria-label={open ? "收起小雾" : "打开小雾"}
+      aria-expanded={open}
+      aria-controls="xiaowu-dialog"
+      onClick={() => open ? closeTerminal() : openFromCompanion()}
+    ><XiaowuPortrait src={companionImage} /></button> : open ? <div className={companionClassName} aria-hidden="true"><XiaowuPortrait src={companionImage} /></div> : null}
+    {launcher !== "hidden" && signal && !open && <button className="xiaowu-signal" onClick={openFromCompanion}><small>小雾发现了新消息</small><span>{displayedEvent?.message}</span></button>}
+    {launcher !== "hidden" && !open && config.idleMode === "topTask" && activeTask?.title ? <button className={`xiaowu-task-strip status-${activeTask.status}`} onClick={openTask}><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
+    {open && <section id="xiaowu-dialog" className={`xiaowu-dialog terminal-phase-${playbackPhase}${playback ? " xiaowu-playback" : ""}`} role="dialog" aria-modal={playback ? true : undefined} aria-label="小雾对话">
+      {playback?.imageUrl && section === "playback" && <div className="xiaowu-playback-art"><Image src={playback.imageUrl} alt={playback.imageAlt} fill unoptimized sizes="340px" style={{ objectFit: playback.imagePresentation.fit, objectPosition: `${playback.imagePresentation.positionX}% ${playback.imagePresentation.positionY}%` }} /></div>}
+      <header><div><strong>小雾</strong>{customName && <small>{customName}</small>}</div>{section === "playback" ? <button aria-label="跳过小雾反馈" onClick={finishPlayback}>跳过</button> : <button aria-label="收起小雾" onClick={closeTerminal}>×</button>}</header>
       {section === "playback" && playback ? <div className="terminal-playback-message">
-        {playbackPhase === "boot" ? <div className="terminal-boot-sequence" aria-hidden="true"><div className="terminal-boot-core"><span>F</span></div><small>SYSTEM BOOTING</small><b>叙事终端正在接入</b><i>身份校验　·　任务同步　·　语音链路</i></div> : <>
-          <small>MISSION SIGNAL RECEIVED · {narrationLabel}</small>
+        {playbackPhase === "boot" ? <div className="xiaowu-arriving" aria-hidden="true"><small>小雾正在赶来</small><i>任务与语音同步中…</i></div> : <>
+          <small>小雾反馈 · {narrationLabel}</small>
           <p aria-hidden="true">{revealedMessage}<i className="terminal-caret" /></p>
           <span className="sr-only" aria-live="assertive">{playback.message}</span>
           {activeTask?.title && <TaskDetails task={activeTask} compact />}
           {needsVoicePlay && <button type="button" onClick={() => void startNarration()}>重新尝试播报</button>}
         </>}
-      </div> : section === "message" && displayedEvent ? <div className="terminal-message"><span>节点信号已接入</span><p>{displayedEvent.message}</p><div>{displayedEvent.speak && <button onClick={() => playPassiveEventVoice(displayedEvent)}>♫ 播放拟人语音</button>}<button onClick={() => setSection("home")}>打开终端</button></div></div> : section === "task" && activeTask ? <div className="terminal-task-panel"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><TaskDetails task={activeTask} /></div> : section === "registration" && registrationIntent ? <div className="terminal-message registration-invitation"><span>小雾 · 账号邀请</span><p>{registrationInvitationCopy(registrationIntent)}</p><div><a className="primary link-button" href={registrationInvitationHref(registrationIntent)}>建立账号</a><button onClick={() => { browserRegistrationInvitationStore.dismissProactiveInvitation(); setSection("home"); }}>暂时不用</button></div></div> : section === "resume" && resumeIntent ? <div className="terminal-message registration-invitation"><span>小雾 · 旅程已接续</span><p>{resumeIntent.kind === "bookshelf" ? "账号已经建立。你可以回到目标小说，再确认是否加入书架。" : "账号已经建立。回到阅读界面后，可以确认并同步这段进度。"}</p><div><button onClick={() => { if (resumeIntent.kind === "bookshelf" && resumeIntent.targetId) onOpenNovel?.(resumeIntent.targetId); window.history.replaceState({}, "", window.location.pathname); setSection("home"); }}>回到刚才的位置</button></div></div> : section === "preferences" ? <div className="terminal-preferences"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><h3>你想进入怎样的世界？</h3><p>选择最多六项，偏好只保存在当前设备。</p><div>{READER_PREFERENCE_OPTIONS.map((item) => <button className={preferences.includes(item) ? "selected" : ""} key={item} onClick={() => togglePreference(item)}>{item}</button>)}</div><h4>为你推荐</h4>{recommendations.length ? recommendations.map((novel) => <div key={novel.id}><button className="terminal-recommendation" onClick={() => onOpenNovel?.(novel.id)}><span>{novel.published?.name}</span><i>→</i></button>{!user && <button onClick={() => inviteToRegister({ kind: "bookshelf", targetId: novel.id })}>加入书架</button>}</div>) : <small>书架暂时还没有已发布小说。</small>}</div> : <div className="terminal-home">
-        <p>{ready && user ? `欢迎回来，${user.displayName}。终端已同步你的身份。` : "旅人，要保存进度并在不同设备继续吗？"}</p>
+      </div> : section === "message" && displayedEvent ? <div className="terminal-message"><span>小雾 · 新发现</span><p>{displayedEvent.message}</p><div>{displayedEvent.speak && <button onClick={() => playPassiveEventVoice(displayedEvent)}>♫ 播放小雾语音</button>}<button onClick={() => setSection("home")}>和小雾聊聊</button></div></div> : section === "task" && activeTask ? <div className="terminal-task-panel"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><TaskDetails task={activeTask} /></div> : section === "registration" && registrationIntent ? <div className="terminal-message registration-invitation"><span>小雾 · 账号邀请</span><p>{registrationInvitationCopy(registrationIntent)}</p><div><a className="primary link-button" href={registrationInvitationHref(registrationIntent)}>建立账号</a><button onClick={() => { browserRegistrationInvitationStore.dismissProactiveInvitation(); setSection("home"); }}>暂时不用</button></div></div> : section === "resume" && resumeIntent ? <div className="terminal-message registration-invitation"><span>小雾 · 旅程已接续</span><p>{resumeIntent.kind === "bookshelf" ? "账号已经建立。你可以回到目标小说，再确认是否加入书架。" : "账号已经建立。回到阅读界面后，可以确认并同步这段进度。"}</p><div><button onClick={() => { if (resumeIntent.kind === "bookshelf" && resumeIntent.targetId) onOpenNovel?.(resumeIntent.targetId); window.history.replaceState({}, "", window.location.pathname); setSection("home"); }}>回到刚才的位置</button></div></div> : section === "preferences" ? <div className="terminal-preferences"><button className="terminal-back" onClick={() => setSection("home")}>← 返回</button><h3>你想进入怎样的世界？</h3><p>选择最多六项，偏好只保存在当前设备。</p><div>{READER_PREFERENCE_OPTIONS.map((item) => <button className={preferences.includes(item) ? "selected" : ""} key={item} onClick={() => togglePreference(item)}>{item}</button>)}</div><h4>为你推荐</h4>{recommendations.length ? recommendations.map((novel) => <div key={novel.id}><button className="terminal-recommendation" onClick={() => onOpenNovel?.(novel.id)}><span>{novel.published?.name}</span><i>→</i></button>{!user && <button onClick={() => inviteToRegister({ kind: "bookshelf", targetId: novel.id })}>加入书架</button>}</div>) : <small>书架暂时还没有已发布小说。</small>}</div> : <div className="terminal-home">
+        <p>{ready && user ? `欢迎回来，${user.displayName}。小雾已经同步你的身份。` : "旅人，要让我替你记住进度，并在不同设备继续吗？"}</p>
         {!user && <><div className="terminal-auth"><button onClick={() => inviteToRegister({ kind: "cross-device" })}>跨设备继续</button><a href="/login?next=/">登录</a></div>{readingContextId && <button className="terminal-menu" onClick={() => inviteToRegister({ kind: "progress", targetId: readingContextId })}><span>◇ 同步当前阅读进度<small>在其他设备继续这段旅程</small></span><i>→</i></button>}</>}
         {activeTask?.title && <button className="terminal-menu" onClick={openTask}><span>⌁ 当前任务<small>{activeTask.title} · {completedObjectives}/{activeTask.objectives.length}</small></span><i>→</i></button>}
         <button className="terminal-menu" onClick={() => setSection("preferences")}><span>◇ 偏好与小说推荐<small>{preferences.length ? `已选择 ${preferences.join("、")}` : "回答几个问题，寻找适合你的世界"}</small></span><i>→</i></button>
         {config.voiceName && <small>AI VOICE · {config.voiceName}</small>}
       </div>}
     </section>}
-    {launcher !== "hidden" && !open && !(config.idleMode === "topTask" && activeTask?.title) && <button className="terminal-fab" aria-label="打开幻界终端" title="幻界终端" onClick={() => { setSection(signal ? "message" : "home"); setSignal(false); setOpen(true); }}><span className="terminal-core"><i /><b>F</b></span><em>{signal ? "新信号" : "幻界终端"}</em></button>}
   </aside>;
 
-  if (playback) return typeof document === "undefined" ? null : createPortal(terminal, document.body);
   return terminal;
 }
 

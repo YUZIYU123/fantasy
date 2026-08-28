@@ -10,7 +10,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AssetFolder, AssetRecord, AssetType } from "../../lib/assets";
 import {
-  applyTerminalTaskEvents, countStoryCharacters, createBlankStory, createChildNode, createStandaloneNode, createStoryChoice, FLOW_NODE_HEIGHT,
+  applyTerminalTaskEvents, countStoryCharacters, createBlankStory, createChildNode, createStandaloneNode, createStoryChoice, DEFAULT_STORY_TERMINAL, FLOW_NODE_HEIGHT,
   FLOW_NODE_WIDTH, getStoryBodyWarnings, getStoryTerminalWarnings, insertNodeOnChoice, NODE_BODY_MAX_LENGTH,
   NODE_BODY_RECOMMENDED_LENGTH, normalizeNovel, normalizeStory, paginateStoryBody, STORY_PAGE_BREAK,
   type ChapterRecord, type ImagePresentation, type NovelDocument, type NovelRecord,
@@ -20,6 +20,7 @@ import {
 } from "../../lib/story";
 import { SFX_GENERATION_DEFAULT_SECONDS, suggestChoiceSfxPrompt } from "../../lib/sfx";
 import type { TerminalVoiceOption } from "../../lib/tts";
+import { resolveTerminalReaction } from "../../lib/reading-session";
 import type {
   AdministratorSource,
   CreatorAccessDecision,
@@ -759,7 +760,7 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
   const saveLabel = locked ? "审核中（已锁定）" : saveStatus === "dirty" ? "有未保存修改" : saveStatus === "saving" ? "正在保存" : saveStatus === "error" ? "保存失败" : saveStatus === "blocked" ? "等待修正后保存" : "已保存";
   return <div className={`editor${locked ? " editor-locked" : ""}`}><header className="editor-top"><button className="back" onClick={onBack}>←</button><div><small>正在编辑剧情</small><strong>{story.title || "未命名章节"}</strong></div><span className={`save-state ${saveStatus}`} title={saveMessage}>● {saveLabel}</span><button className="ghost" onClick={onSettings}>章节设置</button><button className="ghost" disabled={lengthErrors.length > 0} title={lengthErrors[0]} onClick={() => onPreview(selectedId)}>从当前节点预览</button><button className="ghost" disabled={locked || saveStatus === "saving" || saveStatus === "blocked"} title={locked ? "审核中的草稿不可修改，请先撤回" : saveMessage} onClick={() => void persistLatest()}>{saveStatus === "error" ? "重试保存" : "立即保存"}</button><button className="primary" disabled={locked || publishErrors.length > 0} title={locked ? "章节已在审核中" : publishErrors[0]} onClick={onPublish}>{scope === "admin" ? "发布章节" : "提交审核"}</button></header>
     <div className="flow-editor"><StoryFlow story={story} setStory={setStory} selectedId={selectedId} onSelect={setSelectedId} onDuplicate={duplicateNode} onDelete={removeNode} onAutoLayout={autoLayout} />
-      <section className="edit-form flow-inspector"><div className="tabs"><button className={tab === "content" ? "active" : ""} onClick={() => setTab("content")}>节点内容</button><button className={tab === "image" ? "active" : ""} onClick={() => setTab("image")}>独立图片</button><button className={tab === "music" ? "active" : ""} onClick={() => setTab("music")}>音乐编排</button><button className={tab === "terminal" ? "active" : ""} onClick={() => setTab("terminal")}>幻界终端</button><button onClick={onAssets}>素材库</button><button className={tab === "versions" ? "active" : ""} onClick={() => setTab("versions")}>发布记录</button></div>
+      <section className="edit-form flow-inspector"><div className="tabs"><button className={tab === "content" ? "active" : ""} onClick={() => setTab("content")}>节点内容</button><button className={tab === "image" ? "active" : ""} onClick={() => setTab("image")}>独立图片</button><button className={tab === "music" ? "active" : ""} onClick={() => setTab("music")}>音乐编排</button><button className={tab === "terminal" ? "active" : ""} onClick={() => setTab("terminal")}>小雾设置</button><button onClick={onAssets}>素材库</button><button className={tab === "versions" ? "active" : ""} onClick={() => setTab("versions")}>发布记录</button></div>
       {tab === "content" ? <>
         <div className="form-intro"><div><p>NODE / {selected.id.toUpperCase()}</p><h2>{selected.title}</h2></div><div className="node-actions"><button onClick={duplicateNode}>复制</button><button className="danger" disabled={selected.id === story.startNodeId} onClick={() => removeNode()}>删除</button></div></div>
         <label>起始节点<select value={story.startNodeId} onChange={(event) => setStory({ ...story, startNodeId: event.target.value })}>{story.nodes.map((node) => <option key={node.id} value={node.id}>{node.title} · {node.id}</option>)}</select></label>
@@ -855,7 +856,7 @@ function ChoiceCard({ apiBase, choice, story, index, nodes, assets, folders, onA
     choice.interactionPreset !== "none" ? interactionLabels[choice.interactionPreset] : "",
     choice.sfxAssetId || choice.sfxUrl ? choice.sfxMaxDurationMs > 0 ? `音效 ≤ ${(choice.sfxMaxDurationMs / 1000).toFixed(1)} 秒` : "音效自然播放" : "",
     choice.feedbackImageAssetId || choice.feedbackImageUrl ? `图片 ${(choice.feedbackImageDurationMs / 1000).toFixed(1)} 秒` : "",
-    choice.terminalFeedbackEnabled ? "⌁ 终端动画" : "",
+    choice.terminalFeedbackEnabled ? "✦ 小雾反馈" : "",
   ].filter(Boolean);
   const generateSfx = async () => {
     setGenerating(true);
@@ -961,7 +962,7 @@ function ChoiceTerminalEditor({ apiBase, choice, story, assets, folders, onAsset
   ).task, [choice.terminalTaskActions, story]);
   const previewPlayback = useMemo<TerminalPlayback>(() => ({
     id: `studio-preview:${choice.id}`,
-    message: choice.terminalMessage.trim() || "终端信号已接入。这里将展示你的系统台词与任务变化。",
+    message: choice.terminalMessage.trim() || "小雾发现了新的剧情信号。这里将展示台词与任务变化。",
     speak: choice.terminalSpeak,
     voiceUrl: choice.terminalVoiceUrl,
     interactionPreset: choice.interactionPreset,
@@ -969,15 +970,15 @@ function ChoiceTerminalEditor({ apiBase, choice, story, assets, folders, onAsset
     imageAlt: choice.feedbackImageAlt,
     imagePresentation: choice.feedbackImagePresentation,
     task: previewTask,
-  }), [choice.feedbackImageAlt, choice.feedbackImagePresentation, choice.feedbackImageUrl, choice.id,
-    choice.interactionPreset, choice.terminalMessage, choice.terminalSpeak, choice.terminalVoiceUrl, previewTask]);
-  return <fieldset className="choice-terminal-editor"><legend>幻界终端反馈</legend>
-    <label className="toggle-field"><input type="checkbox" checked={choice.terminalFeedbackEnabled} onChange={(event) => onChange({ terminalFeedbackEnabled: event.target.checked })} /><span>点击此选项后启动终端</span><small>终端会融合当前图片、动画与点击音效，播报完成后进入目标节点。</small></label>
+    reaction: resolveTerminalReaction(choice),
+  }), [choice, previewTask]);
+  return <fieldset className="choice-terminal-editor"><legend>小雾反馈</legend>
+    <label className="toggle-field"><input type="checkbox" checked={choice.terminalFeedbackEnabled} onChange={(event) => onChange({ terminalFeedbackEnabled: event.target.checked })} /><span>点击此选项后呼出小雾</span><small>小雾会结合当前图片、动作和点击音效给出反馈，完成后进入目标节点。</small></label>
     {choice.terminalFeedbackEnabled && <>
-      <label>系统台词<textarea rows={4} maxLength={300} value={choice.terminalMessage} onChange={(event) => onChange({ terminalMessage: event.target.value })} /><small>{Array.from(choice.terminalMessage).length} / 300 字</small></label>
+      <label>小雾台词<textarea rows={4} maxLength={300} value={choice.terminalMessage} onChange={(event) => onChange({ terminalMessage: event.target.value })} /><small>{Array.from(choice.terminalMessage).length} / 300 字</small></label>
       <label className="toggle-field"><input type="checkbox" checked={choice.terminalSpeak} onChange={(event) => onChange({ terminalSpeak: event.target.checked })} /><span>自动播放拟人语音</span></label>
       {choice.terminalSpeak && <div className="terminal-voice-generation">
-        <AssetSelect label="终端语音" type="audio" value={choice.terminalVoiceAssetId || choice.terminalVoiceUrl} assets={assets} folders={folders} onChange={(terminalVoiceAssetId, terminalVoiceUrl) => onChange({ terminalVoiceAssetId, terminalVoiceUrl, terminalVoiceSourceKey: terminalVoiceAssetId || terminalVoiceUrl ? "manual" : "" })} />
+        <AssetSelect label="小雾语音" type="audio" value={choice.terminalVoiceAssetId || choice.terminalVoiceUrl} assets={assets} folders={folders} onChange={(terminalVoiceAssetId, terminalVoiceUrl) => onChange({ terminalVoiceAssetId, terminalVoiceUrl, terminalVoiceSourceKey: terminalVoiceAssetId || terminalVoiceUrl ? "manual" : "" })} />
         <div className={`voice-generation-state${voiceStale ? " stale" : ""}`}><span>{choice.terminalVoiceAssetId || choice.terminalVoiceUrl ? voiceStale ? "AI 语音已过期，将使用设备朗读" : "AI 语音可用" : "未生成 AI 语音，将使用设备朗读"}</span><button type="button" disabled={generating || !choice.terminalMessage.trim() || !story.terminal.voiceId} onClick={() => void generateVoice()}>{generating ? "AI 正在生成…" : choice.terminalVoiceUrl ? "重新生成 AI 语音" : "生成 AI 语音"}</button></div>
         {!story.terminal.voiceId && <p className="help-copy compact">未选择 ElevenLabs 音色时仍可发布，读者设备会优先使用自然的中文系统音色朗读。</p>}
         {choice.terminalVoiceUrl && <audio controls preload="metadata" src={choice.terminalVoiceUrl} />}
@@ -1003,9 +1004,9 @@ function ChoiceTerminalEditor({ apiBase, choice, story, assets, folders, onAsset
           {action.type === "setObjectiveStatus" && <div className="two-col"><label>目标<select value={action.objectiveId} onChange={(event) => updateAction(action.id, { objectiveId: event.target.value })}><option value="">请选择目标</option>{[...objectiveOptions].map(([id, label]) => <option key={id} value={id}>{label || id}</option>)}</select></label><label>状态<select value={action.status} onChange={(event) => updateAction(action.id, { status: event.target.value as TerminalTaskStatus })}>{Object.entries(terminalTaskStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>}
           {action.type === "setTaskStatus" && <label>任务状态<select value={action.status} onChange={(event) => updateAction(action.id, { status: event.target.value as TerminalTaskStatus })}>{Object.entries(terminalTaskStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
         </article>)}
-        {choice.terminalTaskActions.length === 0 && <p className="help-copy compact">可以只播报消息，也可以在此更新顶部任务 HUD。</p>}
+        {choice.terminalTaskActions.length === 0 && <p className="help-copy compact">可以只让小雾说话，也可以在此更新她旁边的任务条。</p>}
       </div>
-      <div className="terminal-preview-actions"><button type="button" onClick={() => setPreviewing(true)}>▶ 预览终端动画</button><small>使用当前未保存草稿模拟，不记录阅读进度或任务状态。</small></div>
+      <div className="terminal-preview-actions"><button type="button" onClick={() => setPreviewing(true)}>▶ 预览小雾反馈</button><small>使用当前未保存草稿模拟，不记录阅读进度或任务状态。</small></div>
       {previewing && <FantasyTerminal config={{ ...story.terminal, enabled: true }} playback={previewPlayback} task={previewTask} preview onPlaybackComplete={() => setPreviewing(false)} />}
     </>}
   </fieldset>;
@@ -1073,6 +1074,7 @@ function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated,
   const selectedVoice = voices.find((voice) => voice.id === story.terminal.voiceId);
   const expectedSourceKey = terminalVoiceSourceKey(story.terminal.voiceId, node.terminalEvent.message);
   const voiceStale = node.terminalEvent.speak && node.terminalEvent.voiceSourceKey !== "manual" && node.terminalEvent.voiceSourceKey !== expectedSourceKey;
+  const customTerminalName = story.terminal.name === DEFAULT_STORY_TERMINAL.name ? "" : story.terminal.name;
   const generateNodeVoice = async () => {
     setGenerating(true); setVoiceError("");
     try {
@@ -1086,11 +1088,11 @@ function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated,
     finally { setGenerating(false); }
   };
   const updateInitialTask = (patch: Partial<StoryDocument["terminal"]["initialTask"]>) => updateTerminal({ initialTask: { ...story.terminal.initialTask, ...patch } });
-  return <div className="terminal-editor"><div className="panel-heading"><div><p>FANTASY SYSTEM / {node.id.toUpperCase()}</p><h2>幻界终端</h2></div><span className={`media-status ${story.terminal.enabled ? "enabled" : ""}`}>{story.terminal.enabled ? "终端在线" : "已关闭"}</span></div>
-    <p className="help-copy">作者为本章选择稳定的 AI 音色；关键选项可启动终端并更新顶部任务 HUD。</p>
-    <fieldset><legend>全章终端角色</legend>
-      <label className="toggle-field"><input type="checkbox" checked={story.terminal.enabled} onChange={(event) => updateTerminal({ enabled: event.target.checked })} /><span>启用幻界终端挂件</span><small>关闭后本章阅读过程中不显示挂件或节点消息。</small></label>
-      <div className="two-col"><label>终端名称<input maxLength={30} value={story.terminal.name} onChange={(event) => updateTerminal({ name: event.target.value })} /></label><label>闲置形态<select value={story.terminal.idleMode} onChange={(event) => updateTerminal({ idleMode: event.target.value as StoryDocument["terminal"]["idleMode"] })}><option value="topTask">顶部任务 HUD</option><option value="corner">右下角助手</option></select></label></div>
+  return <div className="terminal-editor"><div className="panel-heading"><div><p>XIAOWU GUIDE / {node.id.toUpperCase()}</p><h2>小雾设置</h2></div><span className={`media-status ${story.terminal.enabled ? "enabled" : ""}`}>{story.terminal.enabled ? "小雾在线" : "已关闭"}</span></div>
+    <p className="help-copy">作者可以为本章选择稳定的 AI 音色；关键选项会唤出小雾，并同步她旁边的任务条。</p>
+    <fieldset><legend>全章小雾</legend>
+      <label className="toggle-field"><input type="checkbox" checked={story.terminal.enabled} onChange={(event) => updateTerminal({ enabled: event.target.checked })} /><span>启用小雾向导</span><small>关闭后本章阅读过程中不显示小雾或节点消息。</small></label>
+      <div className="two-col"><label>自定义称呼（可选）<input maxLength={30} value={customTerminalName} placeholder="小雾" onChange={(event) => updateTerminal({ name: event.target.value || DEFAULT_STORY_TERMINAL.name })} /></label><label>闲置形态<select value={story.terminal.idleMode} onChange={(event) => updateTerminal({ idleMode: event.target.value as StoryDocument["terminal"]["idleMode"] })}><option value="topTask">探头＋任务条</option><option value="corner">仅探头（推荐）</option></select></label></div>
       <div className="terminal-voice-browser"><div className="ai-sfx-heading"><b>ElevenLabs AI 音色</b><button type="button" onClick={() => void loadVoices()}>{loadingVoices ? "加载中…" : "刷新音色"}</button></div><input aria-label="搜索 AI 音色" value={voiceQuery} placeholder="搜索名称、性别或风格" onChange={(event) => setVoiceQuery(event.target.value)} /><select aria-label="章节 AI 音色" value={story.terminal.voiceId} onChange={(event) => { const voice = voices.find((item) => item.id === event.target.value); updateTerminal({ voiceId: voice?.id || "", voiceName: voice?.name || "" }); }}><option value="">请选择章节 AI 音色</option>{filteredVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}{voice.labels.gender ? ` · ${voice.labels.gender}` : ""}</option>)}</select>{selectedVoice?.previewUrl && <audio controls preload="none" src={selectedVoice.previewUrl} />}<small>推荐选择中文表现自然、年龄偏年轻的中性音色。音色变化后已有语音会标记为过期。</small></div>
       {voiceError && <p className="field-error" role="alert">{voiceError}</p>}
       <label className="toggle-field"><input type="checkbox" checked={story.terminal.autoSpeak} onChange={(event) => updateTerminal({ autoSpeak: event.target.checked })} /><span>节点消息自动播放预生成语音</span></label>
@@ -1099,10 +1101,10 @@ function TerminalEditor({ apiBase, story, node, assets, folders, onAssetCreated,
     <fieldset><legend>初始当前任务</legend><p className="help-copy compact">读者进入本章时的任务状态；选项可以替换任务、增加目标或更新状态。</p><label>任务标题<input maxLength={100} value={story.terminal.initialTask.title} placeholder="例如：调查异常副本" onChange={(event) => updateInitialTask({ title: event.target.value })} /></label><label>任务说明<textarea rows={3} maxLength={500} value={story.terminal.initialTask.description} onChange={(event) => updateInitialTask({ description: event.target.value })} /></label><label>任务状态<select value={story.terminal.initialTask.status} onChange={(event) => updateInitialTask({ status: event.target.value as TerminalTaskStatus })}>{Object.entries(terminalTaskStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><div className="task-objective-list">{story.terminal.initialTask.objectives.map((objective) => <label key={objective.id}>初始目标<input maxLength={200} value={objective.label} onChange={(event) => updateInitialTask({ objectives: story.terminal.initialTask.objectives.map((item) => item.id === objective.id ? { ...item, label: event.target.value } : item) })} /><button type="button" onClick={() => updateInitialTask({ objectives: story.terminal.initialTask.objectives.filter((item) => item.id !== objective.id) })}>×</button></label>)}<button type="button" onClick={() => updateInitialTask({ objectives: [...story.terminal.initialTask.objectives, { id: crypto.randomUUID(), label: "新任务目标", status: "active" }] })}>＋ 添加初始目标</button></div></fieldset>
     <fieldset><legend>当前节点消息 · {node.title}</legend>
       <label>弹出位置<select value={node.terminalEvent.trigger} onChange={(event) => updateEvent({ trigger: event.target.value as StoryNode["terminalEvent"]["trigger"] })}><option value="none">此节点不弹出</option><option value="beforeContent">节点正文开始时</option><option value="afterContent">节点正文最后一页</option></select></label>
-      <label>系统／终端台词<textarea rows={5} maxLength={300} value={node.terminalEvent.message} placeholder="例如：【检测到异常副本信号】要读取隐藏信息吗？" onChange={(event) => updateEvent({ message: event.target.value })} /><small>{Array.from(node.terminalEvent.message).length} / 300 字</small></label>
+      <label>小雾台词<textarea rows={5} maxLength={300} value={node.terminalEvent.message} placeholder="例如：我发现了异常信号，要读取隐藏信息吗？" onChange={(event) => updateEvent({ message: event.target.value })} /><small>{Array.from(node.terminalEvent.message).length} / 300 字</small></label>
       <label className="toggle-field"><input type="checkbox" checked={node.terminalEvent.speak} onChange={(event) => updateEvent({ speak: event.target.checked })} /><span>自动播放拟人语音</span></label>
-      {node.terminalEvent.speak && <div className="terminal-voice-generation"><AssetSelect label="节点终端语音" type="audio" value={node.terminalEvent.voiceAssetId || node.terminalEvent.voiceUrl} assets={assets} folders={folders} onChange={(voiceAssetId, voiceUrl) => updateEvent({ voiceAssetId, voiceUrl, voiceSourceKey: voiceAssetId || voiceUrl ? "manual" : "" })} /><div className={`voice-generation-state${voiceStale ? " stale" : ""}`}><span>{node.terminalEvent.voiceUrl ? voiceStale ? "AI 语音已过期，将使用设备朗读" : "AI 语音可用" : "未生成 AI 语音，将使用设备朗读"}</span><button type="button" disabled={generating || !story.terminal.voiceId || !node.terminalEvent.message.trim()} onClick={() => void generateNodeVoice()}>{generating ? "AI 正在生成…" : node.terminalEvent.voiceUrl ? "重新生成 AI 语音" : "生成 AI 语音"}</button></div>{node.terminalEvent.voiceUrl && <audio controls preload="metadata" src={node.terminalEvent.voiceUrl} />}</div>}
-      {node.terminalEvent.message && <div className="terminal-message-preview"><small>FANTASY SYSTEM</small><b>{story.terminal.name}</b><p>{node.terminalEvent.message}</p></div>}
+      {node.terminalEvent.speak && <div className="terminal-voice-generation"><AssetSelect label="节点小雾语音" type="audio" value={node.terminalEvent.voiceAssetId || node.terminalEvent.voiceUrl} assets={assets} folders={folders} onChange={(voiceAssetId, voiceUrl) => updateEvent({ voiceAssetId, voiceUrl, voiceSourceKey: voiceAssetId || voiceUrl ? "manual" : "" })} /><div className={`voice-generation-state${voiceStale ? " stale" : ""}`}><span>{node.terminalEvent.voiceUrl ? voiceStale ? "AI 语音已过期，将使用设备朗读" : "AI 语音可用" : "未生成 AI 语音，将使用设备朗读"}</span><button type="button" disabled={generating || !story.terminal.voiceId || !node.terminalEvent.message.trim()} onClick={() => void generateNodeVoice()}>{generating ? "AI 正在生成…" : node.terminalEvent.voiceUrl ? "重新生成 AI 语音" : "生成 AI 语音"}</button></div>{node.terminalEvent.voiceUrl && <audio controls preload="metadata" src={node.terminalEvent.voiceUrl} />}</div>}
+      {node.terminalEvent.message && <div className="terminal-message-preview"><small>小雾 · 节点预览</small><b>{customTerminalName || "小雾"}</b><p>{node.terminalEvent.message}</p></div>}
     </fieldset>
   </div>;
 }
@@ -1215,7 +1217,7 @@ function StoryCanvasEdge({ id, source, sourceX, sourceY, targetX, targetY, sourc
   return <>
     <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
     <EdgeLabelRenderer><div className="flow-edge-label nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
-      <span>{data?.label}<small>{[interactionLabels[data?.interactionPreset || "none"], data?.hasSfx ? "♫ 音效" : "", data?.hasImage ? "▣ 图片" : "", data?.hasTerminal ? "⌁ 终端动画" : ""].filter(Boolean).join(" · ")}</small></span>
+      <span>{data?.label}<small>{[interactionLabels[data?.interactionPreset || "none"], data?.hasSfx ? "♫ 音效" : "", data?.hasImage ? "▣ 图片" : "", data?.hasTerminal ? "✦ 小雾反馈" : ""].filter(Boolean).join(" · ")}</small></span>
       <button aria-label={`在选项「${data?.label || "未命名"}」中插入节点`} title="在这条路径中插入节点" onClick={() => data?.onInsert(source, id)}>＋</button>
     </div></EdgeLabelRenderer>
   </>;
@@ -1279,7 +1281,7 @@ function StoryFlow({ story, setStory, selectedId, onSelect, onDuplicate, onDelet
         node.videoMode !== "none" ? "▶ 视频" : "",
         node.imageUrl ? "▧ 背景" : "",
         node.displayImagePosition !== "none" ? `▣ 图片${node.displayImagePosition === "before" ? "前" : "后"}` : "",
-        node.terminalEvent?.trigger !== "none" ? "⌁ 终端" : "",
+        node.terminalEvent?.trigger !== "none" ? "✦ 小雾" : "",
       ].filter(Boolean).join(" · ") || "纯文本",
       isStart: node.id === document.startNodeId,
       canAddChild: true,

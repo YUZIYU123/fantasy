@@ -38,6 +38,6 @@ export async function POST(request: Request) {
     if (error instanceof TerminalSpeechError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
     if (error instanceof SessionAuthorizationError) return sessionAuthorizationResponse(error);
     if (error instanceof AuthError) return Response.json({ error: error.message }, { status: error.status });
-    return Response.json({ error: "AI 终端语音保存失败，请稍后重试" }, { status: 500 });
+    return Response.json({ error: "小雾 AI 语音保存失败，请稍后重试" }, { status: 500 });
   }
 }

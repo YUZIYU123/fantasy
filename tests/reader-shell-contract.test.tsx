@@ -41,7 +41,7 @@ test("标准读者外壳直接提供四个主入口并标记当前世界档案",
   assert.ok(navigation);
   assert.deepEqual(
     [...navigation.querySelectorAll("a,button")].map((item) => item.textContent?.trim()),
-    ["世界", "书架", "终端", "我的"],
+    ["世界", "书架", "小雾", "我的"],
   );
   assert.equal(navigation.querySelector('[aria-current="page"]')?.textContent?.trim(), "世界");
   assert.match(container.textContent || "", /已连接/);
@@ -49,21 +49,25 @@ test("标准读者外壳直接提供四个主入口并标记当前世界档案",
   assert.match(container.textContent || "", /档案内容/);
 });
 
-test("读者从 Dock 打开和收起故事终端", async () => {
+test("读者从 Dock 或角色打开同一个小雾对话状态", async () => {
   await act(async () => root.render(<ReaderShell active="world" contextLabel="主档案.001"><p>档案内容</p></ReaderShell>));
 
-  const trigger = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "终端");
+  const trigger = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "小雾");
   assert.ok(trigger);
   assert.equal(trigger.getAttribute("aria-expanded"), "false");
 
   await act(async () => trigger.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   assert.equal(trigger.getAttribute("aria-expanded"), "true");
-  assert.ok(container.querySelector('button[aria-label="收起幻界终端"]'));
+  assert.ok(container.querySelector('button[aria-label="收起小雾"]'));
 
-  await act(async () => trigger.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="收起小雾"]')?.click());
   assert.equal(trigger.getAttribute("aria-expanded"), "false");
+  assert.equal(document.activeElement, trigger);
 
-  await act(async () => trigger.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
-  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="收起幻界终端"]')?.click());
-  assert.equal(trigger.getAttribute("aria-expanded"), "false");
+  const companion = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(companion);
+  await act(async () => companion.click());
+  assert.equal(trigger.getAttribute("aria-expanded"), "true");
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="收起小雾"]')?.click());
+  assert.equal(document.activeElement, companion);
 });

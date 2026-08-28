@@ -428,27 +428,27 @@ export function validateStoryInputLengths(story: StoryDocument): string[] {
   if (story.title.length > 100) errors.push("章节名称不能超过 100 个字符");
   if (story.summary.length > 1000) errors.push("章节简介不能超过 1000 个字符");
   if ((story.openingImageAlt ?? story.coverAlt ?? "").length > 500 || story.outroImageAlt.length > 500) errors.push("图片替代文本不能超过 500 个字符");
-  if ((story.terminal?.name ?? "").length > 30) errors.push("幻界终端名称不能超过 30 个字符");
-  if ((story.terminal?.voiceId ?? "").length > 100) errors.push("幻界终端音色 ID 不能超过 100 个字符");
+  if ((story.terminal?.name ?? "").length > 30) errors.push("小雾自定义称呼不能超过 30 个字符");
+  if ((story.terminal?.voiceId ?? "").length > 100) errors.push("小雾音色 ID 不能超过 100 个字符");
   const initialTask = normalizeTerminalTask(story.terminal?.initialTask);
-  if (initialTask.title.length > 100) errors.push("幻界终端任务标题不能超过 100 个字符");
-  if (initialTask.description.length > 500) errors.push("幻界终端任务说明不能超过 500 个字符");
-  if (initialTask.objectives.some((objective) => objective.label.length > 200)) errors.push("幻界终端任务目标不能超过 200 个字符");
+  if (initialTask.title.length > 100) errors.push("小雾任务标题不能超过 100 个字符");
+  if (initialTask.description.length > 500) errors.push("小雾任务说明不能超过 500 个字符");
+  if (initialTask.objectives.some((objective) => objective.label.length > 200)) errors.push("小雾任务目标不能超过 200 个字符");
   if (story.nodes.length > 500) errors.push("单章剧情节点不能超过 500 个");
   for (const node of story.nodes) {
     if (node.id.length > 100) errors.push("节点 ID 不能超过 100 个字符");
     if (node.title.length > 100) errors.push(`节点「${node.id}」标题不能超过 100 个字符`);
     if (node.imageAlt.length > 500) errors.push(`节点「${node.title || node.id}」插图替代文本不能超过 500 个字符`);
     if ((node.displayImageAlt ?? "").length > 500) errors.push(`节点「${node.title || node.id}」独立图片替代文本不能超过 500 个字符`);
-    if ((node.terminalEvent?.message ?? "").length > 300) errors.push(`节点「${node.title || node.id}」终端消息不能超过 300 个字符`);
+    if ((node.terminalEvent?.message ?? "").length > 300) errors.push(`节点「${node.title || node.id}」小雾台词不能超过 300 个字符`);
     if (node.choices.length > 20) errors.push(`节点「${node.title || node.id}」不能超过 20 个选项`);
     if (node.choices.some((choice) => choice.label.length > 200)) errors.push(`节点「${node.title || node.id}」的选项文字不能超过 200 个字符`);
     for (const choice of node.choices) {
-      if ((choice.terminalMessage ?? "").length > 300) errors.push(`节点「${node.title || node.id}」的选项「${choice.label || choice.id}」终端消息不能超过 300 个字符`);
+      if ((choice.terminalMessage ?? "").length > 300) errors.push(`节点「${node.title || node.id}」的选项「${choice.label || choice.id}」小雾台词不能超过 300 个字符`);
       if ((choice.terminalTaskActions ?? []).length > 20) errors.push(`节点「${node.title || node.id}」的选项「${choice.label || choice.id}」任务变化不能超过 20 条`);
       for (const action of choice.terminalTaskActions ?? []) {
-        if (action.task && (action.task.title.length > 100 || action.task.description.length > 500)) errors.push("替换后的终端任务文字过长");
-        if (action.objective?.label && action.objective.label.length > 200) errors.push("新增的终端任务目标不能超过 200 个字符");
+        if (action.task && (action.task.title.length > 100 || action.task.description.length > 500)) errors.push("替换后的小雾任务文字过长");
+        if (action.objective?.label && action.objective.label.length > 200) errors.push("新增的小雾任务目标不能超过 200 个字符");
       }
     }
   }
@@ -798,14 +798,14 @@ export function validateStory(story: StoryDocument): string[] {
   const terminalChoices = story.nodes.flatMap((node) => node.choices.map((choice) => ({ node, choice })));
   terminalChoices.forEach(({ node, choice }) => (choice.terminalTaskActions ?? []).forEach((action) => {
     if (!action.id.trim()) errors.push(`节点「${node.title}」的选项「${choice.label}」存在缺少 ID 的任务变化`);
-    else if (taskActionIds.has(action.id)) errors.push(`终端任务变化 ID 重复：${action.id}`);
+    else if (taskActionIds.has(action.id)) errors.push(`小雾任务变化 ID 重复：${action.id}`);
     taskActionIds.add(action.id);
     if (action.type === "addObjective" && action.objective?.id) knownObjectiveIds.add(action.objective.id);
     if (action.type === "replaceTask" && action.task) action.task.objectives.forEach((objective) => knownObjectiveIds.add(objective.id));
   }));
   terminalChoices.forEach(({ node, choice }) => {
     if (!choice.terminalFeedbackEnabled) return;
-    if (!(choice.terminalMessage ?? "").trim()) errors.push(`节点「${node.title}」的选项「${choice.label}」启用了终端反馈但没有填写消息`);
+    if (!(choice.terminalMessage ?? "").trim()) errors.push(`节点「${node.title}」的选项「${choice.label}」启用了小雾反馈但没有填写台词`);
     (choice.terminalTaskActions ?? []).forEach((action) => {
       if (action.type === "replaceTask" && (!action.task?.title.trim() || action.task.objectives.length === 0)) errors.push(`选项「${choice.label}」替换任务时需要标题和至少一个目标`);
       if (action.type === "addObjective" && (!action.objective?.id.trim() || !action.objective.label.trim())) errors.push(`选项「${choice.label}」新增任务目标不完整`);
@@ -814,7 +814,7 @@ export function validateStory(story: StoryDocument): string[] {
   });
   story.nodes.forEach((node) => {
     if (!node.terminalEvent || node.terminalEvent.trigger === "none") return;
-    if (!node.terminalEvent.message.trim()) errors.push(`节点「${node.title}」启用了终端消息但没有填写内容`);
+    if (!node.terminalEvent.message.trim()) errors.push(`节点「${node.title}」启用了小雾消息但没有填写台词`);
   });
   if ((taskActionIds.size > 0 || terminal.idleMode === "topTask") && initialTask.title.trim()) {
     if (initialTask.objectives.length === 0) errors.push("顶部任务 HUD 至少需要一个初始任务目标");

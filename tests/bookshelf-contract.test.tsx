@@ -108,7 +108,8 @@ test("移出与加载更多在请求完成前拒绝重复点击", async () => {
   let resolveRemove!: (response: Response) => void;
   let listCalls = 0;
   let removeCalls = 0;
-  globalThis.fetch = async (_input, init = {}) => {
+  globalThis.fetch = async (input, init = {}) => {
+    if (String(input) === "/api/auth/me") return Response.json({ user: null });
     if (init.method === "DELETE") {
       removeCalls += 1;
       return new Promise<Response>((resolve) => { resolveRemove = resolve; });
