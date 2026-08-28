@@ -94,7 +94,11 @@ export const readingSessionProgress = {
     const id = `${userId}:${chapter.id}`;
     const d1 = getD1Binding();
     if (validated.completedAt) {
+      const recordedAt = new Date().toISOString();
       await d1.batch([
+        d1.prepare(`INSERT OR IGNORE INTO chapter_version_completion_facts
+          (id, user_id, chapter_id, chapter_version, completed_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?)`)
+          .bind(`${id}:${chapter.version}`, userId, chapter.id, chapter.version, validated.completedAt, recordedAt),
         d1.prepare(`INSERT INTO chapter_completion_records
           (id, user_id, chapter_id, chapter_version, completed_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?)

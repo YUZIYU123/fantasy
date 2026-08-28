@@ -316,6 +316,20 @@ test("ReadingSession 重读章节时保留独立完成证明", async () => {
   });
 });
 
+test("章节奖励失败不阻塞完成事实且 CompanionLifecycle 随后幂等补偿", async () => {
+  const response = await fetch(`${runtime.origin}/companion-completion-recovery`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    failedRewardAttempts: 1,
+    readingCompleted: true,
+    reconciled: { bondXp: 40, mistlight: 20 },
+    replay: { bondXp: 40, mistlight: 20 },
+    concurrentMistlight: 14,
+    resetStaleCommit: "conflict",
+    resetBaselinePreserved: true,
+  });
+});
+
 test("BookshelfLifecycle 幂等加入公开小说并隔离私人书架", async () => {
   const response = await fetch(`${runtime.origin}/bookshelf-membership`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);

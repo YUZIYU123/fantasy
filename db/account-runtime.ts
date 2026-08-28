@@ -4,6 +4,7 @@ import { bookshelfLifecycle } from "./bookshelf-lifecycle";
 import { BookshelfError } from "../lib/bookshelf-lifecycle";
 import { hashToken } from "../lib/auth";
 import { registrationResumeDirective } from "../lib/registration-intent";
+import { companionLifecycle } from "./companion-lifecycle";
 
 export type AccountRuntimeEnv = {
   ACCOUNT_OPERATION_SECRET?: string;
@@ -98,14 +99,23 @@ export const accountLifecycle = createAccountLifecycle({
   },
   privateData: {
     async export(userId) {
-      const result = await bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "export" });
-      return { bookshelf: "entries" in result ? result.entries : [] };
+      const [result, companion] = await Promise.all([
+        bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "export" }),
+        companionLifecycle.execute({ kind: "account", id: userId }, { action: "export" }),
+      ]);
+      return { bookshelf: "entries" in result ? result.entries : [], companion };
     },
     async purge(userId) {
-      await bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "purge" });
+      await Promise.all([
+        bookshelfLifecycle.execute({ kind: "account", id: userId }, { action: "purge" }),
+        companionLifecycle.execute({ kind: "account", id: userId }, { action: "purge" }),
+      ]);
     },
     async cleanupOrphans() {
-      await bookshelfLifecycle.execute({ kind: "system" }, { action: "cleanup" });
+      await Promise.all([
+        bookshelfLifecycle.execute({ kind: "system" }, { action: "cleanup" }),
+        companionLifecycle.execute({ kind: "system" }, { action: "cleanup" }),
+      ]);
     },
   },
 });

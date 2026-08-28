@@ -44,3 +44,36 @@
 ## 最终结果
 
 passed
+
+---
+
+# 雾庭 P1 Design QA
+
+- 范围：Dock 与侧边小雾职责分离、`/xiaowu` 世界树庭院、账号成长与会话试玩
+- 基准视口：390×844；补充检查 360×800、430×932、200% 缩放和 reduced motion
+- 验收日期：2026-08-28
+
+## 证据
+
+- 390×844：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p1/garden-390x844.png`
+- 360×800：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p1/garden-360x800.png`
+- 430×932：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p1/garden-430x932.png`
+- 200% 缩放修复后：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p1/garden-200pct-fixed.png`
+- reduced motion：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p1/garden-reduced-motion-390x844.png`
+
+## 结果
+
+- 360、390、430 与 200% 缩放均满足 `scrollWidth === innerWidth`，没有横向滚动。
+- 200% 缩放初检发现三列系统头部会挤掉当前档案；修复为保留品牌与“雾庭”状态、隐藏次要连接状态，复验通过。
+- 雾庭不挂载侧边小雾；Dock“小雾”是活动链接，侧边轻量气泡仍提供“前往雾庭”。正式阅读继续不显示 Dock。
+- 访客明确显示“本次会话试玩”和“不保存”，页面没有注册按钮；“一起玩”可见地将雾光从 20 更新为 17，并反馈活力恢复。
+- reduced motion 实测匹配成功，庭院角色 `animation-name: none`、`animation-duration: 0s`。
+- 交互控件均有可读名称；自动化合约覆盖 Dock 链接、按钮操作、对话焦点恢复和雾庭不重复角色。
+- 控制台无新增 warning 或 error。
+- 双轨初审发现的奖励并发、重置基线、模块边界、缓存与 HTTP 越权缺口已修复；阅读完成现在只写入按发布版本保留的事实，成长奖励统一由 `CompanionLifecycle` 幂等补偿。
+- 复审发现的 revision ABA 与客户端未来时间漏洞已修复：重置使用单调 CAS，奖励基线只比较服务端事实记录时间；真实 D1 陈旧提交回归验证稳定返回 conflict。
+- 最终门禁通过：`pnpm typecheck`、`pnpm lint`、生产构建、150 项模块／HTTP 测试与 58 项 React 测试全部成功。
+
+## 最终结果
+
+passed

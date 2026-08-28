@@ -472,6 +472,7 @@ export function FantasyTerminal({
         {!user && <><div className="terminal-auth"><button onClick={() => inviteToRegister({ kind: "cross-device" })}>跨设备继续</button><a href="/login?next=/">登录</a></div>{readingContextId && <button className="terminal-menu" onClick={() => inviteToRegister({ kind: "progress", targetId: readingContextId })}><span>◇ 同步当前阅读进度<small>在其他设备继续这段旅程</small></span><i>→</i></button>}</>}
         {activeTask?.title && <button className="terminal-menu" onClick={openTask}><span>⌁ 当前任务<small>{activeTask.title} · {completedObjectives}/{activeTask.objectives.length}</small></span><i>→</i></button>}
         <button className="terminal-menu" onClick={() => setSection("preferences")}><span>◇ 偏好与小说推荐<small>{preferences.length ? `已选择 ${preferences.join("、")}` : "回答几个问题，寻找适合你的世界"}</small></span><i>→</i></button>
+        <a className="terminal-menu xiaowu-garden-link" href="/xiaowu"><span>✦ 前往雾庭<small>在世界树下陪伴小雾成长</small></span><i>→</i></a>
         {config.voiceName && <small>AI VOICE · {config.voiceName}</small>}
       </div>}
     </section>}

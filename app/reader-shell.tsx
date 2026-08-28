@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Brand } from "./brand";
 import { FantasyTerminal } from "./fantasy-terminal";
 import type { RecommendableNovel } from "../lib/terminal";
@@ -10,12 +10,12 @@ import { BooksIcon } from "@phosphor-icons/react/dist/csr/Books";
 import { SparkleIcon } from "@phosphor-icons/react/dist/csr/Sparkle";
 import { UserCircleIcon } from "@phosphor-icons/react/dist/csr/UserCircle";
 
-type ReaderDestination = "world" | "bookshelf" | "account";
+type ReaderDestination = "world" | "bookshelf" | "xiaowu" | "account";
 
 const destinations = [
   { id: "world", href: "/", label: "世界", icon: PlanetIcon },
   { id: "bookshelf", href: "/bookshelf", label: "书架", icon: BooksIcon },
-  { id: "terminal", label: "小雾", icon: SparkleIcon },
+  { id: "xiaowu", href: "/xiaowu", label: "小雾", icon: SparkleIcon },
   { id: "account", href: "/account", label: "我的", icon: UserCircleIcon },
 ] as const;
 
@@ -24,25 +24,16 @@ export function ReaderShell({
   contextLabel,
   novels = [],
   onOpenNovel,
+  companion = "visible",
   children,
 }: {
   active: ReaderDestination;
   contextLabel: string;
   novels?: RecommendableNovel[];
   onOpenNovel?: (id: string) => void;
+  companion?: "visible" | "hidden";
   children: ReactNode;
 }) {
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalOpener, setTerminalOpener] = useState<"dock" | "companion">("companion");
-  const terminalDockTrigger = useRef<HTMLButtonElement>(null);
-  const updateTerminalOpen = (next: boolean) => {
-    if (next) setTerminalOpener("companion");
-    setTerminalOpen(next);
-  };
-  const toggleTerminalFromDock = () => {
-    if (!terminalOpen) setTerminalOpener("dock");
-    setTerminalOpen((open) => !open);
-  };
   return <div className="reader-shell">
     <header className="reader-system-header">
       <Brand href="/" caption="HUANJIE OS" />
@@ -53,15 +44,13 @@ export function ReaderShell({
     <nav className="reader-dock" aria-label="读者主导航">
       {destinations.map((destination) => {
         const Icon = destination.icon;
-        return destination.id === "terminal"
-        ? <button ref={terminalDockTrigger} aria-expanded={terminalOpen} key={destination.id} onClick={toggleTerminalFromDock}><Icon aria-hidden size={24} weight="light" /><span>{destination.label}</span></button>
-        : <Link
+        return <Link
           aria-current={active === destination.id ? "page" : undefined}
           href={destination.href}
           key={destination.id}
         ><Icon aria-hidden size={24} weight="light" /><span>{destination.label}</span></Link>;
       })}
     </nav>
-    <FantasyTerminal novels={novels} onOpenNovel={onOpenNovel} open={terminalOpen} onOpenChange={updateTerminalOpen} returnFocusRef={terminalOpener === "dock" ? terminalDockTrigger : undefined} />
+    {companion === "visible" && <FantasyTerminal novels={novels} onOpenNovel={onOpenNovel} />}
   </div>;
 }

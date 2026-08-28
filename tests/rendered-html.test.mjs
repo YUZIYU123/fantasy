@@ -110,6 +110,26 @@ async function createAuthorAccount(label) {
   return { cookie, id: user.id };
 }
 
+async function createReaderAccount(label) {
+  const email = `${label}-${process.pid}@example.com`;
+  const registration = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: { email, displayName: label, password: "test-password-123", turnstileToken: "", ...requiredRegistrationConsent },
+  });
+  assert.equal(registration.response.status, 201);
+  const verification = await requestJson("/api/auth/verify-email", {
+    method: "POST",
+    body: { token: registration.payload.developmentToken },
+  });
+  assert.equal(verification.response.status, 200);
+  const login = await requestJson("/api/auth/login", {
+    method: "POST",
+    body: { email, password: "test-password-123" },
+  });
+  assert.equal(login.response.status, 200);
+  return { cookie: login.response.headers.get("set-cookie")?.split(";")[0] || "" };
+}
+
 before(() => runtime.start());
 after(() => runtime.stop());
 
@@ -143,6 +163,37 @@ test("账号身份、配置和错误响应禁止进入共享缓存", async () =>
   });
   assert.equal(rejected.status, 401);
   assert.equal(rejected.headers.get("cache-control"), "private, no-store");
+});
+
+test("小雾账号接口拒绝访客与跨源写入并隔离账号状态", async () => {
+  const anonymous = await requestJson("/api/account/companion");
+  assert.equal(anonymous.response.status, 401);
+  assert.equal(anonymous.response.headers.get("cache-control"), "private, no-store");
+
+  const owner = await createReaderAccount("companion-owner");
+  const stranger = await createReaderAccount("companion-stranger");
+  const ownerState = await requestJson("/api/account/companion", { cookie: owner.cookie });
+  const strangerState = await requestJson("/api/account/companion", { cookie: stranger.cookie });
+  assert.equal(ownerState.response.status, 200);
+  assert.equal(ownerState.response.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(ownerState.payload.state, strangerState.payload.state);
+
+  const crossOrigin = await fetch(`${origin}/api/account/companion/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: owner.cookie, origin: "https://attacker.example" },
+    body: JSON.stringify({ action: "touch", operationId: crypto.randomUUID(), userId: "forged-account" }),
+  });
+  assert.equal(crossOrigin.status, 403);
+
+  const insufficient = await requestJson("/api/account/companion/actions", {
+    method: "POST",
+    cookie: owner.cookie,
+    body: { action: "play", operationId: crypto.randomUUID(), userId: "forged-account" },
+  });
+  assert.equal(insufficient.response.status, 409);
+  assert.equal(insufficient.payload.error, "雾光不足");
+  assert.equal(insufficient.response.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual((await requestJson("/api/account/companion", { cookie: stranger.cookie })).payload.state, strangerState.payload.state);
 });
 
 test("向导记忆的领域拒绝由 HTTP adapter 映射为稳定错误", async () => {

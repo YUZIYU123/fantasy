@@ -49,25 +49,25 @@ test("标准读者外壳直接提供四个主入口并标记当前世界档案",
   assert.match(container.textContent || "", /档案内容/);
 });
 
-test("读者从 Dock 或角色打开同一个小雾对话状态", async () => {
+test("Dock 小雾进入雾庭，侧边角色只展开轻量气泡", async () => {
   await act(async () => root.render(<ReaderShell active="world" contextLabel="主档案.001"><p>档案内容</p></ReaderShell>));
 
-  const trigger = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "小雾");
-  assert.ok(trigger);
-  assert.equal(trigger.getAttribute("aria-expanded"), "false");
-
-  await act(async () => trigger.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
-  assert.equal(trigger.getAttribute("aria-expanded"), "true");
-  assert.ok(container.querySelector('button[aria-label="收起小雾"]'));
-
-  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="收起小雾"]')?.click());
-  assert.equal(trigger.getAttribute("aria-expanded"), "false");
-  assert.equal(document.activeElement, trigger);
+  const garden = [...container.querySelectorAll("nav a")].find((link) => link.textContent?.trim() === "小雾");
+  assert.equal(garden?.getAttribute("href"), "/xiaowu");
 
   const companion = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
   assert.ok(companion);
   await act(async () => companion.click());
-  assert.equal(trigger.getAttribute("aria-expanded"), "true");
+  assert.ok(container.querySelector('[role="dialog"][aria-label="小雾对话"]'));
+  assert.equal([...container.querySelectorAll("a")].find((link) => link.textContent?.includes("前往雾庭"))?.getAttribute("href"), "/xiaowu");
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="收起小雾"]')?.click());
   assert.equal(document.activeElement, companion);
+});
+
+test("雾庭页面标记 Dock 活动状态且不重复挂载侧边小雾", async () => {
+  await act(async () => root.render(<ReaderShell active="xiaowu" contextLabel="雾庭" companion="hidden"><p>世界树庭院</p></ReaderShell>));
+
+  assert.equal(container.querySelector('nav a[aria-current="page"]')?.textContent?.trim(), "小雾");
+  assert.equal(container.querySelector(".xiaowu-companion"), null);
+  assert.match(container.textContent || "", /世界树庭院/);
 });
