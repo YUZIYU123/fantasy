@@ -48,6 +48,16 @@ class SessionCompanionStore implements CompanionStore {
   }
 
   async listCompletionFacts() { return []; }
+  async listActivityFacts() { return []; }
+  async listDiscoveryFacts() { return []; }
+  async listMemoryCards() { return []; }
+  async listRecentReceipts() { return []; }
+  async hasReadingOperation() { return false; }
+  async readLastActivityAt() { return null; }
+  async readPublishedChapter() { return null; }
+  async readChapterVersion() { return null; }
+  async recordReadingFacts() { return "duplicate" as const; }
+  async recordDiscoveryFact() { return "duplicate" as const; }
 
   async commit(input: Parameters<CompanionStore["commit"]>[0]) {
     if (input.userId !== TRIAL_USER_ID) return "conflict" as const;

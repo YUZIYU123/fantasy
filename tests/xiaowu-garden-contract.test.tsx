@@ -68,7 +68,12 @@ test("登录账号从服务端读取状态并提交幂等互动", async () => {
       bondXp: 140, level: 2, bondInLevel: 40, bondToNextLevel: 100,
       vitality: 55, mood: "calm", mistlight: 24,
       equippedAppearance: "default", equippedGarden: "world-tree",
-    } });
+    }, memories: [{
+      chapterId: "chapter-memory", chapterVersion: 2, chapterTitle: "雾港失火", novelName: "焦账员",
+      coverUrl: "/fantasy-os-orbit.jpg", coverAlt: "焦账员封面", completedAt: "2026-08-28T12:00:00.000Z",
+    }], recentRewards: [{ kind: "completion", result: { bondXp: 40, mistlight: 20 }, createdAt: "2026-08-28T12:00:00.000Z" }],
+      exploration: [{ chapterId: "chapter-memory", chapterVersion: 2, discovered: 4, total: 7 }],
+    });
     return Response.json({ outcome: "restored", state: {
       bondXp: 140, level: 2, bondInLevel: 40, bondToNextLevel: 100,
       vitality: 70, mood: "bright", mistlight: 21,
@@ -80,6 +85,9 @@ test("登录账号从服务端读取状态并提交幂等互动", async () => {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
   assert.match(container.textContent || "", /羁绊等级 2/);
+  assert.match(container.textContent || "", /雾港失火/);
+  assert.match(container.textContent || "", /已发现 4 \/ 7 个剧情节点/);
+  assert.match(container.textContent || "", /最近获得 40 羁绊与 20 雾光/);
   const play = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("一起玩"));
   assert.ok(play);
   await act(async () => play.click());

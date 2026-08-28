@@ -169,6 +169,10 @@ test("小雾账号接口拒绝访客与跨源写入并隔离账号状态", async
   const anonymous = await requestJson("/api/account/companion");
   assert.equal(anonymous.response.status, 401);
   assert.equal(anonymous.response.headers.get("cache-control"), "private, no-store");
+  const anonymousHeartbeat = await requestJson("/api/account/companion/reading-heartbeat", {
+    method: "POST", body: { chapterId: "missing", chapterVersion: 1, nodeId: "start", windowStartedAt: new Date().toISOString(), operationId: "anonymous" },
+  });
+  assert.equal(anonymousHeartbeat.response.status, 401);
 
   const owner = await createReaderAccount("companion-owner");
   const stranger = await createReaderAccount("companion-stranger");
@@ -184,6 +188,12 @@ test("小雾账号接口拒绝访客与跨源写入并隔离账号状态", async
     body: JSON.stringify({ action: "touch", operationId: crypto.randomUUID(), userId: "forged-account" }),
   });
   assert.equal(crossOrigin.status, 403);
+  const crossOriginHeartbeat = await fetch(`${origin}/api/account/companion/reading-heartbeat`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: owner.cookie, origin: "https://attacker.example" },
+    body: JSON.stringify({ chapterId: "missing", chapterVersion: 1, nodeId: "start", windowStartedAt: new Date().toISOString(), operationId: "cross-origin" }),
+  });
+  assert.equal(crossOriginHeartbeat.status, 403);
 
   const insufficient = await requestJson("/api/account/companion/actions", {
     method: "POST",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { COMPANION_RULES } from "../../lib/companion-lifecycle";
+import { COMPANION_RULES, type CompanionMemoryCard } from "../../lib/companion-lifecycle";
 import { ReaderShell } from "../reader-shell";
 import { createSessionCompanion } from "./trial-companion";
 
@@ -16,6 +16,9 @@ type CompanionState = {
   equippedAppearance: string;
   equippedGarden: string;
 };
+
+type RecentReward = { kind: string; result: Record<string, number>; createdAt: string };
+type Exploration = { chapterId: string; chapterVersion: number; discovered: number; total: number };
 
 const loadingState: CompanionState = {
   bondXp: 0,
@@ -38,6 +41,9 @@ export function XiaowuGardenScreen() {
   const [state, setState] = useState<CompanionState>(loadingState);
   const [message, setMessage] = useState("正在靠近世界树…");
   const [busy, setBusy] = useState(false);
+  const [memories, setMemories] = useState<CompanionMemoryCard[]>([]);
+  const [recentRewards, setRecentRewards] = useState<RecentReward[]>([]);
+  const [exploration, setExploration] = useState<Exploration[]>([]);
   const trialRef = useRef<ReturnType<typeof createSessionCompanion> | null>(null);
 
   const load = useCallback(async () => {
@@ -51,14 +57,20 @@ export function XiaowuGardenScreen() {
         const result = await trialRef.current.lifecycle.execute(trialRef.current.actor, { action: "observe" });
         if (!("state" in result) || !result.state) throw new Error("试玩状态暂时不可用");
         setState(result.state);
+        setMemories(result.memories ?? []);
+        setRecentRewards(result.recentRewards ?? []);
+        setExploration(result.exploration ?? []);
         setMode("guest");
         setMessage("试玩状态只停留在当前浏览器会话");
         return;
       }
       const response = await fetch("/api/account/companion", { headers: { accept: "application/json" } });
-      const body = await response.json() as { state?: CompanionState; error?: string };
+      const body = await response.json() as { state?: CompanionState; memories?: CompanionMemoryCard[]; recentRewards?: RecentReward[]; exploration?: Exploration[]; error?: string };
       if (!response.ok || !body.state) throw new Error(body.error || "雾庭暂时没有回应");
       setState(body.state);
+      setMemories(body.memories ?? []);
+      setRecentRewards(body.recentRewards ?? []);
+      setExploration(body.exploration ?? []);
       setMode("account");
       setMessage("小雾认出了你，成长已同步");
     } catch (error) {
@@ -132,12 +144,21 @@ export function XiaowuGardenScreen() {
 
       <section className="garden-progress">
         <article><small>当前成长目标</small><h2>带回下一束故事微光</h2><p>首次完成已发布章节，可获得 {COMPANION_RULES.completionBondXp} 羁绊与 {COMPANION_RULES.completionMistlight} 雾光。</p></article>
-        <article><small>最近阅读奖励</small><p>{mode === "account" && state.bondXp > 0 ? `已积累 ${state.bondXp} 羁绊；完成新的章节会继续记录。` : "还没有带回阅读奖励。"}</p></article>
+        <article><small>最近阅读奖励</small><p>{recentRewards[0] ? `最近获得 ${recentRewards[0].result.bondXp ?? 0} 羁绊与 ${recentRewards[0].result.mistlight ?? 0} 雾光。` : mode === "account" && state.bondXp > 0 ? `已积累 ${state.bondXp} 羁绊；完成新的章节会继续记录。` : "还没有带回阅读奖励。"}</p></article>
+        {exploration[0] && <article><small>路线探索度</small><p>已发现 {exploration[0].discovered} / {exploration[0].total} 个剧情节点。</p></article>}
       </section>
 
       <section className="garden-collections" aria-labelledby="garden-collection-title">
         <p>COLLECTION ARCHIVE</p><h2 id="garden-collection-title">收藏</h2>
         <div>{["记忆册", "动作", "服装", "庭院"].map((label) => <button disabled key={label}><span>{label}</span><small>后续开放</small></button>)}</div>
+      </section>
+      <section className="garden-memories" aria-labelledby="garden-memory-title">
+        <p>MEMORY ARCHIVE</p><h2 id="garden-memory-title">记忆册</h2>
+        {memories.length ? memories.map((memory) => <article key={`${memory.chapterId}:${memory.chapterVersion}`}>
+          {/* eslint-disable-next-line @next/next/no-img-element -- published covers may use R2 or local assets */}
+          {memory.coverUrl && <img src={memory.coverUrl} alt={memory.coverAlt} width={72} height={96} />}
+          <div><small>{memory.novelName}</small><h3>{memory.chapterTitle}</h3><time dateTime={memory.completedAt}>{new Date(memory.completedAt).toLocaleDateString("zh-CN")}</time></div>
+        </article>) : <p>{mode === "guest" ? "登录后，完成章节会在这里留下永久记忆。" : "完成第一章后，记忆页会出现在这里。"}</p>}
       </section>
     </main>
   </ReaderShell>;

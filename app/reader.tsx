@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createReadingSession, observeReadingSession, type ReadingEffect, type ReadingEvent, type ReadingState, type SessionTerminalPlayback } from "../lib/reading-session";
+import { ReadingFactOutbox, type ReadingFactEnvelope } from "./reading-fact-outbox";
+import { createReadingDiscoveryFact, createReadingHeartbeatFact, createReadingSession, observeReadingSession, type ReadingEffect, type ReadingEvent, type ReadingState, type SessionTerminalPlayback } from "../lib/reading-session";
 import {
   clampMediaVolume,
   normalizeChoiceSfxMaxDuration,
@@ -57,6 +58,10 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const dispatchRef = useRef<(event: ReadingEvent) => void>(() => {});
   const executeEffectsRef = useRef<(effects: ReadingEffect[]) => void>(() => {});
+  const accountReadingRef = useRef(false);
+  const readingStateRef = useRef<ReadingState | null>(null);
+  const heartbeatOutboxRef = useRef(new ReadingFactOutbox());
+  const discoveryOutboxRef = useRef(new ReadingFactOutbox());
 
   const reportVideoOutcome = useCallback((id: string, outcome: "success" | "complete" | "failure" | "timeout") => {
     const timeoutId = `${id}:timeout`;
@@ -160,6 +165,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
 
   useEffect(() => { dispatchRef.current = dispatch; }, [dispatch]);
   useEffect(() => { executeEffectsRef.current = executeEffects; }, [executeEffects]);
+  useEffect(() => { readingStateRef.current = state; }, [state]);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,7 +186,10 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     };
     if (preview) install(null);
     else fetch(`/api/account/progress?chapterId=${encodeURIComponent(chapterId)}`)
-      .then(async (response) => response.ok ? (await response.json() as { progress?: Parameters<typeof createReadingSession>[0]["cloudProgress"] }).progress ?? null : null)
+      .then(async (response) => {
+        accountReadingRef.current = response.ok;
+        return response.ok ? (await response.json() as { progress?: Parameters<typeof createReadingSession>[0]["cloudProgress"] }).progress ?? null : null;
+      })
       .catch(() => null)
       .then(install);
     const timerMap = timers.current;
@@ -200,6 +209,66 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     if (music.current) music.current.volume = muted ? 0 : activeCueVolume.current * (terminalDucking ? 0.25 : 1);
     if (sfx.current) sfx.current.volume = muted ? 0 : activeSfxVolume.current;
   }, [muted, terminalDucking]);
+
+  useEffect(() => {
+    if (preview) return;
+    let windowStartedAt = new Date().toISOString();
+    const send = (body: ReadingFactEnvelope) => fetch("/api/account/companion/reading-heartbeat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const timer = setInterval(() => {
+      const now = new Date().toISOString();
+      if (!accountReadingRef.current || document.hidden) {
+        windowStartedAt = now;
+        return;
+      }
+      if (heartbeatOutboxRef.current.pending > 0) {
+        void heartbeatOutboxRef.current.flush(send);
+        return;
+      }
+      const fact = createReadingHeartbeatFact({ state: readingStateRef.current, preview, chapterId, chapterVersion, windowStartedAt });
+      if (!fact) {
+        windowStartedAt = now;
+        return;
+      }
+      const operationId = crypto.randomUUID();
+      heartbeatOutboxRef.current.enqueue(operationId, { ...fact, operationId });
+      void heartbeatOutboxRef.current.flush(send);
+      windowStartedAt = now;
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [chapterId, chapterVersion, preview]);
+
+  useEffect(() => {
+    if (preview) return;
+    const send = (body: ReadingFactEnvelope) => fetch("/api/account/companion/reading-heartbeat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const retry = () => {
+      if (!accountReadingRef.current || document.hidden) return;
+      void heartbeatOutboxRef.current.flush(send);
+      void discoveryOutboxRef.current.flush(send);
+    };
+    const timer = setInterval(retry, 15_000);
+    return () => clearInterval(timer);
+  }, [preview]);
+
+  useEffect(() => {
+    if (!accountReadingRef.current) return;
+    const fact = createReadingDiscoveryFact({ state: readingStateRef.current, preview, chapterId, chapterVersion });
+    if (!fact) return;
+    const key = `${fact.chapterId}:${fact.chapterVersion}:${fact.nodeId}`;
+    discoveryOutboxRef.current.enqueue(key, { ...fact, fact: "node-arrival" });
+    void discoveryOutboxRef.current.flush((body) => fetch("/api/account/companion/reading-heartbeat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+  }, [chapterId, chapterVersion, preview, state?.nodeId, state?.phase]);
 
   const node = story.nodes.find((item) => item.id === state?.nodeId) || story.nodes[0];
   const pages = useMemo(() => paginateStoryBody(node?.body || ""), [node?.body]);
