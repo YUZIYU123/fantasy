@@ -231,6 +231,32 @@ export const chapterVersionCompletionFacts = sqliteTable("chapter_version_comple
   index("chapter_version_completion_facts_user_time_idx").on(table.userId, table.recordedAt),
 ]);
 
+export const companionDiscoveries = sqliteTable("companion_discoveries", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  chapterId: text("chapter_id").notNull(),
+  chapterVersion: integer("chapter_version").notNull(),
+  nodeId: text("node_id").notNull(),
+  recordedAt: text("recorded_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("companion_discoveries_route_unique").on(table.userId, table.chapterId, table.chapterVersion, table.nodeId),
+  index("companion_discoveries_user_time_idx").on(table.userId, table.recordedAt),
+]);
+
+export const companionActivityWindows = sqliteTable("companion_activity_windows", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  activityDate: text("activity_date").notNull(),
+  chapterId: text("chapter_id").notNull(),
+  chapterVersion: integer("chapter_version").notNull(),
+  seconds: integer("seconds").notNull(),
+  operationId: text("operation_id").notNull(),
+  recordedAt: text("recorded_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("companion_activity_windows_user_operation_unique").on(table.userId, table.operationId),
+  index("companion_activity_windows_user_date_idx").on(table.userId, table.activityDate),
+]);
+
 export const bookshelfEntries = sqliteTable("bookshelf_entries", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),

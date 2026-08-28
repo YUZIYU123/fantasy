@@ -27,6 +27,41 @@ export type ReadingProgressUpdate = {
   terminalEventIds?: string[];
 };
 
+export type ReadingHeartbeatFact = {
+  chapterId: string;
+  chapterVersion: number;
+  nodeId: string;
+  windowStartedAt: string;
+};
+
+export type ReadingDiscoveryFact = { chapterId: string; chapterVersion: number; nodeId: string };
+
+export function createReadingDiscoveryFact(input: {
+  state: ReadingState | null;
+  preview: boolean;
+  chapterId: string;
+  chapterVersion: number;
+}): ReadingDiscoveryFact | null {
+  if (input.preview || input.state?.phase !== "content" || !input.state.nodeId) return null;
+  return { chapterId: input.chapterId, chapterVersion: input.chapterVersion, nodeId: input.state.nodeId };
+}
+
+export function createReadingHeartbeatFact(input: {
+  state: ReadingState | null;
+  preview: boolean;
+  chapterId: string;
+  chapterVersion: number;
+  windowStartedAt: string;
+}): ReadingHeartbeatFact | null {
+  if (input.preview || input.state?.phase !== "content" || !input.state.nodeId) return null;
+  return {
+    chapterId: input.chapterId,
+    chapterVersion: input.chapterVersion,
+    nodeId: input.state.nodeId,
+    windowStartedAt: input.windowStartedAt,
+  };
+}
+
 export class ReadingSessionError extends Error {
   readonly status: number;
 

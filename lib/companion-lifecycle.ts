@@ -29,6 +29,23 @@ export type CompanionCompletionFact = {
   recordedAt: string;
 };
 
+export type CompanionActivityFact = { date: string; seconds: number; operationId: string; recordedAt: string };
+export type CompanionDiscoveryFact = {
+  chapterId: string;
+  chapterVersion: number;
+  nodeId: string;
+  recordedAt: string;
+};
+export type CompanionMemoryCard = {
+  chapterId: string;
+  chapterVersion: number;
+  chapterTitle: string;
+  novelName: string;
+  coverUrl: string;
+  coverAlt: string;
+  completedAt: string;
+};
+
 export const COMPANION_RULES = {
   completionBondXp: 40,
   completionMistlight: 20,
@@ -43,6 +60,25 @@ export interface CompanionStore {
   readProfile(userId: string): Promise<CompanionProfileRecord | null>;
   readReceipt(userId: string, key: string): Promise<CompanionReceipt | null>;
   listCompletionFacts(userId: string): Promise<CompanionCompletionFact[]>;
+  listActivityFacts(userId: string): Promise<CompanionActivityFact[]>;
+  listDiscoveryFacts(userId: string): Promise<CompanionDiscoveryFact[]>;
+  listMemoryCards(userId: string): Promise<CompanionMemoryCard[]>;
+  listRecentReceipts(userId: string): Promise<CompanionReceipt[]>;
+  hasReadingOperation(userId: string, operationId: string): Promise<boolean>;
+  readLastActivityAt(userId: string): Promise<string | null>;
+  readPublishedChapter(chapterId: string, chapterVersion: number): Promise<{ nodeIds: string[] } | null>;
+  readChapterVersion(chapterId: string, chapterVersion: number): Promise<{ nodeIds: string[] } | null>;
+  recordReadingFacts(input: {
+    userId: string;
+    chapterId: string;
+    chapterVersion: number;
+    nodeId: string;
+    date: string;
+    seconds: number;
+    operationId: string;
+    recordedAt: string;
+  }): Promise<"applied" | "duplicate">;
+  recordDiscoveryFact(input: CompanionDiscoveryFact & { userId: string }): Promise<"applied" | "duplicate">;
   commit(input: {
     userId: string;
     expectedRevision: number | null;
@@ -73,6 +109,8 @@ export type CompanionView = {
 
 export type CompanionCommand =
   | { action: "observe" }
+  | { action: "record-reading"; chapterId: string; chapterVersion: number; nodeId: string; windowStartedAt: string; operationId: string }
+  | { action: "record-node"; chapterId: string; chapterVersion: number; nodeId: string }
   | { action: "interact"; kind: "touch" | "play" | "rest"; operationId: string }
   | { action: "reset"; confirmation: string }
   | { action: "export" }
@@ -119,6 +157,9 @@ function view(profile: CompanionProfileRecord): CompanionView {
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+const activityDate = (date: Date) => new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+}).format(date);
 
 function visit(profile: CompanionProfileRecord, now: string) {
   const elapsed = Math.max(0, Date.parse(now) - Date.parse(profile.lastSeenAt));
@@ -187,6 +228,64 @@ export class CompanionLifecycle {
     throw new CompanionError("小雾成长发生冲突，请重试", 409);
   }
 
+  private async rewardReadingFact(
+    userId: string,
+    key: string,
+    bondXp: number,
+    mistlight: number,
+    factRecordedAt: string,
+    now: string,
+  ) {
+    if (await this.store.readReceipt(userId, key)) return;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await this.profile(userId);
+      if (current.rewardBaselineAt && factRecordedAt <= current.rewardBaselineAt) return;
+      const next: CompanionProfileRecord = {
+        ...visit(current, now),
+        revision: current.revision + 1,
+        bondXp: current.bondXp + bondXp,
+        mistlight: current.mistlight + mistlight,
+      };
+      const result = await this.store.commit({
+        userId,
+        expectedRevision: current.revision,
+        next,
+        receipt: { key, kind: "completion", resultJson: JSON.stringify({ bondXp, mistlight }), createdAt: now },
+      });
+      if (result === "applied" || result === "duplicate") return;
+    }
+    throw new CompanionError("小雾成长发生冲突，请重试", 409);
+  }
+
+  private async reconcileReading(userId: string) {
+    const now = this.clock().toISOString();
+    const activitiesByDate = new Map<string, CompanionActivityFact[]>();
+    for (const fact of await this.store.listActivityFacts(userId)) {
+      activitiesByDate.set(fact.date, [...(activitiesByDate.get(fact.date) ?? []), fact]);
+    }
+    for (const [date, facts] of activitiesByDate) {
+      let seconds = 0;
+      let rewardedWindows = 0;
+      for (const fact of facts.sort((a, b) => a.recordedAt.localeCompare(b.recordedAt))) {
+        seconds += fact.seconds;
+        const availableWindows = Math.min(5, Math.floor(seconds / 300));
+        while (rewardedWindows < availableWindows) {
+          rewardedWindows += 1;
+          await this.rewardReadingFact(userId, `activity:${date}:${rewardedWindows}`, 2, 1, fact.recordedAt, now);
+        }
+      }
+    }
+    const discoveries = [...await this.store.listDiscoveryFacts(userId)].sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+    const counts = new Map<string, number>();
+    for (const fact of discoveries) {
+      const group = `${fact.chapterId}:${fact.chapterVersion}`;
+      const count = counts.get(group) ?? 0;
+      counts.set(group, count + 1);
+      if (count >= 10) continue;
+      await this.rewardReadingFact(userId, `discovery:${group}:${fact.nodeId}`, 0, 1, fact.recordedAt, now);
+    }
+  }
+
   async execute(actor: CompanionActor, command: CompanionCommand) {
     if (command.action === "cleanup") {
       if (actor.kind !== "system") throw new CompanionError("无权清理小雾成长", 403);
@@ -215,11 +314,30 @@ export class CompanionLifecycle {
       for (const fact of await this.store.listCompletionFacts(userId)) {
         await this.rewardCompletion(userId, fact);
       }
+      await this.reconcileReading(userId);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const current = await this.profile(userId);
         const next = { ...visit(current, this.clock().toISOString()), revision: current.revision + 1 };
         if (await this.store.commit({ userId, expectedRevision: current.revision, next }) === "applied") {
-          return { state: view(next) };
+          const discoveries = await this.store.listDiscoveryFacts(userId);
+          const groups = new Map<string, CompanionDiscoveryFact[]>();
+          for (const fact of discoveries) {
+            const key = `${fact.chapterId}:${fact.chapterVersion}`;
+            groups.set(key, [...(groups.get(key) ?? []), fact]);
+          }
+          const exploration = await Promise.all([...groups.values()].map(async (facts) => {
+            const first = facts[0];
+            const chapter = await this.store.readChapterVersion(first.chapterId, first.chapterVersion);
+            return { chapterId: first.chapterId, chapterVersion: first.chapterVersion, discovered: facts.length, total: chapter?.nodeIds.length ?? facts.length };
+          }));
+          return {
+            state: view(next),
+            memories: await this.store.listMemoryCards(userId),
+            recentRewards: (await this.store.listRecentReceipts(userId)).filter((receipt) => receipt.kind === "completion").map((receipt) => ({
+              kind: receipt.kind, result: JSON.parse(receipt.resultJson) as Record<string, number>, createdAt: receipt.createdAt,
+            })),
+            exploration,
+          };
         }
       }
       throw new CompanionError("小雾成长发生冲突，请重试", 409);
@@ -264,6 +382,46 @@ export class CompanionLifecycle {
         }
       }
       throw new CompanionError("小雾成长发生冲突，请重试", 409);
+    }
+    if (command.action === "record-reading") {
+      if (!command.operationId || command.operationId.length > 128) throw new CompanionError("阅读窗口标识无效");
+      if (await this.store.hasReadingOperation(userId, command.operationId)) {
+        await this.reconcileReading(userId);
+        return { outcome: "duplicate" as const, state: view(await this.profile(userId)) };
+      }
+      const context = await this.store.readPublishedChapter(command.chapterId, command.chapterVersion);
+      if (!context) throw new CompanionError("章节版本不可用于成长", 409);
+      if (!context.nodeIds.includes(command.nodeId)) throw new CompanionError("剧情节点不存在", 409);
+      const now = this.clock();
+      const startedAt = Date.parse(command.windowStartedAt);
+      if (!Number.isFinite(startedAt) || startedAt > now.getTime()) throw new CompanionError("阅读窗口时间无效");
+      let seconds = Math.min(90, Math.floor((now.getTime() - startedAt) / 1000));
+      const lastActivityAt = await this.store.readLastActivityAt(userId);
+      if (lastActivityAt) seconds = Math.min(seconds, Math.floor((now.getTime() - Date.parse(lastActivityAt)) / 1000));
+      if (seconds < 1) throw new CompanionError("阅读窗口时间无效");
+      await this.store.recordReadingFacts({
+        userId,
+        chapterId: command.chapterId,
+        chapterVersion: command.chapterVersion,
+        nodeId: command.nodeId,
+        date: activityDate(now),
+        seconds,
+        operationId: command.operationId,
+        recordedAt: now.toISOString(),
+      });
+      await this.reconcileReading(userId);
+      return { outcome: "recorded" as const, state: view(await this.profile(userId)) };
+    }
+    if (command.action === "record-node") {
+      const context = await this.store.readPublishedChapter(command.chapterId, command.chapterVersion);
+      if (!context) throw new CompanionError("章节版本不可用于成长", 409);
+      if (!context.nodeIds.includes(command.nodeId)) throw new CompanionError("剧情节点不存在", 409);
+      const result = await this.store.recordDiscoveryFact({
+        userId, chapterId: command.chapterId, chapterVersion: command.chapterVersion,
+        nodeId: command.nodeId, recordedAt: this.clock().toISOString(),
+      });
+      await this.reconcileReading(userId);
+      return { outcome: result, state: view(await this.profile(userId)) };
     }
     throw new CompanionError("不支持的小雾成长操作");
   }

@@ -6,11 +6,58 @@ class MemoryCompanionStore {
   profiles = new Map();
   receipts = new Map();
   completions = new Map();
+  activities = new Map();
+  discoveries = new Map();
+  readingOperations = new Set();
   failReset = false;
+  afterListActivityFacts = null;
+  afterListDiscoveryFacts = null;
 
   async readProfile(userId) { return this.profiles.get(userId) ?? null; }
   async readReceipt(userId, key) { return this.receipts.get(`${userId}:${key}`) ?? null; }
   async listCompletionFacts(userId) { return this.completions.get(userId) ?? []; }
+  async listActivityFacts(userId) {
+    const facts = structuredClone(this.activities.get(userId) ?? []);
+    await this.afterListActivityFacts?.();
+    this.afterListActivityFacts = null;
+    return facts;
+  }
+  async listDiscoveryFacts(userId) {
+    const facts = structuredClone(this.discoveries.get(userId) ?? []);
+    await this.afterListDiscoveryFacts?.();
+    this.afterListDiscoveryFacts = null;
+    return facts;
+  }
+  async listMemoryCards() { return []; }
+  async listRecentReceipts(userId) {
+    return [...this.receipts.entries()].filter(([key]) => key.startsWith(`${userId}:`)).map(([, receipt]) => receipt);
+  }
+  async hasReadingOperation(userId, operationId) { return this.readingOperations.has(`${userId}:${operationId}`); }
+  async readLastActivityAt(userId) {
+    return (this.activities.get(userId) ?? []).at(-1)?.recordedAt ?? null;
+  }
+  async readPublishedChapter(chapterId, chapterVersion) {
+    if (chapterId === "chapter-active" && chapterVersion === 2) return { nodeIds: ["node-a", "node-b"] };
+    if (chapterId === "chapter-explore" && chapterVersion === 1) return { nodeIds: Array.from({ length: 12 }, (_, index) => `node-${index + 1}`) };
+    return null;
+  }
+  async readChapterVersion(chapterId, chapterVersion) { return this.readPublishedChapter(chapterId, chapterVersion); }
+  async recordReadingFacts(input) {
+    const operationKey = `${input.userId}:${input.operationId}`;
+    if (this.readingOperations.has(operationKey)) return "duplicate";
+    this.readingOperations.add(operationKey);
+    const activities = this.activities.get(input.userId) ?? [];
+    activities.push({ date: input.date, seconds: input.seconds, operationId: input.operationId, chapterId: input.chapterId, recordedAt: input.recordedAt });
+    this.activities.set(input.userId, activities);
+    return "applied";
+  }
+  async recordDiscoveryFact(input) {
+    const discoveries = this.discoveries.get(input.userId) ?? [];
+    if (discoveries.some((fact) => fact.chapterId === input.chapterId && fact.chapterVersion === input.chapterVersion && fact.nodeId === input.nodeId)) return "duplicate";
+    discoveries.push({ chapterId: input.chapterId, chapterVersion: input.chapterVersion, nodeId: input.nodeId, recordedAt: input.recordedAt });
+    this.discoveries.set(input.userId, discoveries);
+    return "applied";
+  }
   async commit(input) {
     if (input.receipt && this.receipts.has(`${input.userId}:${input.receipt.key}`)) return "duplicate";
     const current = this.profiles.get(input.userId) ?? null;
@@ -30,6 +77,8 @@ class MemoryCompanionStore {
   }
   async purge(userId) {
     this.profiles.delete(userId);
+    this.activities.delete(userId);
+    this.discoveries.delete(userId);
     for (const key of this.receipts.keys()) if (key.startsWith(`${userId}:`)) this.receipts.delete(key);
   }
   async cleanup() {}
@@ -177,4 +226,84 @@ test("CompanionLifecycle 重置保持 revision 单调并拒绝重置前的陈旧
   assert.equal(staleResult, "conflict");
   assert.equal((await store.readProfile(actor.id)).revision, stale.revision + 1);
   assert.deepEqual({ bondXp: reset.state.bondXp, mistlight: reset.state.mistlight }, { bondXp: 0, mistlight: 0 });
+});
+
+test("CompanionLifecycle 每五分钟奖励阅读且按自然日限制十羁绊与五雾光", async () => {
+  const store = new MemoryCompanionStore();
+  let now = new Date("2026-08-28T12:01:00.000Z");
+  const lifecycle = new CompanionLifecycle(store, () => now);
+  const actor = { kind: "account", id: "reader-active-window" };
+  await lifecycle.execute(actor, { action: "record-node", chapterId: "chapter-active", chapterVersion: 2, nodeId: "node-a" });
+
+  for (let minute = 1; minute <= 30; minute += 1) {
+    now = new Date(`2026-08-28T12:${String(minute).padStart(2, "0")}:00.000Z`);
+    await lifecycle.execute(actor, {
+      action: "record-reading",
+      chapterId: "chapter-active",
+      chapterVersion: 2,
+      nodeId: "node-a",
+      windowStartedAt: new Date(now.getTime() - 60_000).toISOString(),
+      operationId: `heartbeat-${minute}`,
+    });
+  }
+  const state = await lifecycle.execute(actor, { action: "observe" });
+
+  const duplicate = await lifecycle.execute(actor, {
+    action: "record-reading", chapterId: "chapter-active", chapterVersion: 2, nodeId: "node-a",
+    windowStartedAt: new Date(now.getTime() - 60_000).toISOString(), operationId: "heartbeat-30",
+  });
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "record-reading", chapterId: "chapter-active", chapterVersion: 2, nodeId: "node-a",
+    windowStartedAt: new Date(now.getTime() - 60_000).toISOString(), operationId: "heartbeat-too-soon",
+  }), /阅读窗口时间无效/);
+
+  assert.deepEqual({ bondXp: state.state.bondXp, mistlight: state.state.mistlight }, { bondXp: 10, mistlight: 6 });
+  assert.equal(duplicate.outcome, "duplicate");
+});
+
+test("CompanionLifecycle 每个章节版本最多奖励十个首次剧情节点", async () => {
+  const store = new MemoryCompanionStore();
+  let now = new Date("2026-08-28T13:00:00.000Z");
+  const lifecycle = new CompanionLifecycle(store, () => now);
+  const actor = { kind: "account", id: "reader-discovery-cap" };
+  for (let index = 1; index <= 12; index += 1) {
+    now = new Date(now.getTime() + 60_000);
+    await lifecycle.execute(actor, {
+      action: "record-node", chapterId: "chapter-explore", chapterVersion: 1, nodeId: `node-${index}`,
+    });
+  }
+  const result = await lifecycle.execute(actor, { action: "observe" });
+  assert.deepEqual({ bondXp: result.state.bondXp, mistlight: result.state.mistlight }, { bondXp: 0, mistlight: 10 });
+});
+
+test("CompanionLifecycle 重置水位拒绝已经加载但尚未结算的旧阅读窗口", async () => {
+  const store = new MemoryCompanionStore();
+  let now = new Date("2026-08-28T12:00:00.000Z");
+  const lifecycle = new CompanionLifecycle(store, () => now);
+  const actor = { kind: "account", id: "reader-stale-activity" };
+  await lifecycle.execute(actor, { action: "observe" });
+  store.activities.set(actor.id, [{ date: "2026-08-28", seconds: 300, operationId: "old-window", recordedAt: "2026-08-28T11:59:00.000Z" }]);
+  store.afterListActivityFacts = async () => {
+    now = new Date("2026-08-28T12:00:01.000Z");
+    await lifecycle.execute(actor, { action: "reset", confirmation: "重置小雾成长" });
+  };
+
+  const observed = await lifecycle.execute(actor, { action: "observe" });
+  assert.deepEqual({ bondXp: observed.state.bondXp, mistlight: observed.state.mistlight }, { bondXp: 0, mistlight: 0 });
+});
+
+test("CompanionLifecycle 重置水位拒绝已经加载但尚未结算的旧节点发现", async () => {
+  const store = new MemoryCompanionStore();
+  let now = new Date("2026-08-28T12:00:00.000Z");
+  const lifecycle = new CompanionLifecycle(store, () => now);
+  const actor = { kind: "account", id: "reader-stale-discovery" };
+  await lifecycle.execute(actor, { action: "observe" });
+  store.discoveries.set(actor.id, [{ chapterId: "chapter-active", chapterVersion: 2, nodeId: "node-a", recordedAt: "2026-08-28T11:59:00.000Z" }]);
+  store.afterListDiscoveryFacts = async () => {
+    now = new Date("2026-08-28T12:00:01.000Z");
+    await lifecycle.execute(actor, { action: "reset", confirmation: "重置小雾成长" });
+  };
+
+  const observed = await lifecycle.execute(actor, { action: "observe" });
+  assert.deepEqual({ bondXp: observed.state.bondXp, mistlight: observed.state.mistlight }, { bondXp: 0, mistlight: 0 });
 });

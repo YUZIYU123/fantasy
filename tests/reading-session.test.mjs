@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReadingSession } from "../lib/reading-session.ts";
+import { createReadingDiscoveryFact, createReadingHeartbeatFact, createReadingSession } from "../lib/reading-session.ts";
 import { normalizeStory } from "../lib/story.ts";
 import { storyFixture } from "./story-fixture.mjs";
 
@@ -23,6 +23,21 @@ test("ReadingSession 选择较新进度并在完成或版本变化时重启", ()
   ]) {
     assert.equal(createReadingSession({ ...base, deviceProgress: progress }).state.nodeId, current.startNodeId);
   }
+});
+
+test("ReadingSession 只在正式正文阶段产生有效阅读窗口事实", () => {
+  const session = createReadingSession({ story: story(), chapterId: "chapter-heartbeat", chapterVersion: 4, preview: false });
+  const input = { state: session.state, preview: false, chapterId: "chapter-heartbeat", chapterVersion: 4, windowStartedAt: "2026-08-28T12:00:00.000Z" };
+  assert.deepEqual(createReadingHeartbeatFact(input), {
+    chapterId: "chapter-heartbeat", chapterVersion: 4, nodeId: session.state.nodeId, windowStartedAt: input.windowStartedAt,
+  });
+  assert.equal(createReadingHeartbeatFact({ ...input, preview: true }), null);
+  assert.equal(createReadingHeartbeatFact({ ...input, state: { ...session.state, phase: "beforeImage" } }), null);
+  assert.deepEqual(createReadingDiscoveryFact(input), {
+    chapterId: "chapter-heartbeat", chapterVersion: 4, nodeId: session.state.nodeId,
+  });
+  assert.equal(createReadingDiscoveryFact({ ...input, preview: true }), null);
+  assert.equal(createReadingDiscoveryFact({ ...input, state: { ...session.state, phase: "beforeImage" } }), null);
 });
 
 test("预览会话推进剧情但永不产生持久化 effect", () => {

@@ -12,7 +12,7 @@ import { companionLifecycle, drizzleD1CompanionStore } from "../db/companion-lif
 import { sessionAuthorization } from "../lib/session-authorization";
 import { AuthError, hashToken } from "../lib/auth";
 import { CompanionLifecycle } from "../lib/companion-lifecycle";
-import { createBlankNovel, createBlankStory } from "../lib/story";
+import { createBlankNovel, createBlankStory, createStoryChoice } from "../lib/story";
 import { getD1Binding } from "../db";
 
 type TestEnv = { ASSET_BUCKET: R2Bucket };
@@ -112,6 +112,7 @@ const lifecycleWorker = {
     if (pathname === "/companion-completion-recovery" && request.method === "POST") {
       const actorId = crypto.randomUUID();
       const fixture = await createBookshelfFixture();
+      const secondFixture = await createBookshelfFixture();
       let failedRewardAttempts = 0;
       await readingSessionProgress.save(actorId, {
         chapterId: fixture.chapterId,
@@ -180,6 +181,115 @@ const lifecycleWorker = {
         },
       });
       const afterStaleResetCommit = await drizzleD1CompanionStore.readProfile(resetActorId);
+      const readingActorId = crypto.randomUUID();
+      const recordedAt = new Date();
+      const readingCommand = {
+        action: "record-reading" as const,
+        chapterId: fixture.chapterId,
+        chapterVersion: 1,
+        nodeId: fixture.story.startNodeId,
+        windowStartedAt: new Date(recordedAt.getTime() - 60_000).toISOString(),
+        operationId: "reading-window-1",
+      };
+      await companionLifecycle.execute({ kind: "account", id: readingActorId }, {
+        action: "record-node", chapterId: fixture.chapterId, chapterVersion: 1, nodeId: fixture.story.startNodeId,
+      });
+      await companionLifecycle.execute({ kind: "account", id: readingActorId }, readingCommand);
+      await companionLifecycle.execute({ kind: "account", id: readingActorId }, readingCommand);
+      const readingState = await companionLifecycle.execute({ kind: "account", id: readingActorId }, { action: "observe" });
+      let forgedNodeRejected = false;
+      try {
+        await companionLifecycle.execute({ kind: "account", id: readingActorId }, {
+          action: "record-node", chapterId: fixture.chapterId, chapterVersion: 1, nodeId: "forged-node",
+        });
+      } catch { forgedNodeRejected = true; }
+      const racingReaderId = crypto.randomUUID();
+      const racingClock = new Date();
+      const racingLifecycle = new CompanionLifecycle(drizzleD1CompanionStore, () => racingClock);
+      await Promise.allSettled([
+        { operationId: "race-a", chapterId: fixture.chapterId, nodeId: fixture.story.startNodeId },
+        { operationId: "race-b", chapterId: secondFixture.chapterId, nodeId: secondFixture.story.startNodeId },
+      ].map(({ operationId, chapterId, nodeId }) => racingLifecycle.execute(
+        { kind: "account", id: racingReaderId },
+        {
+          ...readingCommand,
+          chapterId,
+          nodeId,
+          windowStartedAt: new Date(racingClock.getTime() - 60_000).toISOString(),
+          operationId,
+        },
+      )));
+      const racingExport = await racingLifecycle.execute({ kind: "account", id: racingReaderId }, { action: "export" });
+      if (!("growth" in racingExport) || !racingExport.growth) throw new Error("并发心跳导出失败");
+      const racingActivityFacts = racingExport.growth.activityFacts as unknown[];
+      const staleReadingActorId = crypto.randomUUID();
+      await fixedLifecycle.execute({ kind: "account", id: staleReadingActorId }, { action: "observe" });
+      await getD1Binding().prepare(`INSERT INTO companion_activity_windows
+        (id, user_id, activity_date, chapter_id, chapter_version, seconds, operation_id, recorded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+          crypto.randomUUID(), staleReadingActorId, "2026-08-28", fixture.chapterId, 1, 300, "stale-window", "2026-08-28T11:59:00.000Z",
+        ).run();
+      let resetDuringReconcile = false;
+      const staleReadingLifecycle = new CompanionLifecycle({
+        ...drizzleD1CompanionStore,
+        async listActivityFacts(userId) {
+          const facts = await drizzleD1CompanionStore.listActivityFacts(userId);
+          if (userId === staleReadingActorId && !resetDuringReconcile) {
+            resetDuringReconcile = true;
+            await fixedLifecycle.execute({ kind: "account", id: userId }, { action: "reset", confirmation: "重置小雾成长" });
+          }
+          return facts;
+        },
+      }, () => new Date("2026-08-28T12:00:01.000Z"));
+      const staleReadingState = await staleReadingLifecycle.execute(
+        { kind: "account", id: staleReadingActorId }, { action: "observe" },
+      );
+      const memoryActorId = crypto.randomUUID();
+      await readingSessionProgress.save(memoryActorId, {
+        chapterId: fixture.chapterId, nodeId: fixture.story.startNodeId, pageIndex: 0,
+        updatedAt: new Date().toISOString(), completed: true,
+      });
+      const memoryClock = new Date(Date.now() + 1_000);
+      const memoryLifecycle = new CompanionLifecycle(drizzleD1CompanionStore, () => memoryClock);
+      const memoryBeforeReset = await memoryLifecycle.execute({ kind: "account", id: memoryActorId }, { action: "observe" });
+      await memoryLifecycle.execute({ kind: "account", id: memoryActorId }, { action: "reset", confirmation: "重置小雾成长" });
+      const memoryAfterReset = await memoryLifecycle.execute({ kind: "account", id: memoryActorId }, { action: "observe" });
+      const historicalExplorerId = crypto.randomUUID();
+      const secondVersionStory = structuredClone(fixture.story);
+      const secondNode = {
+        ...structuredClone(secondVersionStory.nodes[0]),
+        id: "historical-second-node",
+        title: "历史版本后的新节点",
+        choices: [],
+        position: { x: 420, y: 50 },
+      };
+      secondVersionStory.nodes[0].choices = [createStoryChoice({ id: "to-second", label: "继续", targetId: secondNode.id })];
+      secondVersionStory.nodes.push(secondNode);
+      await creationLifecycle.execute(fixture.administrator, {
+        entity: "chapter", action: "publish", id: fixture.chapterId, story: secondVersionStory,
+      });
+      await companionLifecycle.execute({ kind: "account", id: historicalExplorerId }, {
+        action: "record-node", chapterId: fixture.chapterId, chapterVersion: 2, nodeId: fixture.story.startNodeId,
+      });
+      const thirdVersionStory = structuredClone(secondVersionStory);
+      const thirdNode = {
+        ...structuredClone(thirdVersionStory.nodes[0]),
+        id: "historical-third-node",
+        title: "又一个新节点",
+        choices: [],
+        position: { x: 800, y: 50 },
+      };
+      thirdVersionStory.nodes[1].choices = [createStoryChoice({ id: "to-third", label: "继续", targetId: thirdNode.id })];
+      thirdVersionStory.nodes.push(thirdNode);
+      await creationLifecycle.execute(fixture.administrator, {
+        entity: "chapter", action: "publish", id: fixture.chapterId, story: thirdVersionStory,
+      });
+      const historicalExploration = await companionLifecycle.execute(
+        { kind: "account", id: historicalExplorerId }, { action: "observe" },
+      );
+      const historicalRoute = "exploration" in historicalExploration
+        ? historicalExploration.exploration?.find((route) => route.chapterId === fixture.chapterId && route.chapterVersion === 2)
+        : null;
       if (!("state" in reconciled) || !reconciled.state || !("state" in replay) || !replay.state) {
         throw new Error("雾庭状态补偿失败");
       }
@@ -192,6 +302,17 @@ const lifecycleWorker = {
         concurrentMistlight: concurrent.state.mistlight,
         resetStaleCommit: staleResetCommit,
         resetBaselinePreserved: Boolean(afterStaleResetCommit?.rewardBaselineAt),
+        duplicateWindowMistlight: "state" in readingState ? readingState.state?.mistlight : null,
+        forgedNodeRejected,
+        concurrentHeartbeatCount: racingActivityFacts.length,
+        staleReadingRewardBlocked: "state" in staleReadingState && staleReadingState.state?.mistlight === 0,
+        resetMemoryCounts: {
+          before: "memories" in memoryBeforeReset ? memoryBeforeReset.memories?.length : null,
+          after: "memories" in memoryAfterReset ? memoryAfterReset.memories?.length : null,
+        },
+        historicalExploration: historicalRoute
+          ? { version: historicalRoute.chapterVersion, discovered: historicalRoute.discovered, total: historicalRoute.total }
+          : null,
       });
     }
 

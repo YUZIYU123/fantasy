@@ -327,6 +327,12 @@ test("章节奖励失败不阻塞完成事实且 CompanionLifecycle 随后幂等
     concurrentMistlight: 14,
     resetStaleCommit: "conflict",
     resetBaselinePreserved: true,
+    duplicateWindowMistlight: 1,
+    forgedNodeRejected: true,
+    concurrentHeartbeatCount: 1,
+    staleReadingRewardBlocked: true,
+    resetMemoryCounts: { before: 1, after: 0 },
+    historicalExploration: { version: 2, discovered: 1, total: 2 },
   });
 });
 

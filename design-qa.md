@@ -47,6 +47,27 @@ passed
 
 ---
 
+# 雾庭 P2 Design QA
+
+- 范围：有效阅读奖励、路线探索度、最近奖励与记忆册
+- 证据：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p2/garden-p2-390x844.png`
+- 视口：360×800、390×844、430×932 与 200% 等效窄视口
+
+## 结果
+
+- 所有视口满足 `scrollWidth === innerWidth`，新增记忆册与路线探索卡无横向溢出，固定 Dock 不遮挡内容。
+- 雾庭仍不重复挂载侧边小雾；访客只看到会话试玩说明与记忆册保存边界。
+- `prefers-reduced-motion: reduce` 实测匹配，庭院角色 `animation-name: none`，动画和过渡时长均为 `0s`。
+- 记忆卡自动化验收覆盖封面、作品名、章节名与完成时间；不包含正文或选择文字。
+- 双轨初审指出的节点事实丢失、跨章节心跳重叠、重置水位穿透与失败请求丢弃已修复；真实 D1 竞态测试确认跨章节并发只计一次，旧奖励和旧记忆不会在重置后恢复。
+- 最终门禁通过：`pnpm typecheck`、`pnpm lint`、生产构建、157 项模块／HTTP 测试与 58 项 React 测试。
+
+## 最终结果
+
+passed
+
+---
+
 # 雾庭 P1 Design QA
 
 - 范围：Dock 与侧边小雾职责分离、`/xiaowu` 世界树庭院、账号成长与会话试玩
