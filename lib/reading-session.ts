@@ -80,12 +80,28 @@ export type SessionTerminalPlayback = {
   message: string;
   speak: boolean;
   voiceUrl: string;
+  reaction: TerminalReaction;
   interactionPreset: StoryChoice["interactionPreset"];
   imageUrl: string;
   imageAlt: string;
   imagePresentation: StoryChoice["feedbackImagePresentation"];
   task: ReturnType<typeof applyTerminalTaskEvents>["task"];
 };
+
+export type TerminalReaction = "notice" | "success" | "warning";
+
+export function resolveTerminalReaction(choice: StoryChoice): TerminalReaction {
+  const statuses = choice.terminalTaskActions.flatMap((action) => {
+    if (action.type === "replaceTask" && action.task) {
+      return [action.task.status, ...action.task.objectives.map((objective) => objective.status)];
+    }
+    if (action.type === "addObjective" && action.objective) return [action.objective.status];
+    return [action.status];
+  });
+  if (statuses.includes("failed")) return "warning";
+  if (statuses.includes("completed")) return "success";
+  return "notice";
+}
 
 export type ReadingState = {
   nodeId: string;
@@ -293,7 +309,7 @@ export function createReadingSession(input: ReadingSessionInput) {
         const result = applyTerminalTaskEvents(input.story, [...state.terminalEventIds, ...choice.terminalTaskActions.map((action) => action.id)]);
         const playback = {
           id: `${node.id}:${choice.id}`, message: choice.terminalMessage, speak: choice.terminalSpeak,
-          voiceUrl: choice.terminalVoiceUrl, interactionPreset: choice.interactionPreset,
+          voiceUrl: choice.terminalVoiceUrl, reaction: resolveTerminalReaction(choice), interactionPreset: choice.interactionPreset,
           imageUrl: choice.feedbackImageUrl, imageAlt: choice.feedbackImageAlt,
           imagePresentation: choice.feedbackImagePresentation, task: result.task,
         };

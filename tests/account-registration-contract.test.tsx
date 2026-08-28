@@ -89,7 +89,11 @@ test("邮箱确认页读取无副作用且只在访客确认后激活", async ()
   };
   await act(async () => root.render(<VerifyEmail />));
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
-  assert.deepEqual(calls, [{ url: "/api/auth/verify-email?token=contract-token", method: "GET" }]);
+  assert.equal(calls.some((call) => call.method !== "GET"), false);
+  assert.deepEqual(
+    calls.filter((call) => call.url.startsWith("/api/auth/verify-email")),
+    [{ url: "/api/auth/verify-email?token=contract-token", method: "GET" }],
+  );
   assert.match(container.textContent || "", /确认并进入幻界/);
   const confirm = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("确认并进入幻界"));
   assert.ok(confirm);
@@ -200,7 +204,7 @@ test("三类账号意图使用情境邀请且明确表达后可以重新邀请",
     novels={[{ id: "novel-42", published: { name: "雾中书", summary: "奇幻旅程" } }]}
   />));
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
-  const open = container.querySelector<HTMLButtonElement>(".terminal-fab");
+  const open = container.querySelector<HTMLButtonElement>('.xiaowu-companion[aria-label="打开小雾"]');
   assert.ok(open);
   await act(async () => open.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   assert.match(container.textContent || "", /跨设备继续/);

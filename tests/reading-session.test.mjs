@@ -235,6 +235,40 @@ test("终端反馈由 effect 驱动且失败或超时后仍能继续", () => {
   }
 });
 
+test("ReadingSession 按任务变化声明小雾反馈神情且失败优先", () => {
+  const cases = [
+    { statuses: [], reaction: "notice" },
+    { statuses: ["completed"], reaction: "success" },
+    { statuses: ["failed"], reaction: "warning" },
+    { statuses: ["completed", "failed"], reaction: "warning" },
+  ];
+
+  for (const { statuses, reaction } of cases) {
+    const current = story();
+    const choice = current.nodes[0].choices[0];
+    choice.terminalFeedbackEnabled = true;
+    choice.terminalMessage = "小雾正在同步任务变化。";
+    choice.terminalTaskActions = statuses.map((status, index) => ({
+      id: `status-${index}`,
+      type: "setTaskStatus",
+      task: null,
+      objective: null,
+      objectiveId: "",
+      status,
+    }));
+    const session = createReadingSession({
+      story: current,
+      chapterId: `xiaowu-${reaction}`,
+      chapterVersion: 1,
+      preview: true,
+    });
+
+    const chosen = session.dispatch({ type: "choose", choiceId: choice.id });
+    const terminal = chosen.effects.find((effect) => effect.kind === "terminal-feedback");
+    assert.equal(terminal?.playback.reaction, reaction);
+  }
+});
+
 test("终端反馈完成后仍按目标节点前的配置执行剧情转场", () => {
   const current = story();
   const choice = current.nodes[0].choices[0];

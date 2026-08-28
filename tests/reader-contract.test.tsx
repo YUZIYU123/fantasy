@@ -181,6 +181,15 @@ test("正式阅读等待云端进度时显示可读的进入状态", async () =>
   assert.equal(container.querySelector(".reader-dock"), null);
 });
 
+test("正式正文隐藏 Dock 但保留不遮挡顶部控件的小雾探头", async () => {
+  const story = readerStory();
+  await act(async () => root.render(<Reader story={story} chapterId="xiaowu-reader" preview onBack={() => {}} />));
+
+  assert.equal(container.querySelector(".reader-dock"), null);
+  assert.ok(container.querySelector('button.xiaowu-companion[aria-label="打开小雾"]'));
+  assert.ok(container.querySelector(".reader-nav"));
+});
+
 test("世界档案直接使用幻界 OS Dock 而不再折叠主导航", async () => {
   globalThis.fetch = async () => Response.json({ novels: [] });
   await act(async () => root.render(<StoryStudio />));
@@ -188,7 +197,7 @@ test("世界档案直接使用幻界 OS Dock 而不再折叠主导航", async ()
 
   const navigation = container.querySelector('nav[aria-label="读者主导航"]');
   assert.ok(navigation);
-  assert.deepEqual([...navigation.querySelectorAll("a,button")].map((item) => item.textContent?.trim()), ["世界", "书架", "终端", "我的"]);
+  assert.deepEqual([...navigation.querySelectorAll("a,button")].map((item) => item.textContent?.trim()), ["世界", "书架", "小雾", "我的"]);
   assert.equal(container.querySelector("details.reader-navigation"), null);
 });
 
@@ -432,8 +441,10 @@ test("节点独立图片阶段完成后才显示正文", async () => {
 
   assert.match(container.textContent || "", /暂不可用的节点图/);
   assert.doesNotMatch(container.textContent || "", /起点正文/);
+  assert.equal(container.querySelector(".xiaowu-companion"), null);
   await act(async () => clickButton("继续"));
   assert.match(container.textContent || "", /起点正文/);
+  assert.ok(container.querySelector(".xiaowu-companion"));
 });
 
 test("终端反馈完成前保持选择锁定，完成后再进入目标节点", async () => {
