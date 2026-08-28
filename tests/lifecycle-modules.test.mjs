@@ -336,6 +336,23 @@ test("章节奖励失败不阻塞完成事实且 CompanionLifecycle 随后幂等
   });
 });
 
+test("CompanionLifecycle 真实 D1 购买装备并发、越权、导出与重置保持一致", async () => {
+  const response = await fetch(`${runtime.origin}/companion-collections`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    purchaseMistlights: [40, 40],
+    equippedAppearance: "starlight-cloak",
+    replayAppearance: "starlight-cloak",
+    inventory: 2,
+    reusedOperationSuccesses: 1,
+    reusedOperationConflicts: 1,
+    resetRaceActionCount: 0,
+    strangerRejected: true,
+    resetInventory: 0,
+    resetAppearance: "default",
+  });
+});
+
 test("BookshelfLifecycle 幂等加入公开小说并隔离私人书架", async () => {
   const response = await fetch(`${runtime.origin}/bookshelf-membership`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);

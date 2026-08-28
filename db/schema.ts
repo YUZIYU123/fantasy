@@ -168,6 +168,17 @@ export const companionRewardReceipts = sqliteTable("companion_reward_receipts", 
   index("companion_reward_receipts_user_time_idx").on(table.userId, table.createdAt),
 ]);
 
+export const companionInventory = sqliteTable("companion_inventory", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  type: text("type", { enum: ["action", "appearance", "garden"] }).notNull(),
+  itemId: text("item_id").notNull(),
+  unlockedAt: text("unlocked_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("companion_inventory_user_item_unique").on(table.userId, table.type, table.itemId),
+  index("companion_inventory_user_type_idx").on(table.userId, table.type),
+]);
+
 export const sessions = sqliteTable("sessions", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),

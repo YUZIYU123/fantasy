@@ -3,6 +3,7 @@ import {
   createTrialCompanionProfile,
   type CompanionProfileRecord,
   type CompanionReceipt,
+  type CompanionInventoryRecord,
   type CompanionStore,
 } from "../../lib/companion-lifecycle";
 
@@ -12,6 +13,7 @@ const TRIAL_USER_ID = "browser-session-trial";
 type TrialSnapshot = {
   profile: CompanionProfileRecord;
   receipts: CompanionReceipt[];
+  inventory?: CompanionInventoryRecord[];
 };
 
 class SessionCompanionStore implements CompanionStore {
@@ -33,7 +35,9 @@ class SessionCompanionStore implements CompanionStore {
   private snapshot() {
     const existing = this.readSnapshot();
     if (existing) return existing;
-    const created = { profile: createTrialCompanionProfile(TRIAL_USER_ID, this.clock().toISOString()), receipts: [] };
+    const created: TrialSnapshot = {
+      profile: createTrialCompanionProfile(TRIAL_USER_ID, this.clock().toISOString()), receipts: [], inventory: [],
+    };
     this.writeSnapshot(created);
     return created;
   }
@@ -52,6 +56,7 @@ class SessionCompanionStore implements CompanionStore {
   async listDiscoveryFacts() { return []; }
   async listMemoryCards() { return []; }
   async listRecentReceipts() { return []; }
+  async listInventory(userId: string) { return userId === TRIAL_USER_ID ? structuredClone(this.snapshot().inventory ?? []) : []; }
   async hasReadingOperation() { return false; }
   async readLastActivityAt() { return null; }
   async readPublishedChapter() { return null; }
@@ -67,6 +72,9 @@ class SessionCompanionStore implements CompanionStore {
     this.writeSnapshot({
       profile: structuredClone(input.next),
       receipts: input.receipt ? [...snapshot.receipts, structuredClone(input.receipt)] : snapshot.receipts,
+      inventory: input.inventoryUnlock
+        ? [...(snapshot.inventory ?? []).filter((item) => item.type !== input.inventoryUnlock?.type || item.itemId !== input.inventoryUnlock.itemId), structuredClone(input.inventoryUnlock)]
+        : snapshot.inventory,
     });
     return "applied" as const;
   }
@@ -75,7 +83,7 @@ class SessionCompanionStore implements CompanionStore {
     if (input.userId !== TRIAL_USER_ID) return "conflict" as const;
     const snapshot = this.snapshot();
     if (snapshot.profile.revision !== input.expectedRevision) return "conflict" as const;
-    this.writeSnapshot({ profile: structuredClone(input.next), receipts: [] });
+    this.writeSnapshot({ profile: structuredClone(input.next), receipts: [], inventory: [] });
     return "applied" as const;
   }
 

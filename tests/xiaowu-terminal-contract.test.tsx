@@ -109,6 +109,22 @@ test("媒体阶段收起小雾且回到正文时保持收起", async () => {
   assert.ok(container.querySelector('[aria-label="打开小雾"]'));
 });
 
+test("登录账号装备服装会同步到侧边小雾且资源失败回退默认形象", async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === "/api/auth/me") return Response.json({ user: { id: "reader-1", role: "reader" } });
+    if (url === "/api/account/companion") return Response.json({ state: { equippedAppearance: "archive-cloak" } });
+    return Response.json({ memory: null });
+  };
+
+  await act(async () => root.render(<FantasyTerminal />));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  const portrait = container.querySelector<HTMLImageElement>('.xiaowu-companion img');
+  assert.match(portrait?.getAttribute("src") || "", /\/xiaowu\/appearances\/archive-cloak\/idle\.webp/);
+  portrait?.dispatchEvent(new Event("error"));
+  assert.match(portrait?.getAttribute("src") || "", /\/xiaowu\/idle\.webp/);
+});
+
 test("系统 reduced motion 自动取消逐字揭示", async () => {
   window.matchMedia = () => ({
     matches: true,
