@@ -139,6 +139,35 @@ export const accountPreferences = sqliteTable("account_preferences", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const companionProfiles = sqliteTable("companion_profiles", {
+  userId: text("user_id").primaryKey(),
+  revision: integer("revision").notNull().default(0),
+  commitToken: text("commit_token").notNull().default(""),
+  bondXp: integer("bond_xp").notNull().default(0),
+  vitality: integer("vitality").notNull().default(100),
+  mistlight: integer("mistlight").notNull().default(0),
+  lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastTouchAt: text("last_touch_at"),
+  lastRestAt: text("last_rest_at"),
+  rewardBaselineAt: text("reward_baseline_at"),
+  equippedAppearance: text("equipped_appearance").notNull().default("default"),
+  equippedGarden: text("equipped_garden").notNull().default("world-tree"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const companionRewardReceipts = sqliteTable("companion_reward_receipts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  receiptKey: text("receipt_key").notNull(),
+  kind: text("kind", { enum: ["completion", "interaction", "purchase"] }).notNull(),
+  resultJson: text("result_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("companion_reward_receipts_user_key_unique").on(table.userId, table.receiptKey),
+  index("companion_reward_receipts_user_time_idx").on(table.userId, table.createdAt),
+]);
+
 export const sessions = sqliteTable("sessions", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
@@ -187,6 +216,19 @@ export const chapterCompletionRecords = sqliteTable("chapter_completion_records"
 }, (table) => [
   uniqueIndex("chapter_completion_records_user_chapter_unique").on(table.userId, table.chapterId),
   index("chapter_completion_records_user_time_idx").on(table.userId, table.completedAt),
+]);
+
+export const chapterVersionCompletionFacts = sqliteTable("chapter_version_completion_facts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  chapterId: text("chapter_id").notNull(),
+  chapterVersion: integer("chapter_version").notNull(),
+  completedAt: text("completed_at").notNull(),
+  recordedAt: text("recorded_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("chapter_version_completion_facts_user_chapter_version_unique")
+    .on(table.userId, table.chapterId, table.chapterVersion),
+  index("chapter_version_completion_facts_user_time_idx").on(table.userId, table.recordedAt),
 ]);
 
 export const bookshelfEntries = sqliteTable("bookshelf_entries", {

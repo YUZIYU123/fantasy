@@ -1,0 +1,146 @@
+import { and, eq } from "drizzle-orm";
+import { ensureSchema, getD1Binding, getDb } from ".";
+import { chapterVersionCompletionFacts, companionProfiles, companionRewardReceipts } from "./schema";
+import {
+  CompanionLifecycle,
+  type CompanionProfileRecord,
+  type CompanionStore,
+} from "../lib/companion-lifecycle";
+
+function profileRecord(row: typeof companionProfiles.$inferSelect): CompanionProfileRecord {
+  return {
+    userId: row.userId,
+    revision: row.revision,
+    bondXp: row.bondXp,
+    vitality: row.vitality,
+    mistlight: row.mistlight,
+    lastSeenAt: row.lastSeenAt,
+    lastTouchAt: row.lastTouchAt,
+    lastRestAt: row.lastRestAt,
+    rewardBaselineAt: row.rewardBaselineAt,
+    equippedAppearance: row.equippedAppearance,
+    equippedGarden: row.equippedGarden,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export const drizzleD1CompanionStore: CompanionStore = {
+  async readProfile(userId) {
+    await ensureSchema();
+    const row = (await getDb().select().from(companionProfiles)
+      .where(eq(companionProfiles.userId, userId)).limit(1))[0];
+    return row ? profileRecord(row) : null;
+  },
+  async readReceipt(userId, key) {
+    await ensureSchema();
+    const row = (await getDb().select().from(companionRewardReceipts).where(and(
+      eq(companionRewardReceipts.userId, userId),
+      eq(companionRewardReceipts.receiptKey, key),
+    )).limit(1))[0];
+    return row ? { key: row.receiptKey, kind: row.kind, resultJson: row.resultJson, createdAt: row.createdAt } : null;
+  },
+  async listCompletionFacts(userId) {
+    await ensureSchema();
+    return (await getDb().select({
+      chapterId: chapterVersionCompletionFacts.chapterId,
+      chapterVersion: chapterVersionCompletionFacts.chapterVersion,
+      completedAt: chapterVersionCompletionFacts.completedAt,
+      recordedAt: chapterVersionCompletionFacts.recordedAt,
+    }).from(chapterVersionCompletionFacts).where(eq(chapterVersionCompletionFacts.userId, userId)));
+  },
+  async commit(input) {
+    await ensureSchema();
+    if (input.receipt && await this.readReceipt(input.userId, input.receipt.key)) return "duplicate";
+    const next = input.next;
+    const commitToken = crypto.randomUUID();
+    const values = [
+      next.bondXp, next.vitality, next.mistlight, next.lastSeenAt, next.lastTouchAt,
+      next.lastRestAt, next.rewardBaselineAt, next.equippedAppearance, next.equippedGarden, next.updatedAt,
+    ] as const;
+    const d1 = getD1Binding();
+    const profileStatement = input.expectedRevision === null
+      ? d1.prepare(`INSERT INTO companion_profiles
+        (user_id, revision, commit_token, bond_xp, vitality, mistlight, last_seen_at, last_touch_at, last_rest_at,
+          reward_baseline_at, equipped_appearance, equipped_garden, updated_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM companion_profiles WHERE user_id = ?)`)
+        .bind(input.userId, next.revision, commitToken, ...values, input.userId)
+      : d1.prepare(`UPDATE companion_profiles SET revision = ?, commit_token = ?, bond_xp = ?, vitality = ?, mistlight = ?,
+          last_seen_at = ?, last_touch_at = ?, last_rest_at = ?, reward_baseline_at = ?,
+          equipped_appearance = ?, equipped_garden = ?, updated_at = ?
+        WHERE user_id = ? AND revision = ?
+          AND NOT EXISTS (SELECT 1 FROM companion_reward_receipts WHERE user_id = ? AND receipt_key = ?)`)
+        .bind(next.revision, commitToken, ...values, input.userId, input.expectedRevision, input.userId, input.receipt?.key ?? "");
+    const statements = [profileStatement];
+    if (input.receipt) {
+      statements.push(d1.prepare(`INSERT INTO companion_reward_receipts
+        (id, user_id, receipt_key, kind, result_json, created_at)
+        SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (
+          SELECT 1 FROM companion_profiles WHERE user_id = ? AND commit_token = ?
+        ) AND NOT EXISTS (
+          SELECT 1 FROM companion_reward_receipts WHERE user_id = ? AND receipt_key = ?
+        )`).bind(
+        `${input.userId}:${input.receipt.key}`, input.userId, input.receipt.key, input.receipt.kind,
+        input.receipt.resultJson, input.receipt.createdAt, input.userId, commitToken,
+        input.userId, input.receipt.key,
+      ));
+    }
+    const results = await d1.batch(statements);
+    if (Number(results[0]?.meta.changes ?? 0) === 1) return "applied";
+    if (input.receipt && await this.readReceipt(input.userId, input.receipt.key)) return "duplicate";
+    return "conflict";
+  },
+  async export(userId) {
+    await ensureSchema();
+    const [profile, receipts, completionFacts] = await Promise.all([
+      this.readProfile(userId),
+      getDb().select({
+        key: companionRewardReceipts.receiptKey,
+        kind: companionRewardReceipts.kind,
+        result: companionRewardReceipts.resultJson,
+        createdAt: companionRewardReceipts.createdAt,
+      }).from(companionRewardReceipts).where(eq(companionRewardReceipts.userId, userId)),
+      this.listCompletionFacts(userId),
+    ]);
+    return { profile, receipts, completionFacts };
+  },
+  async reset(input) {
+    await ensureSchema();
+    const commitToken = crypto.randomUUID();
+    const d1 = getD1Binding();
+    const results = await d1.batch([
+      d1.prepare(`DELETE FROM companion_reward_receipts WHERE user_id = ? AND EXISTS (
+        SELECT 1 FROM companion_profiles WHERE user_id = ? AND revision = ?
+      )`).bind(input.userId, input.userId, input.expectedRevision),
+      d1.prepare(`UPDATE companion_profiles SET revision = ?, commit_token = ?, bond_xp = ?, vitality = ?,
+          mistlight = ?, last_seen_at = ?, last_touch_at = ?, last_rest_at = ?, reward_baseline_at = ?,
+          equipped_appearance = ?, equipped_garden = ?, updated_at = ?
+        WHERE user_id = ? AND revision = ?`)
+        .bind(
+          input.next.revision, commitToken, input.next.bondXp, input.next.vitality, input.next.mistlight,
+          input.next.lastSeenAt, input.next.lastTouchAt, input.next.lastRestAt, input.next.rewardBaselineAt,
+          input.next.equippedAppearance, input.next.equippedGarden, input.next.updatedAt,
+          input.userId, input.expectedRevision,
+        ),
+    ]);
+    return Number(results[1]?.meta.changes ?? 0) === 1 ? "applied" : "conflict";
+  },
+  async purge(userId) {
+    await ensureSchema();
+    const d1 = getD1Binding();
+    await d1.batch([
+      d1.prepare("DELETE FROM companion_reward_receipts WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM companion_profiles WHERE user_id = ?").bind(userId),
+    ]);
+  },
+  async cleanup() {
+    await ensureSchema();
+    const d1 = getD1Binding();
+    await d1.batch([
+      d1.prepare("DELETE FROM companion_reward_receipts WHERE user_id NOT IN (SELECT id FROM users)"),
+      d1.prepare("DELETE FROM companion_profiles WHERE user_id NOT IN (SELECT id FROM users)"),
+    ]);
+  },
+};
+
+export const companionLifecycle = new CompanionLifecycle(drizzleD1CompanionStore);

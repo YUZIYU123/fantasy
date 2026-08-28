@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { AuthForm, VerifyEmail } from "../app/auth-forms";
+import { AccountPage, AuthForm, VerifyEmail } from "../app/auth-forms";
 import { FantasyTerminal } from "../app/fantasy-terminal";
 import { StoryStudio } from "../app/story-studio";
 import { browserRegistrationInvitationStore } from "../lib/registration-invitation";
@@ -28,6 +28,7 @@ beforeEach(() => {
     Image: window.Image,
     Audio: window.Audio,
     Event: window.Event,
+    InputEvent: window.InputEvent,
     MouseEvent: window.MouseEvent,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
@@ -67,6 +68,30 @@ test("账号注册关闭时访客只看到明确说明且不能提交", async ()
   assert.equal(container.querySelector("form"), null);
   assert.match(container.textContent || "", /仍然可以浏览和阅读公开小说/);
   assert.equal(container.querySelector('nav[aria-label="读者主导航"] [aria-current="page"]')?.textContent?.trim(), "我的");
+});
+
+test("账号页将小雾成长重置置于完整确认语门禁后", async () => {
+  const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+    calls.push({ url, body });
+    if (url === "/api/auth/me") return Response.json({ user: { id: "reader", email: "reader@example.com", displayName: "旅伴", role: "reader" } });
+    if (url === "/api/account/progress") return Response.json({ progress: [] });
+    if (url === "/api/account/guide-memory") return Response.json({ memory: { preferences: [], guideCompletedAt: null } });
+    if (url === "/api/account/companion/actions") return Response.json({ ok: true });
+    return Response.json({});
+  };
+  await act(async () => root.render(<AccountPage />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+  const reset = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("永久重置小雾成长"));
+  const input = [...container.querySelectorAll<HTMLInputElement>("input")].find((item) => item.parentElement?.textContent?.includes("重置小雾成长"));
+  assert.ok(reset);
+  assert.ok(input);
+  assert.equal(reset.disabled, true);
+  assert.match(input.parentElement?.textContent || "", /输入“重置小雾成长”确认/);
+  assert.equal(calls.some((call) => call.url === "/api/account/companion/actions"), false);
 });
 
 test("访客从小雾邀请进入手机单步账号注册", async () => {

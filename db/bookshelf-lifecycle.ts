@@ -342,8 +342,10 @@ export const drizzleD1BookshelfStore: BookshelfStore = {
       getD1Binding().prepare("DELETE FROM novel_completion_frontiers WHERE user_id NOT IN (SELECT id FROM users)"),
       getD1Binding().prepare("DELETE FROM reading_progress WHERE user_id NOT IN (SELECT id FROM users)"),
       getD1Binding().prepare("DELETE FROM chapter_completion_records WHERE user_id NOT IN (SELECT id FROM users)"),
+      getD1Binding().prepare("DELETE FROM chapter_version_completion_facts WHERE user_id NOT IN (SELECT id FROM users)"),
       getD1Binding().prepare("DELETE FROM reading_progress WHERE chapter_id NOT IN (SELECT id FROM chapters)"),
       getD1Binding().prepare("DELETE FROM chapter_completion_records WHERE chapter_id NOT IN (SELECT id FROM chapters)"),
+      getD1Binding().prepare("DELETE FROM chapter_version_completion_facts WHERE chapter_id NOT IN (SELECT id FROM chapters)"),
     ]);
     return {
       receipts: results[0].meta.changes,
@@ -364,6 +366,7 @@ export const drizzleD1BookshelfStore: BookshelfStore = {
       d1.prepare("DELETE FROM bookshelf_list_snapshots WHERE user_id = ?").bind(userId),
       d1.prepare("DELETE FROM reading_progress WHERE user_id = ?").bind(userId),
       d1.prepare("DELETE FROM chapter_completion_records WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM chapter_version_completion_facts WHERE user_id = ?").bind(userId),
     ]);
   },
 };

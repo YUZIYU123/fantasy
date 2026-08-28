@@ -8,8 +8,10 @@ import { AssetLifecycleError, assetLifecycle } from "../db/assets";
 import { creationLifecycle } from "../db/creation-lifecycle";
 import { readingSessionProgress } from "../db/reading-session-progress";
 import { bookshelfLifecycle } from "../db/bookshelf-lifecycle";
+import { companionLifecycle, drizzleD1CompanionStore } from "../db/companion-lifecycle";
 import { sessionAuthorization } from "../lib/session-authorization";
 import { AuthError, hashToken } from "../lib/auth";
+import { CompanionLifecycle } from "../lib/companion-lifecycle";
 import { createBlankNovel, createBlankStory } from "../lib/story";
 import { getD1Binding } from "../db";
 
@@ -104,6 +106,92 @@ const lifecycleWorker = {
           proofRefreshed: afterRecompletion.completion?.completedAt === secondCompletedAt,
         },
         orphanHidden: !orphanFacts.completion && !orphanFacts.resume,
+      });
+    }
+
+    if (pathname === "/companion-completion-recovery" && request.method === "POST") {
+      const actorId = crypto.randomUUID();
+      const fixture = await createBookshelfFixture();
+      let failedRewardAttempts = 0;
+      await readingSessionProgress.save(actorId, {
+        chapterId: fixture.chapterId,
+        nodeId: fixture.story.startNodeId,
+        pageIndex: 0,
+        updatedAt: "2026-08-28T10:00:00.000Z",
+        completed: true,
+      });
+      const factsAfterFailure = await readingSessionProgress.readFacts(actorId, fixture.chapterId);
+      const failingLifecycle = new CompanionLifecycle({
+        ...drizzleD1CompanionStore,
+        async commit() {
+          failedRewardAttempts += 1;
+          throw new Error("simulated companion write failure");
+        },
+      });
+      try {
+        await failingLifecycle.execute({ kind: "account", id: actorId }, { action: "observe" });
+      } catch {}
+      const reconciled = await companionLifecycle.execute(
+        { kind: "account", id: actorId },
+        { action: "observe" },
+      );
+      await readingSessionProgress.save(actorId, {
+        chapterId: fixture.chapterId,
+        nodeId: fixture.story.startNodeId,
+        pageIndex: 0,
+        updatedAt: "2026-08-28T10:01:00.000Z",
+        completed: true,
+      });
+      const replay = await companionLifecycle.execute(
+        { kind: "account", id: actorId },
+        { action: "observe" },
+      );
+      const concurrentActorId = crypto.randomUUID();
+      await getD1Binding().prepare(`INSERT INTO chapter_version_completion_facts
+        (id, user_id, chapter_id, chapter_version, completed_at) VALUES (?, ?, ?, ?, ?)`)
+        .bind(`${concurrentActorId}:${fixture.chapterId}:1`, concurrentActorId, fixture.chapterId, 1, "2026-08-28T09:00:00.000Z").run();
+      const fixedLifecycle = new CompanionLifecycle(
+        drizzleD1CompanionStore,
+        () => new Date("2026-08-28T12:00:00.000Z"),
+      );
+      await fixedLifecycle.execute({ kind: "account", id: concurrentActorId }, { action: "observe" });
+      await Promise.all([
+        fixedLifecycle.execute({ kind: "account", id: concurrentActorId }, { action: "interact", kind: "play", operationId: "play-a" }),
+        fixedLifecycle.execute({ kind: "account", id: concurrentActorId }, { action: "interact", kind: "play", operationId: "play-b" }),
+      ]);
+      const concurrent = await fixedLifecycle.execute({ kind: "account", id: concurrentActorId }, { action: "observe" });
+      const resetActorId = crypto.randomUUID();
+      await fixedLifecycle.execute({ kind: "account", id: resetActorId }, { action: "observe" });
+      const staleProfile = await drizzleD1CompanionStore.readProfile(resetActorId);
+      if (!staleProfile) throw new Error("重置并发测试缺少档案");
+      await fixedLifecycle.execute(
+        { kind: "account", id: resetActorId },
+        { action: "reset", confirmation: "重置小雾成长" },
+      );
+      const staleResetCommit = await drizzleD1CompanionStore.commit({
+        userId: resetActorId,
+        expectedRevision: staleProfile.revision,
+        next: {
+          ...staleProfile,
+          revision: staleProfile.revision + 1,
+          bondXp: 40,
+          mistlight: 20,
+          rewardBaselineAt: null,
+        },
+      });
+      const afterStaleResetCommit = await drizzleD1CompanionStore.readProfile(resetActorId);
+      if (!("state" in reconciled) || !reconciled.state || !("state" in replay) || !replay.state) {
+        throw new Error("雾庭状态补偿失败");
+      }
+      if (!("state" in concurrent) || !concurrent.state) throw new Error("并发互动状态读取失败");
+      return Response.json({
+        failedRewardAttempts,
+        readingCompleted: Boolean(factsAfterFailure.completion),
+        reconciled: { bondXp: reconciled.state.bondXp, mistlight: reconciled.state.mistlight },
+        replay: { bondXp: replay.state.bondXp, mistlight: replay.state.mistlight },
+        concurrentMistlight: concurrent.state.mistlight,
+        resetStaleCommit: staleResetCommit,
+        resetBaselinePreserved: Boolean(afterStaleResetCommit?.rewardBaselineAt),
       });
     }
 
