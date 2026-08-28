@@ -316,6 +316,82 @@ const lifecycleWorker = {
       });
     }
 
+    if (pathname === "/companion-collections" && request.method === "POST") {
+      const actorId = crypto.randomUUID();
+      const actor = { kind: "account" as const, id: actorId };
+      const now = "2026-08-28T12:00:00.000Z";
+      const d1 = getD1Binding();
+      await d1.batch(Array.from({ length: 5 }, (_, index) => d1.prepare(`INSERT INTO chapter_version_completion_facts
+        (id, user_id, chapter_id, chapter_version, completed_at, recorded_at) VALUES (?, ?, ?, 1, ?, ?)`)
+        .bind(`${actorId}:collection-${index}:1`, actorId, `collection-${index}`, now, now)));
+      const lifecycle = new CompanionLifecycle(drizzleD1CompanionStore, () => new Date(now));
+      await lifecycle.execute(actor, { action: "observe" });
+      const purchases = await Promise.all([
+        lifecycle.execute(actor, { action: "purchase", kind: "appearance", itemId: "starlight-cloak", operationId: "buy-stars-a" }),
+        lifecycle.execute(actor, { action: "purchase", kind: "appearance", itemId: "starlight-cloak", operationId: "buy-stars-b" }),
+      ]);
+      const equipped = await lifecycle.execute(actor, {
+        action: "equip", kind: "appearance", itemId: "starlight-cloak", operationId: "equip-stars",
+      });
+      const replay = await lifecycle.execute(actor, {
+        action: "equip", kind: "appearance", itemId: "starlight-cloak", operationId: "equip-stars",
+      });
+      const exported = await lifecycle.execute(actor, { action: "export" });
+      const receiptActorId = crypto.randomUUID();
+      const receiptActor = { kind: "account" as const, id: receiptActorId };
+      await d1.batch(Array.from({ length: 10 }, (_, index) => d1.prepare(`INSERT INTO chapter_version_completion_facts
+        (id, user_id, chapter_id, chapter_version, completed_at, recorded_at) VALUES (?, ?, ?, 1, ?, ?)`)
+        .bind(`${receiptActorId}:receipt-${index}:1`, receiptActorId, `receipt-${index}`, now, now)));
+      await lifecycle.execute(receiptActor, { action: "observe" });
+      const reusedOperation = await Promise.allSettled([
+        lifecycle.execute(receiptActor, { action: "purchase", kind: "appearance", itemId: "archive-cloak", operationId: "shared-purchase" }),
+        lifecycle.execute(receiptActor, { action: "purchase", kind: "garden", itemId: "glowing-roots", operationId: "shared-purchase" }),
+      ]);
+
+      const resetRaceActorId = crypto.randomUUID();
+      const resetRaceActor = { kind: "account" as const, id: resetRaceActorId };
+      await d1.prepare(`INSERT INTO companion_profiles
+        (user_id, revision, bond_xp, vitality, mistlight, last_seen_at, updated_at)
+        VALUES (?, 0, 100, 100, 0, ?, ?)`).bind(resetRaceActorId, now, now).run();
+      let resetDuringInventoryRead = false;
+      const racingStore = {
+        ...drizzleD1CompanionStore,
+        async listInventory(userId: string) {
+          const inventory = await drizzleD1CompanionStore.listInventory(userId);
+          if (userId === resetRaceActorId && !resetDuringInventoryRead) {
+            resetDuringInventoryRead = true;
+            await lifecycle.execute(resetRaceActor, { action: "reset", confirmation: "重置小雾成长" });
+          }
+          return inventory;
+        },
+      };
+      const racedObservation = await new CompanionLifecycle(racingStore, () => new Date(now))
+        .execute(resetRaceActor, { action: "observe" });
+      const stranger = { kind: "account" as const, id: crypto.randomUUID() };
+      let strangerRejected = false;
+      try {
+        await lifecycle.execute(stranger, {
+          action: "equip", kind: "appearance", itemId: "starlight-cloak", operationId: "stranger-equip",
+        });
+      } catch { strangerRejected = true; }
+      await lifecycle.execute(actor, { action: "reset", confirmation: "重置小雾成长" });
+      const resetExport = await lifecycle.execute(actor, { action: "export" });
+      const growth = ("growth" in exported ? exported.growth : {}) as Record<string, unknown>;
+      const resetGrowth = ("growth" in resetExport ? resetExport.growth : {}) as Record<string, unknown>;
+      return Response.json({
+        purchaseMistlights: purchases.map((purchase) => "state" in purchase ? purchase.state?.mistlight : null),
+        equippedAppearance: "state" in equipped ? equipped.state?.equippedAppearance : null,
+        replayAppearance: "state" in replay ? replay.state?.equippedAppearance : null,
+        inventory: (growth.inventory as unknown[] | undefined)?.length ?? null,
+        reusedOperationSuccesses: reusedOperation.filter((result) => result.status === "fulfilled").length,
+        reusedOperationConflicts: reusedOperation.filter((result) => result.status === "rejected" && String(result.reason).includes("操作标识已用于其他收藏请求")).length,
+        resetRaceActionCount: "collections" in racedObservation ? racedObservation.collections?.actions.filter((item) => item.owned).length : null,
+        strangerRejected,
+        resetInventory: (resetGrowth.inventory as unknown[] | undefined)?.length ?? null,
+        resetAppearance: (resetGrowth.profile as { equippedAppearance?: string } | undefined)?.equippedAppearance ?? null,
+      });
+    }
+
     if (pathname === "/bookshelf-membership" && request.method === "POST") {
       const owner = { kind: "account" as const, id: crypto.randomUUID() };
       const stranger = { kind: "account" as const, id: crypto.randomUUID() };

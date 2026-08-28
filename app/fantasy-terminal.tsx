@@ -27,6 +27,7 @@ import {
   registrationInvitationCopy,
   registrationInvitationHref,
 } from "../lib/registration-invitation";
+import { fallbackXiaowuImage, xiaowuAppearanceAsset } from "./xiaowu/assets";
 
 type TerminalUser = { displayName: string; role: string };
 type TerminalSection = "home" | "preferences" | "message" | "task" | "playback" | "registration" | "resume";
@@ -48,10 +49,10 @@ export type TerminalPlayback = {
 
 const taskStatusLabels = { active: "进行中", completed: "已完成", failed: "已失败" } as const;
 
-function XiaowuPortrait({ src }: { src: string }) {
+function XiaowuPortrait({ src, state }: { src: string; state: "idle" | "greeting" | "notice" | "success" | "warning" }) {
   // The five local WebP states are already losslessly compressed to their exact display budget.
   // eslint-disable-next-line @next/next/no-img-element
-  return <img src={src} alt="" width={320} height={320} draggable={false} />;
+  return <img src={src} alt="" width={320} height={320} draggable={false} onError={(event) => fallbackXiaowuImage(event.currentTarget, state)} />;
 }
 
 function selectDeviceVoice(voices: SpeechSynthesisVoice[]) {
@@ -127,6 +128,7 @@ export function FantasyTerminal({
   const [user, setUser] = useState<TerminalUser | null>(null);
   const [preferences, setPreferences] = useState<ReaderPreference[]>([]);
   const [cloudPreferencesEnabled, setCloudPreferencesEnabled] = useState(false);
+  const [companionAppearance, setCompanionAppearance] = useState("default");
   const [registrationIntent, setRegistrationIntent] = useState<RegistrationIntent | null>(null);
   const [resumeIntent, setResumeIntent] = useState<RegistrationIntent | null>(null);
   const [ready, setReady] = useState(false);
@@ -298,6 +300,11 @@ export function FantasyTerminal({
       .then((data) => {
         setUser(data.user || null);
         if (!data.user) return;
+        fetch("/api/account/companion").then((response) => response.ok
+          ? response.json() as Promise<{ state?: { equippedAppearance?: string } }>
+          : { state: undefined })
+          .then((result) => setCompanionAppearance(result.state?.equippedAppearance || "default"))
+          .catch(() => {});
         fetch("/api/account/guide-memory").then((response) => response.ok
           ? response.json() as Promise<{ memory?: { preferences?: unknown; guideCompletedAt?: string | null } }>
           : { memory: undefined })
@@ -423,7 +430,7 @@ export function FantasyTerminal({
       : open
         ? "greeting"
         : "idle";
-  const companionImage = `/xiaowu/${companionState}.webp`;
+  const companionImage = xiaowuAppearanceAsset(companionAppearance, companionState);
   const companionClassName = `xiaowu-companion state-${companionState}${open ? " is-open" : " is-peeking"}`;
   const openFromCompanion = () => {
     setSection(signal ? "message" : "home");
@@ -453,7 +460,7 @@ export function FantasyTerminal({
       aria-expanded={open}
       aria-controls="xiaowu-dialog"
       onClick={() => open ? closeTerminal() : openFromCompanion()}
-    ><XiaowuPortrait src={companionImage} /></button> : open ? <div className={companionClassName} aria-hidden="true"><XiaowuPortrait src={companionImage} /></div> : null}
+    ><XiaowuPortrait src={companionImage} state={companionState} /></button> : open ? <div className={companionClassName} aria-hidden="true"><XiaowuPortrait src={companionImage} state={companionState} /></div> : null}
     {launcher !== "hidden" && signal && !open && <button className="xiaowu-signal" onClick={openFromCompanion}><small>小雾发现了新消息</small><span>{displayedEvent?.message}</span></button>}
     {launcher !== "hidden" && !open && config.idleMode === "topTask" && activeTask?.title ? <button className={`xiaowu-task-strip status-${activeTask.status}`} onClick={openTask}><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
     {open && <section id="xiaowu-dialog" className={`xiaowu-dialog terminal-phase-${playbackPhase}${playback ? " xiaowu-playback" : ""}`} role="dialog" aria-modal={playback ? true : undefined} aria-label="小雾对话">

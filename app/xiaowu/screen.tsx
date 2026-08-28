@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { COMPANION_RULES, type CompanionMemoryCard } from "../../lib/companion-lifecycle";
+import {
+  COMPANION_COLLECTION_CATALOG,
+  COMPANION_RULES,
+  type CompanionActionId,
+  type CompanionCollections,
+  type CompanionMemoryCard,
+} from "../../lib/companion-lifecycle";
 import { ReaderShell } from "../reader-shell";
+import { fallbackXiaowuImage, xiaowuAppearanceAsset, xiaowuGardenAsset, type XiaowuGardenPose } from "./assets";
 import { createSessionCompanion } from "./trial-companion";
 
 type CompanionState = {
@@ -31,6 +38,11 @@ const loadingState: CompanionState = {
   equippedAppearance: "default",
   equippedGarden: "world-tree",
 };
+const emptyCollections: CompanionCollections = {
+  actions: COMPANION_COLLECTION_CATALOG.actions.map((item) => ({ ...item, owned: false })),
+  appearances: COMPANION_COLLECTION_CATALOG.appearances.map((item) => ({ ...item, owned: false, equipped: false })),
+  gardens: COMPANION_COLLECTION_CATALOG.gardens.map((item) => ({ ...item, owned: false, equipped: false })),
+};
 
 function operationId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -44,7 +56,10 @@ export function XiaowuGardenScreen() {
   const [memories, setMemories] = useState<CompanionMemoryCard[]>([]);
   const [recentRewards, setRecentRewards] = useState<RecentReward[]>([]);
   const [exploration, setExploration] = useState<Exploration[]>([]);
+  const [collections, setCollections] = useState<CompanionCollections>(emptyCollections);
+  const [interactionPose, setInteractionPose] = useState<"touch" | "play" | "rest" | CompanionActionId | null>(null);
   const trialRef = useRef<ReturnType<typeof createSessionCompanion> | null>(null);
+  const poseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     setMode("loading");
@@ -60,17 +75,19 @@ export function XiaowuGardenScreen() {
         setMemories(result.memories ?? []);
         setRecentRewards(result.recentRewards ?? []);
         setExploration(result.exploration ?? []);
+        setCollections(result.collections ?? emptyCollections);
         setMode("guest");
         setMessage("试玩状态只停留在当前浏览器会话");
         return;
       }
       const response = await fetch("/api/account/companion", { headers: { accept: "application/json" } });
-      const body = await response.json() as { state?: CompanionState; memories?: CompanionMemoryCard[]; recentRewards?: RecentReward[]; exploration?: Exploration[]; error?: string };
+      const body = await response.json() as { state?: CompanionState; collections?: CompanionCollections; memories?: CompanionMemoryCard[]; recentRewards?: RecentReward[]; exploration?: Exploration[]; error?: string };
       if (!response.ok || !body.state) throw new Error(body.error || "雾庭暂时没有回应");
       setState(body.state);
       setMemories(body.memories ?? []);
       setRecentRewards(body.recentRewards ?? []);
       setExploration(body.exploration ?? []);
+      setCollections(body.collections ?? emptyCollections);
       setMode("account");
       setMessage("小雾认出了你，成长已同步");
     } catch (error) {
@@ -80,10 +97,12 @@ export function XiaowuGardenScreen() {
   }, []);
 
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
+  useEffect(() => () => { if (poseTimerRef.current) clearTimeout(poseTimerRef.current); }, []);
 
   const interact = async (kind: "touch" | "play" | "rest") => {
     if ((mode !== "guest" && mode !== "account") || busy) return;
     setBusy(true);
+    setInteractionPose(kind);
     try {
       if (mode === "guest") {
         trialRef.current ??= createSessionCompanion(sessionStorage);
@@ -107,8 +126,57 @@ export function XiaowuGardenScreen() {
       setMessage(error instanceof Error ? error.message : "互动没有完成，可以再试一次");
     } finally {
       setBusy(false);
+      if (poseTimerRef.current) clearTimeout(poseTimerRef.current);
+      poseTimerRef.current = setTimeout(() => setInteractionPose(null), 900);
     }
   };
+
+  const updateCollection = async (action: "purchase" | "equip", kind: "appearance" | "garden", itemId: string) => {
+    if (mode !== "account" || busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/account/companion/actions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, kind, itemId, operationId: operationId() }),
+      });
+      const body = await response.json() as { state?: CompanionState; collections?: CompanionCollections; outcome?: string; error?: string };
+      if (!response.ok || !body.state || !body.collections) throw new Error(body.error || "收藏操作没有完成");
+      setState(body.state);
+      setCollections(body.collections);
+      setMessage(action === "purchase" ? "新的收藏已经落入雾庭。" : "小雾换好了，侧边陪伴也会同步变化。 ");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "收藏操作没有完成，可以再试一次");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const performCollectionAction = async (itemId: CompanionActionId) => {
+    if (mode !== "account" || busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/account/companion/actions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "perform-action", itemId }),
+      });
+      const body = await response.json() as { outcome?: string; error?: string };
+      if (!response.ok || body.outcome !== "performed") throw new Error(body.error || "动作没有完成");
+      setInteractionPose(itemId);
+      setMessage(itemId === "antenna-response" ? "小雾的触角亮起，认真回应了你。" : itemId === "spin-hover" ? "小雾绕着雾光轻快地旋转。" : "小雾把新记忆紧紧抱在怀里。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "动作没有完成，可以再试一次");
+    } finally {
+      setBusy(false);
+      if (poseTimerRef.current) clearTimeout(poseTimerRef.current);
+      poseTimerRef.current = setTimeout(() => setInteractionPose(null), 1200);
+    }
+  };
+
+  const visualState: XiaowuGardenPose = interactionPose
+    ?? (state.mood === "sleepy" ? "warning" : state.mood === "bright" ? "success" : "idle");
+  const gardenAsset = xiaowuGardenAsset(state.equippedGarden);
 
   return <ReaderShell active="xiaowu" contextLabel="雾庭" companion="hidden">
     <main className="xiaowu-garden">
@@ -119,10 +187,12 @@ export function XiaowuGardenScreen() {
       </header>
 
       <section className={`garden-scene mood-${state.mood}`} aria-label="世界树庭院">
+        {/* eslint-disable-next-line @next/next/no-img-element -- local scene WebP has an explicit CSS fallback */}
+        {gardenAsset && <img className="garden-background" src={gardenAsset} alt="" aria-hidden="true" onError={(event) => { event.currentTarget.hidden = true; }} />}
         <div className="garden-tree" aria-hidden="true"><i /><i /><i /></div>
-        <div className="garden-companion">
+        <div className={`garden-companion pose-${visualState}`}>
           {/* eslint-disable-next-line @next/next/no-img-element -- fixed-canvas local WebP needs no transformation */}
-          <img src={`/xiaowu/${state.mood === "sleepy" ? "warning" : state.mood === "bright" ? "success" : "idle"}.webp`} alt="小雾在世界树庭院中悬浮" width={330} height={330} />
+          <img src={xiaowuAppearanceAsset(state.equippedAppearance, visualState)} onError={(event) => fallbackXiaowuImage(event.currentTarget, visualState)} alt="小雾在世界树庭院中悬浮" width={330} height={330} />
         </div>
         <p>{state.mood === "bright" ? "今天的雾光很亮。要一起做点什么吗？" : state.mood === "sleepy" ? "小雾靠近了树根，想慢慢休息一下。" : "小雾安静地守着你带回来的故事。"}</p>
       </section>
@@ -150,7 +220,20 @@ export function XiaowuGardenScreen() {
 
       <section className="garden-collections" aria-labelledby="garden-collection-title">
         <p>COLLECTION ARCHIVE</p><h2 id="garden-collection-title">收藏</h2>
-        <div>{["记忆册", "动作", "服装", "庭院"].map((label) => <button disabled key={label}><span>{label}</span><small>后续开放</small></button>)}</div>
+        <h3>动作</h3>
+        <div className="collection-grid">{collections.actions.map((item) => <article key={item.id}>
+          <span>{item.name}</span><button disabled={busy || mode !== "account" || !item.owned} onClick={() => void performCollectionAction(item.id)}>{mode === "guest" ? "登录后使用" : item.owned ? "播放" : `${item.requiredLevel} 级解锁`}</button>
+        </article>)}</div>
+        <h3>服装</h3>
+        <div className="collection-grid">
+          <article><span>原初斗篷</span><button disabled={busy || state.equippedAppearance === "default" || mode !== "account"} onClick={() => void updateCollection("equip", "appearance", "default")}>{state.equippedAppearance === "default" ? "已装备" : "装备"}</button></article>
+          {collections.appearances.map((item) => <article key={item.id}><span>{item.name}</span><button disabled={busy || mode !== "account" || item.equipped} onClick={() => void updateCollection(item.owned ? "equip" : "purchase", "appearance", item.id)}>{mode === "guest" ? "登录后保存" : item.equipped ? "已装备" : item.owned ? "装备" : `${item.price} 雾光`}</button></article>)}
+        </div>
+        <h3>庭院</h3>
+        <div className="collection-grid">
+          <article><span>世界树庭院</span><button disabled={busy || state.equippedGarden === "world-tree" || mode !== "account"} onClick={() => void updateCollection("equip", "garden", "world-tree")}>{state.equippedGarden === "world-tree" ? "已装备" : "装备"}</button></article>
+          {collections.gardens.map((item) => <article key={item.id}><span>{item.name}</span><button disabled={busy || mode !== "account" || item.equipped} onClick={() => void updateCollection(item.owned ? "equip" : "purchase", "garden", item.id)}>{mode === "guest" ? "登录后保存" : item.equipped ? "已装备" : item.owned ? "装备" : `${item.price} 雾光`}</button></article>)}
+        </div>
       </section>
       <section className="garden-memories" aria-labelledby="garden-memory-title">
         <p>MEMORY ARCHIVE</p><h2 id="garden-memory-title">记忆册</h2>

@@ -9,6 +9,7 @@ class MemoryCompanionStore {
   activities = new Map();
   discoveries = new Map();
   readingOperations = new Set();
+  inventory = new Map();
   failReset = false;
   afterListActivityFacts = null;
   afterListDiscoveryFacts = null;
@@ -32,6 +33,7 @@ class MemoryCompanionStore {
   async listRecentReceipts(userId) {
     return [...this.receipts.entries()].filter(([key]) => key.startsWith(`${userId}:`)).map(([, receipt]) => receipt);
   }
+  async listInventory(userId) { return structuredClone(this.inventory.get(userId) ?? []); }
   async hasReadingOperation(userId, operationId) { return this.readingOperations.has(`${userId}:${operationId}`); }
   async readLastActivityAt(userId) {
     return (this.activities.get(userId) ?? []).at(-1)?.recordedAt ?? null;
@@ -64,6 +66,13 @@ class MemoryCompanionStore {
     if ((current?.revision ?? null) !== input.expectedRevision) return "conflict";
     this.profiles.set(input.userId, structuredClone(input.next));
     if (input.receipt) this.receipts.set(`${input.userId}:${input.receipt.key}`, structuredClone(input.receipt));
+    if (input.inventoryUnlock) {
+      const inventory = this.inventory.get(input.userId) ?? [];
+      if (!inventory.some((owned) => owned.type === input.inventoryUnlock.type && owned.itemId === input.inventoryUnlock.itemId)) {
+        inventory.push(structuredClone(input.inventoryUnlock));
+      }
+      this.inventory.set(input.userId, inventory);
+    }
     return "applied";
   }
   async export(userId) { return { profile: await this.readProfile(userId) }; }
@@ -79,6 +88,7 @@ class MemoryCompanionStore {
     this.profiles.delete(userId);
     this.activities.delete(userId);
     this.discoveries.delete(userId);
+    this.inventory.delete(userId);
     for (const key of this.receipts.keys()) if (key.startsWith(`${userId}:`)) this.receipts.delete(key);
   }
   async cleanup() {}
@@ -306,4 +316,74 @@ test("CompanionLifecycle 重置水位拒绝已经加载但尚未结算的旧节�
 
   const observed = await lifecycle.execute(actor, { action: "observe" });
   assert.deepEqual({ bondXp: observed.state.bondXp, mistlight: observed.state.mistlight }, { bondXp: 0, mistlight: 0 });
+});
+
+test("CompanionLifecycle 按等级解锁动作并把收藏纳入重置", async () => {
+  const store = new MemoryCompanionStore();
+  const lifecycle = new CompanionLifecycle(store, () => new Date("2026-08-28T12:00:00.000Z"));
+  const actor = { kind: "account", id: "reader-action-levels" };
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "perform-action", itemId: "antenna-response",
+  }), /羁绊等级 2/);
+  store.completions.set(actor.id, Array.from({ length: 13 }, (_, index) => ({
+    chapterId: `chapter-level-${index}`, chapterVersion: 1,
+    completedAt: `2026-08-28T10:${String(index).padStart(2, "0")}:00.000Z`,
+    recordedAt: `2026-08-28T10:${String(index).padStart(2, "0")}:01.000Z`,
+  })));
+
+  const observed = await lifecycle.execute(actor, { action: "observe" });
+  assert.deepEqual(observed.collections.actions.map((item) => [item.id, item.owned]), [
+    ["antenna-response", true], ["spin-hover", true], ["hug-memory", true],
+  ]);
+  assert.equal((await lifecycle.execute(actor, { action: "perform-action", itemId: "antenna-response" })).outcome, "performed");
+  assert.equal((await lifecycle.execute(actor, { action: "perform-action", itemId: "spin-hover" })).outcome, "performed");
+  assert.equal((await lifecycle.execute(actor, { action: "perform-action", itemId: "hug-memory" })).outcome, "performed");
+  await lifecycle.execute(actor, { action: "reset", confirmation: "重置小雾成长" });
+  const afterReset = await lifecycle.execute(actor, { action: "observe" });
+  assert.equal(afterReset.collections.actions.some((item) => item.owned), false);
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "perform-action", itemId: "antenna-response",
+  }), /羁绊等级 2/);
+});
+
+test("CompanionLifecycle 购买与装备收藏幂等并稳定拒绝余额和所有权错误", async () => {
+  const store = new MemoryCompanionStore();
+  const lifecycle = new CompanionLifecycle(store, () => new Date("2026-08-28T12:00:00.000Z"));
+  const actor = { kind: "account", id: "reader-collections" };
+  store.completions.set(actor.id, Array.from({ length: 4 }, (_, index) => ({
+    chapterId: `chapter-collection-${index}`, chapterVersion: 1,
+    completedAt: `2026-08-28T11:0${index}:00.000Z`, recordedAt: `2026-08-28T11:0${index}:01.000Z`,
+  })));
+  await lifecycle.execute(actor, { action: "observe" });
+
+  const purchase = await lifecycle.execute(actor, {
+    action: "purchase", kind: "appearance", itemId: "starlight-cloak", operationId: "buy-stars",
+  });
+  const replay = await lifecycle.execute(actor, {
+    action: "purchase", kind: "appearance", itemId: "starlight-cloak", operationId: "buy-stars",
+  });
+  const owned = await lifecycle.execute(actor, {
+    action: "purchase", kind: "appearance", itemId: "starlight-cloak", operationId: "buy-stars-again",
+  });
+  const equipped = await lifecycle.execute(actor, {
+    action: "equip", kind: "appearance", itemId: "starlight-cloak", operationId: "equip-stars",
+  });
+
+  assert.deepEqual({ purchase: purchase.state.mistlight, replay: replay.state.mistlight, owned: owned.state.mistlight }, { purchase: 20, replay: 20, owned: 20 });
+  assert.equal(equipped.state.equippedAppearance, "starlight-cloak");
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "purchase", kind: "appearance", itemId: "archive-cloak", operationId: "buy-stars",
+  }), /操作标识已用于其他收藏请求/);
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "equip", kind: "garden", itemId: "world-tree", operationId: "equip-stars",
+  }), /操作标识已用于其他收藏请求/);
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "purchase", kind: "garden", itemId: "star-nursery", operationId: "buy-expensive",
+  }), /雾光不足/);
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "equip", kind: "garden", itemId: "glowing-roots", operationId: "equip-unowned",
+  }), /尚未拥有/);
+  await assert.rejects(lifecycle.execute(actor, {
+    action: "purchase", kind: "garden", itemId: "forged", operationId: "buy-forged",
+  }), /收藏不存在/);
 });

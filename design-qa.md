@@ -47,6 +47,37 @@ passed
 
 ---
 
+# 雾庭 P3 Design QA
+
+- 范围：等级动作、服装购买与装备、庭院购买与装备、全站侧边形象同步和资产失败回退
+- 验收日期：2026-08-29
+- 证据：
+  - 390×844：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p3/garden-p3-390x844.png`
+  - reduced motion：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p3/garden-p3-reduced-motion-390x844.png`
+  - 两套服装五态合览：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p3/collections-contact.png`
+  - 两套服装互动与动作姿势合览：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-garden-p3/poses-contact.png`
+
+## 视觉资产
+
+- ImageGen 以已确认的小雾透明母版执行图片编辑：星辉斗篷保留星空材质，档案斗篷替换为深海军蓝档案纹、青色发光缝线、纸页饰片和银色文档扣；每套均生成 `idle / greeting / notice / success / warning` 五个侧边反馈状态，以及 `touch / play / rest / antenna-response / spin-hover / hug-memory` 六个雾庭专用姿势。
+- ImageGen 以新图生成模式制作两张无角色庭院：萤光树根采用青紫发光的世界树根系与中央平台，星苗圃采用水晶花盆、发光星苗和中央互动平台。
+- 最终资产位于 `public/xiaowu/appearances/{starlight-cloak,archive-cloak}/` 与 `public/xiaowu/gardens/`。二十二张角色 WebP 均经 `hasAlpha: yes` 验证；服装状态与姿势统一为 640×640，庭院为 768×1365。
+
+## 结果
+
+- 360×800、390×844、430×932 均满足 `scrollWidth === innerWidth`；雾庭隐藏侧边探头、固定 Dock 保持可见，三个互动按钮无裁切。200% 等效内容视口保持单列布局且没有额外横向滚动。
+- `prefers-reduced-motion: reduce` 实测匹配，庭院场景、角色和 Dock 的 `animation-name` 均为 `none`，动画与过渡时长为 `0s`。
+- 读屏快照提供“世界树庭院”“小雾成长状态”“陪小雾待一会”“收藏”“记忆册”等区域名称；服装、庭院与互动按钮均有完整可读名称。
+- 登录合同覆盖“购买后拥有、再次点击装备、播放已解锁动作、侧边小雾读取账号装备”；未达等级动作由领域模块拒绝。角色资源失败回退同神情默认形象，庭院资源失败隐藏图片并恢复默认 CSS 世界树。
+- 真实 D1 测试覆盖不同 operation id 的并发重复购买只扣款一次、同 operation id 的不同请求指纹稳定冲突、装备重放、陌生账号无所有权拒绝、导出包含 inventory、成长重置与并发动作补齐不会复活 inventory。
+- 最终门禁通过：`pnpm typecheck`、`pnpm lint`、生产构建、160 项模块／HTTP 测试与 59 项 React 测试；浏览器控制台无新增 warning 或 error。
+
+## 最终结果
+
+passed
+
+---
+
 # 雾庭 P2 Design QA
 
 - 范围：有效阅读奖励、路线探索度、最近奖励与记忆册

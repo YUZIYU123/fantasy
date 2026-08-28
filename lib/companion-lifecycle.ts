@@ -45,6 +45,27 @@ export type CompanionMemoryCard = {
   coverAlt: string;
   completedAt: string;
 };
+export type CompanionInventoryRecord = {
+  type: "action" | "appearance" | "garden";
+  itemId: string;
+  unlockedAt: string;
+};
+
+export const COMPANION_COLLECTION_CATALOG = {
+  actions: [
+    { id: "antenna-response", name: "触角回应", requiredLevel: 2 },
+    { id: "spin-hover", name: "旋转悬浮", requiredLevel: 4 },
+    { id: "hug-memory", name: "抱住记忆页", requiredLevel: 6 },
+  ],
+  appearances: [
+    { id: "starlight-cloak", name: "星辉斗篷", price: 60 },
+    { id: "archive-cloak", name: "档案斗篷", price: 90 },
+  ],
+  gardens: [
+    { id: "glowing-roots", name: "萤光树根", price: 80 },
+    { id: "star-nursery", name: "星苗圃", price: 120 },
+  ],
+} as const;
 
 export const COMPANION_RULES = {
   completionBondXp: 40,
@@ -64,6 +85,7 @@ export interface CompanionStore {
   listDiscoveryFacts(userId: string): Promise<CompanionDiscoveryFact[]>;
   listMemoryCards(userId: string): Promise<CompanionMemoryCard[]>;
   listRecentReceipts(userId: string): Promise<CompanionReceipt[]>;
+  listInventory(userId: string): Promise<CompanionInventoryRecord[]>;
   hasReadingOperation(userId: string, operationId: string): Promise<boolean>;
   readLastActivityAt(userId: string): Promise<string | null>;
   readPublishedChapter(chapterId: string, chapterVersion: number): Promise<{ nodeIds: string[] } | null>;
@@ -84,6 +106,7 @@ export interface CompanionStore {
     expectedRevision: number | null;
     next: CompanionProfileRecord;
     receipt?: CompanionReceipt;
+    inventoryUnlock?: CompanionInventoryRecord;
   }): Promise<"applied" | "conflict" | "duplicate">;
   reset(input: {
     userId: string;
@@ -107,11 +130,24 @@ export type CompanionView = {
   equippedGarden: string;
 };
 
+export type CompanionCollections = {
+  actions: Array<(typeof COMPANION_COLLECTION_CATALOG.actions)[number] & { owned: boolean }>;
+  appearances: Array<(typeof COMPANION_COLLECTION_CATALOG.appearances)[number] & { owned: boolean; equipped: boolean }>;
+  gardens: Array<(typeof COMPANION_COLLECTION_CATALOG.gardens)[number] & { owned: boolean; equipped: boolean }>;
+};
+
+export type CompanionActionId = (typeof COMPANION_COLLECTION_CATALOG.actions)[number]["id"];
+export type CompanionAppearanceId = (typeof COMPANION_COLLECTION_CATALOG.appearances)[number]["id"];
+export type CompanionGardenId = (typeof COMPANION_COLLECTION_CATALOG.gardens)[number]["id"];
+
 export type CompanionCommand =
   | { action: "observe" }
   | { action: "record-reading"; chapterId: string; chapterVersion: number; nodeId: string; windowStartedAt: string; operationId: string }
   | { action: "record-node"; chapterId: string; chapterVersion: number; nodeId: string }
   | { action: "interact"; kind: "touch" | "play" | "rest"; operationId: string }
+  | { action: "perform-action"; itemId: string }
+  | { action: "purchase"; kind: "appearance" | "garden"; itemId: string; operationId: string }
+  | { action: "equip"; kind: "appearance" | "garden"; itemId: string; operationId: string }
   | { action: "reset"; confirmation: string }
   | { action: "export" }
   | { action: "purge" }
@@ -120,6 +156,17 @@ export type CompanionCommand =
 export class CompanionError extends Error {
   readonly status: number;
   constructor(message: string, status = 400) { super(message); this.status = status; }
+}
+
+function assertCollectionReceipt(
+  receipt: CompanionReceipt,
+  expected: { outcome: "purchased" | "equipped"; kind: "appearance" | "garden"; itemId: string },
+) {
+  let stored: Partial<typeof expected> = {};
+  try { stored = JSON.parse(receipt.resultJson) as Partial<typeof expected>; } catch {}
+  if (stored.outcome !== expected.outcome || stored.kind !== expected.kind || stored.itemId !== expected.itemId) {
+    throw new CompanionError("操作标识已用于其他收藏请求", 409);
+  }
 }
 
 const defaultProfile = (userId: string, now: string): CompanionProfileRecord => ({
@@ -152,6 +199,20 @@ function view(profile: CompanionProfileRecord): CompanionView {
     mistlight: profile.mistlight,
     equippedAppearance: profile.equippedAppearance,
     equippedGarden: profile.equippedGarden,
+  };
+}
+
+async function collections(store: CompanionStore, profile: CompanionProfileRecord): Promise<CompanionCollections> {
+  const inventory = await store.listInventory(profile.userId);
+  const owned = new Set(inventory.map((item) => `${item.type}:${item.itemId}`));
+  return {
+    actions: COMPANION_COLLECTION_CATALOG.actions.map((item) => ({ ...item, owned: owned.has(`action:${item.id}`) })),
+    appearances: COMPANION_COLLECTION_CATALOG.appearances.map((item) => ({
+      ...item, owned: owned.has(`appearance:${item.id}`), equipped: profile.equippedAppearance === item.id,
+    })),
+    gardens: COMPANION_COLLECTION_CATALOG.gardens.map((item) => ({
+      ...item, owned: owned.has(`garden:${item.id}`), equipped: profile.equippedGarden === item.id,
+    })),
   };
 }
 
@@ -286,6 +347,27 @@ export class CompanionLifecycle {
     }
   }
 
+  private async reconcileLevelActions(userId: string) {
+    for (let attempt = 0; attempt < COMPANION_COLLECTION_CATALOG.actions.length * 2; attempt += 1) {
+      const current = await this.profile(userId);
+      const inventory = await this.store.listInventory(userId);
+      const owned = new Set(inventory.filter((item) => item.type === "action").map((item) => item.itemId));
+      const unlock = COMPANION_COLLECTION_CATALOG.actions.find((item) => (
+        item.requiredLevel <= view(current).level && !owned.has(item.id)
+      ));
+      if (!unlock) return;
+      const now = this.clock().toISOString();
+      const result = await this.store.commit({
+        userId,
+        expectedRevision: current.revision,
+        next: { ...current, revision: current.revision + 1, updatedAt: now },
+        inventoryUnlock: { type: "action", itemId: unlock.id, unlockedAt: now },
+      });
+      if (result === "applied") continue;
+    }
+    throw new CompanionError("小雾动作解锁发生冲突，请重试", 409);
+  }
+
   async execute(actor: CompanionActor, command: CompanionCommand) {
     if (command.action === "cleanup") {
       if (actor.kind !== "system") throw new CompanionError("无权清理小雾成长", 403);
@@ -315,6 +397,7 @@ export class CompanionLifecycle {
         await this.rewardCompletion(userId, fact);
       }
       await this.reconcileReading(userId);
+      await this.reconcileLevelActions(userId);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const current = await this.profile(userId);
         const next = { ...visit(current, this.clock().toISOString()), revision: current.revision + 1 };
@@ -332,12 +415,119 @@ export class CompanionLifecycle {
           }));
           return {
             state: view(next),
+            collections: await collections(this.store, next),
             memories: await this.store.listMemoryCards(userId),
             recentRewards: (await this.store.listRecentReceipts(userId)).filter((receipt) => receipt.kind === "completion").map((receipt) => ({
               kind: receipt.kind, result: JSON.parse(receipt.resultJson) as Record<string, number>, createdAt: receipt.createdAt,
             })),
             exploration,
           };
+        }
+      }
+      throw new CompanionError("小雾成长发生冲突，请重试", 409);
+    }
+    if (command.action === "perform-action") {
+      const item = COMPANION_COLLECTION_CATALOG.actions.find((candidate) => candidate.id === command.itemId);
+      if (!item) throw new CompanionError("动作不存在", 404);
+      await this.reconcileLevelActions(userId);
+      const current = await this.profile(userId);
+      const inventory = await this.store.listInventory(userId);
+      if (!inventory.some((owned) => owned.type === "action" && owned.itemId === item.id)) {
+        throw new CompanionError(`羁绊等级 ${item.requiredLevel} 才能使用该动作`, 409);
+      }
+      return {
+        outcome: "performed" as const,
+        itemId: item.id,
+        state: view(current),
+        collections: await collections(this.store, current),
+      };
+    }
+    if (command.action === "purchase") {
+      if (!command.operationId || command.operationId.length > 128) throw new CompanionError("收藏操作标识无效");
+      const catalog = command.kind === "appearance"
+        ? COMPANION_COLLECTION_CATALOG.appearances
+        : COMPANION_COLLECTION_CATALOG.gardens;
+      const item = catalog.find((candidate) => candidate.id === command.itemId);
+      if (!item) throw new CompanionError("收藏不存在", 404);
+      const key = `purchase:${command.operationId}`;
+      const expectedReceipt = { outcome: "purchased" as const, kind: command.kind, itemId: item.id };
+      const previous = await this.store.readReceipt(userId, key);
+      if (previous) {
+        assertCollectionReceipt(previous, expectedReceipt);
+        const current = await this.profile(userId);
+        return { outcome: "purchased" as const, state: view(current), collections: await collections(this.store, current) };
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const inventory = await this.store.listInventory(userId);
+        if (inventory.some((owned) => owned.type === command.kind && owned.itemId === item.id)) {
+          const current = await this.profile(userId);
+          return { outcome: "owned" as const, state: view(current), collections: await collections(this.store, current) };
+        }
+        const current = await this.profile(userId);
+        if (current.mistlight < item.price) throw new CompanionError("雾光不足", 409);
+        const now = this.clock().toISOString();
+        const next = { ...visit(current, now), revision: current.revision + 1, mistlight: current.mistlight - item.price };
+        const result = await this.store.commit({
+          userId, expectedRevision: current.revision, next,
+          receipt: { key, kind: "purchase", resultJson: JSON.stringify(expectedReceipt), createdAt: now },
+          inventoryUnlock: { type: command.kind, itemId: item.id, unlockedAt: now },
+        });
+        if (result === "applied") {
+          return { outcome: "purchased" as const, state: view(next), collections: await collections(this.store, next) };
+        }
+        if (result === "duplicate") {
+          const receipt = await this.store.readReceipt(userId, key);
+          if (!receipt) throw new CompanionError("收藏操作结果暂时不可用", 503);
+          assertCollectionReceipt(receipt, expectedReceipt);
+          const saved = await this.profile(userId);
+          return { outcome: "purchased" as const, state: view(saved), collections: await collections(this.store, saved) };
+        }
+      }
+      throw new CompanionError("小雾成长发生冲突，请重试", 409);
+    }
+    if (command.action === "equip") {
+      if (!command.operationId || command.operationId.length > 128) throw new CompanionError("收藏操作标识无效");
+      const defaultItem = command.kind === "appearance" ? "default" : "world-tree";
+      const validItems = command.kind === "appearance"
+        ? COMPANION_COLLECTION_CATALOG.appearances
+        : COMPANION_COLLECTION_CATALOG.gardens;
+      if (command.itemId !== defaultItem && !validItems.some((item) => item.id === command.itemId)) {
+        throw new CompanionError("收藏不存在", 404);
+      }
+      const key = `equip:${command.operationId}`;
+      const expectedReceipt = { outcome: "equipped" as const, kind: command.kind, itemId: command.itemId };
+      const previous = await this.store.readReceipt(userId, key);
+      if (previous) {
+        assertCollectionReceipt(previous, expectedReceipt);
+        const current = await this.profile(userId);
+        return { outcome: "equipped" as const, state: view(current), collections: await collections(this.store, current) };
+      }
+      if (command.itemId !== defaultItem) {
+        const inventory = await this.store.listInventory(userId);
+        if (!inventory.some((item) => item.type === command.kind && item.itemId === command.itemId)) {
+          throw new CompanionError("尚未拥有该收藏", 409);
+        }
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const current = await this.profile(userId);
+        const now = this.clock().toISOString();
+        const next = {
+          ...visit(current, now), revision: current.revision + 1,
+          ...(command.kind === "appearance" ? { equippedAppearance: command.itemId } : { equippedGarden: command.itemId }),
+        };
+        const result = await this.store.commit({
+          userId, expectedRevision: current.revision, next,
+          receipt: { key, kind: "purchase", resultJson: JSON.stringify(expectedReceipt), createdAt: now },
+        });
+        if (result === "applied") {
+          return { outcome: "equipped" as const, state: view(next), collections: await collections(this.store, next) };
+        }
+        if (result === "duplicate") {
+          const receipt = await this.store.readReceipt(userId, key);
+          if (!receipt) throw new CompanionError("收藏操作结果暂时不可用", 503);
+          assertCollectionReceipt(receipt, expectedReceipt);
+          const saved = await this.profile(userId);
+          return { outcome: "equipped" as const, state: view(saved), collections: await collections(this.store, saved) };
         }
       }
       throw new CompanionError("小雾成长发生冲突，请重试", 409);

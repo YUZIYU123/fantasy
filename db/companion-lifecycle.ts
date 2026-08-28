@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { ensureSchema, getD1Binding, getDb } from ".";
 import {
   chapterVersionCompletionFacts, chapters, chapterVersions, companionActivityWindows, companionDiscoveries,
-  companionProfiles, companionRewardReceipts,
+  companionInventory, companionProfiles, companionRewardReceipts,
 } from "./schema";
 import { normalizeStory } from "../lib/story";
 import {
@@ -92,6 +92,12 @@ export const drizzleD1CompanionStore: CompanionStore = {
       .where(eq(companionRewardReceipts.userId, userId))
       .orderBy(desc(companionRewardReceipts.createdAt)).limit(10)).map((row) => ({
       key: row.receiptKey, kind: row.kind, resultJson: row.resultJson, createdAt: row.createdAt,
+    }));
+  },
+  async listInventory(userId) {
+    await ensureSchema();
+    return (await getDb().select().from(companionInventory).where(eq(companionInventory.userId, userId))).map((row) => ({
+      type: row.type, itemId: row.itemId, unlockedAt: row.unlockedAt,
     }));
   },
   async hasReadingOperation(userId, operationId) {
@@ -184,6 +190,17 @@ export const drizzleD1CompanionStore: CompanionStore = {
         input.userId, input.receipt.key,
       ));
     }
+    if (input.inventoryUnlock) {
+      const item = input.inventoryUnlock;
+      statements.push(d1.prepare(`INSERT INTO companion_inventory
+        (id, user_id, type, item_id, unlocked_at)
+        SELECT ?, ?, ?, ?, ? WHERE EXISTS (
+          SELECT 1 FROM companion_profiles WHERE user_id = ? AND commit_token = ?
+        ) ON CONFLICT(user_id, type, item_id) DO NOTHING`).bind(
+          `${input.userId}:${item.type}:${item.itemId}`, input.userId, item.type, item.itemId, item.unlockedAt,
+          input.userId, commitToken,
+        ));
+    }
     const results = await d1.batch(statements);
     if (Number(results[0]?.meta.changes ?? 0) === 1) return "applied";
     if (input.receipt && await this.readReceipt(input.userId, input.receipt.key)) return "duplicate";
@@ -191,7 +208,7 @@ export const drizzleD1CompanionStore: CompanionStore = {
   },
   async export(userId) {
     await ensureSchema();
-    const [profile, receipts, completionFacts, activityFacts, discoveryFacts] = await Promise.all([
+    const [profile, receipts, completionFacts, activityFacts, discoveryFacts, inventory] = await Promise.all([
       this.readProfile(userId),
       getDb().select({
         key: companionRewardReceipts.receiptKey,
@@ -202,8 +219,9 @@ export const drizzleD1CompanionStore: CompanionStore = {
       this.listCompletionFacts(userId),
       this.listActivityFacts(userId),
       this.listDiscoveryFacts(userId),
+      this.listInventory(userId),
     ]);
-    return { profile, receipts, completionFacts, activityFacts, discoveryFacts };
+    return { profile, receipts, completionFacts, activityFacts, discoveryFacts, inventory };
   },
   async reset(input) {
     await ensureSchema();
@@ -219,6 +237,9 @@ export const drizzleD1CompanionStore: CompanionStore = {
       d1.prepare(`DELETE FROM companion_reward_receipts WHERE user_id = ? AND EXISTS (
         SELECT 1 FROM companion_profiles WHERE user_id = ? AND revision = ?
       )`).bind(input.userId, input.userId, input.expectedRevision),
+      d1.prepare(`DELETE FROM companion_inventory WHERE user_id = ? AND EXISTS (
+        SELECT 1 FROM companion_profiles WHERE user_id = ? AND revision = ?
+      )`).bind(input.userId, input.userId, input.expectedRevision),
       d1.prepare(`UPDATE companion_profiles SET revision = ?, commit_token = ?, bond_xp = ?, vitality = ?,
           mistlight = ?, last_seen_at = ?, last_touch_at = ?, last_rest_at = ?, reward_baseline_at = ?,
           equipped_appearance = ?, equipped_garden = ?, updated_at = ?
@@ -230,7 +251,7 @@ export const drizzleD1CompanionStore: CompanionStore = {
           input.userId, input.expectedRevision,
         ),
     ]);
-    return Number(results[3]?.meta.changes ?? 0) === 1 ? "applied" : "conflict";
+    return Number(results[4]?.meta.changes ?? 0) === 1 ? "applied" : "conflict";
   },
   async purge(userId) {
     await ensureSchema();
@@ -239,6 +260,7 @@ export const drizzleD1CompanionStore: CompanionStore = {
       d1.prepare("DELETE FROM companion_activity_windows WHERE user_id = ?").bind(userId),
       d1.prepare("DELETE FROM companion_discoveries WHERE user_id = ?").bind(userId),
       d1.prepare("DELETE FROM companion_reward_receipts WHERE user_id = ?").bind(userId),
+      d1.prepare("DELETE FROM companion_inventory WHERE user_id = ?").bind(userId),
       d1.prepare("DELETE FROM companion_profiles WHERE user_id = ?").bind(userId),
     ]);
   },
@@ -249,6 +271,7 @@ export const drizzleD1CompanionStore: CompanionStore = {
       d1.prepare("DELETE FROM companion_activity_windows WHERE user_id NOT IN (SELECT id FROM users)"),
       d1.prepare("DELETE FROM companion_discoveries WHERE user_id NOT IN (SELECT id FROM users)"),
       d1.prepare("DELETE FROM companion_reward_receipts WHERE user_id NOT IN (SELECT id FROM users)"),
+      d1.prepare("DELETE FROM companion_inventory WHERE user_id NOT IN (SELECT id FROM users)"),
       d1.prepare("DELETE FROM companion_profiles WHERE user_id NOT IN (SELECT id FROM users)"),
     ]);
   },
