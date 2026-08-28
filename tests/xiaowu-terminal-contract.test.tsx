@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
@@ -135,4 +136,9 @@ test("系统 reduced motion 自动取消逐字揭示", async () => {
   await act(async () => root.render(<FantasyTerminal playback={playback} />));
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
   assert.equal(container.querySelector('.terminal-playback-message p[aria-hidden="true"]')?.textContent, playback.message);
+});
+
+test("矮视口为小雾对话卡保留顶部空间", () => {
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /@media\(max-height:600px\)\{\.reader-shell \.xiaowu-dialog\{bottom:8px;max-height:calc\(100svh - 112px\)\}\}/);
 });
