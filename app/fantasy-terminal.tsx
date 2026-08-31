@@ -2,11 +2,9 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import type { TerminalReaction } from "../lib/reading-session";
+import type { SessionTerminalPlayback, TerminalReaction } from "../lib/reading-session";
 import {
   DEFAULT_STORY_TERMINAL,
-  type ImagePresentation,
-  type InteractionPreset,
   type StoryTerminalConfig,
   type StoryTerminalEvent,
   type TerminalTask,
@@ -34,20 +32,10 @@ type TerminalSection = "home" | "preferences" | "message" | "task" | "playback" 
 type TerminalPlaybackPhase = "boot" | "message" | "collapse";
 type NarrationMode = "audio" | "device" | "text";
 
-export type TerminalPlayback = {
-  id: string;
-  message: string;
-  speak: boolean;
-  voiceUrl: string;
-  interactionPreset: InteractionPreset;
-  imageUrl: string;
-  imageAlt: string;
-  imagePresentation: ImagePresentation;
-  task: TerminalTask;
-  reaction?: TerminalReaction;
-};
+export type TerminalPlayback = SessionTerminalPlayback;
 
 const taskStatusLabels = { active: "进行中", completed: "已完成", failed: "已失败" } as const;
+const reactionLabels: Record<TerminalReaction, string> = { notice: "提示", success: "成功", warning: "警告" };
 
 function XiaowuPortrait({ src, state }: { src: string; state: "idle" | "greeting" | "notice" | "success" | "warning" }) {
   // The five local WebP states are already losslessly compressed to their exact display budget.
@@ -138,6 +126,8 @@ export function FantasyTerminal({
   const [narrationMode, setNarrationMode] = useState<NarrationMode>("text");
   const proactiveCount = useRef(0);
   const launcherRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const playbackOpenerRef = useRef<HTMLElement | null>(null);
   const playbackAudio = useRef<HTMLAudioElement>(null);
   const speechUtterance = useRef<SpeechSynthesisUtterance | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -165,7 +155,7 @@ export function FantasyTerminal({
 
   const closeTerminal = useCallback(() => {
     setOpen(false);
-    queueMicrotask(() => (returnFocusRef?.current ?? launcherRef.current)?.focus());
+    queueMicrotask(() => (returnFocusRef?.current ?? playbackOpenerRef.current ?? launcherRef.current)?.focus());
   }, [returnFocusRef, setOpen]);
 
   const clearTimers = useCallback(() => {
@@ -348,6 +338,7 @@ export function FantasyTerminal({
 
   useEffect(() => {
     if (!playback) return;
+    playbackOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const generation = ++playbackGeneration.current;
     clearTimers();
     stopNarration();
@@ -392,6 +383,11 @@ export function FantasyTerminal({
   }, [clearTimers, playback, reducedMotion, setOpen, startNarration, stopNarration]);
 
   useEffect(() => {
+    if (!open || !playback || section !== "playback") return;
+    queueMicrotask(() => dialogRef.current?.querySelector<HTMLButtonElement>('button[aria-label="跳过小雾反馈"]')?.focus());
+  }, [open, playback, section]);
+
+  useEffect(() => {
     const audio = playbackAudio.current;
     if (audio) audio.volume = muted ? 0 : Math.max(0, Math.min(1, config.volume));
     if (speechUtterance.current) speechUtterance.current.volume = muted ? 0 : Math.max(0, Math.min(1, config.volume));
@@ -418,7 +414,6 @@ export function FantasyTerminal({
     setSection("registration");
     setOpen(true);
   };
-  const collapseTarget = activeTask?.title ? "task" : "fab";
   const narrationLabel = narrationMode === "audio" ? "AI VOICE" : narrationMode === "device" ? "DEVICE VOICE" : "TEXT MODE";
   const legacyName = config.name.trim();
   const customName = legacyName && legacyName !== "幻界终端" && legacyName !== "小雾" ? legacyName : "";
@@ -437,9 +432,15 @@ export function FantasyTerminal({
     setSignal(false);
     setOpen(true);
   };
+  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    if (playback) finishPlayback();
+    else closeTerminal();
+  };
 
   const terminal = <aside
-    className={`fantasy-terminal xiaowu-terminal${open ? " open" : ""}${playback ? ` xiaowu-playing interaction-${playback.interactionPreset} collapse-to-${collapseTarget}` : ""}`}
+    className={`fantasy-terminal xiaowu-terminal${open ? " open" : ""}`}
     aria-live={playback ? "off" : "polite"}
   >
     <audio
@@ -463,10 +464,11 @@ export function FantasyTerminal({
     ><XiaowuPortrait src={companionImage} state={companionState} /></button> : open ? <div className={companionClassName} aria-hidden="true"><XiaowuPortrait src={companionImage} state={companionState} /></div> : null}
     {launcher !== "hidden" && signal && !open && <button className="xiaowu-signal" onClick={openFromCompanion}><small>小雾发现了新消息</small><span>{displayedEvent?.message}</span></button>}
     {launcher !== "hidden" && !open && config.idleMode === "topTask" && activeTask?.title ? <button className={`xiaowu-task-strip status-${activeTask.status}`} onClick={openTask}><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
-    {open && <section id="xiaowu-dialog" className={`xiaowu-dialog terminal-phase-${playbackPhase}${playback ? " xiaowu-playback" : ""}`} role="dialog" aria-modal={playback ? true : undefined} aria-label="小雾对话">
+    {open && <section ref={dialogRef} id="xiaowu-dialog" className={`xiaowu-dialog terminal-phase-${playbackPhase}${playback ? " xiaowu-playback" : ""}`} role="dialog" aria-label="小雾对话" onKeyDown={handleDialogKeyDown}>
       {playback?.imageUrl && section === "playback" && <div className="xiaowu-playback-art"><Image src={playback.imageUrl} alt={playback.imageAlt} fill unoptimized sizes="340px" style={{ objectFit: playback.imagePresentation.fit, objectPosition: `${playback.imagePresentation.positionX}% ${playback.imagePresentation.positionY}%` }} /></div>}
       <header><div><strong>小雾</strong>{customName && <small>{customName}</small>}</div>{section === "playback" ? <button aria-label="跳过小雾反馈" onClick={finishPlayback}>跳过</button> : <button aria-label="收起小雾" onClick={closeTerminal}>×</button>}</header>
       {section === "playback" && playback ? <div className="terminal-playback-message">
+        <span className="sr-only" role="status">小雾反馈：{reactionLabels[reaction]}</span>
         {playbackPhase === "boot" ? <div className="xiaowu-arriving" aria-hidden="true"><small>小雾正在赶来</small><i>任务与语音同步中…</i></div> : <>
           <small>小雾反馈 · {narrationLabel}</small>
           <p aria-hidden="true">{revealedMessage}<i className="terminal-caret" /></p>

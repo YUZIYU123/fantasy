@@ -27,12 +27,12 @@ test("旧章节自动补齐幻界终端和节点事件默认值", () => {
   assert.ok(normalized.nodes.every((node) => node.terminalEvent.trigger === "none" && node.terminalEvent.message === ""));
 });
 
-test("小雾称呼与台词执行输入上限", () => {
+test("小雾副标题与台词执行输入上限", () => {
   const story = normalizeStory(storyFixture());
   story.terminal.name = "终".repeat(31);
   story.nodes[0].terminalEvent = { trigger: "beforeContent", message: "讯".repeat(301), speak: true, voiceAssetId: "", voiceUrl: "", voiceSourceKey: "" };
   const errors = validateStoryInputLengths(story);
-  assert.ok(errors.some((error) => error.includes("小雾自定义称呼")));
+  assert.ok(errors.some((error) => error.includes("小雾副标题")));
   assert.ok(errors.some((error) => error.includes("小雾台词")));
 });
 
