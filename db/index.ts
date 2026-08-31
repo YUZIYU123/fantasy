@@ -23,7 +23,7 @@ export function ensureSchema() {
   if (schemaReady) return schemaReady;
   const d1 = env.DB;
   schemaReady = d1.batch([
-    d1.prepare("SELECT id FROM novels LIMIT 0"),
+    d1.prepare("SELECT id, format, format_locked_at FROM novels LIMIT 0"),
     d1.prepare("SELECT id FROM novel_versions LIMIT 0"),
     d1.prepare("SELECT id FROM chapters LIMIT 0"),
     d1.prepare("SELECT novel_id FROM chapters LIMIT 0"),

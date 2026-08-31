@@ -15,9 +15,10 @@ function parseSnapshot(value: string): BookshelfPublicSnapshot {
     return {
       name: String(parsed.name || "作品已不可用"), summary: String(parsed.summary || ""),
       coverUrl: String(parsed.coverUrl || ""), coverAlt: String(parsed.coverAlt || parsed.name || "小说封面"),
+      format: parsed.format === "short" ? "short" : "serial",
     };
   } catch {
-    return { name: "作品已不可用", summary: "", coverUrl: "", coverAlt: "小说封面" };
+    return { name: "作品已不可用", summary: "", coverUrl: "", coverAlt: "小说封面", format: "serial" };
   }
 }
 
@@ -49,7 +50,8 @@ export const drizzleD1BookshelfStore: BookshelfStore = {
     ));
     const published = row.publishedJson ? parseSnapshot(row.publishedJson) : null;
     return {
-      id: row.id, slug: row.slug, status: row.status, published,
+      id: row.id, slug: row.slug, status: row.status, format: row.format ?? "serial",
+      published: published ? { ...published, format: row.format ?? "serial" } : null,
       chapters: chapterRows.map((chapter) => ({ id: chapter.id, version: chapter.version, publishedAt: chapter.updatedAt })),
     };
   },
@@ -133,8 +135,8 @@ export const drizzleD1BookshelfStore: BookshelfStore = {
       const row = novelById.get(entry.novelId);
       const novelChapters = (chaptersByNovel.get(entry.novelId) || []).filter((chapter) => chapter.status === "published");
       const novel = row ? {
-        id: row.id, slug: row.slug, status: row.status,
-        published: row.publishedJson ? parseSnapshot(row.publishedJson) : null,
+        id: row.id, slug: row.slug, status: row.status, format: row.format ?? "serial",
+        published: row.publishedJson ? { ...parseSnapshot(row.publishedJson), format: row.format ?? "serial" } : null,
         chapters: novelChapters.map((chapter) => ({ id: chapter.id, version: chapter.version, publishedAt: chapter.updatedAt })),
       } : null;
       const frontier = frontierByNovel.get(entry.novelId);

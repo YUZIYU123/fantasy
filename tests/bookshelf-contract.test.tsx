@@ -63,6 +63,19 @@ test("真实空书架提供世界档案入口", async () => {
   assert.equal([...container.querySelectorAll('a[href="/"]')].some((link) => link.textContent?.includes("世界档案")), true);
 });
 
+test("书架为短篇显示作品形态且不使用新增章节语义", async () => {
+  globalThis.fetch = async () => Response.json({ kind: "page", nextCursor: null, items: [{
+    id: "short-entry", novelId: "short", slug: "short", format: "short",
+    public: { name: "一夜雾灯", summary: "短篇故事", coverUrl: "", coverAlt: "一夜雾灯封面", format: "short" },
+    status: "read", statusLabel: "已读", addedAt: "2026-08-16T00:00:00.000Z",
+    action: { kind: "view", novelId: "short" },
+  }] });
+  await act(async () => root.render(<BookshelfScreen />));
+  await settle();
+  assert.match(container.textContent || "", /短篇 已读/);
+  assert.doesNotMatch(container.textContent || "", /有更新|新增章节/);
+});
+
 test("账号使用者确认移出后条目消失并明确阅读进度保留", async () => {
   const calls: Array<{ method: string; body?: Record<string, unknown> }> = [];
   globalThis.fetch = async (_input, init = {}) => {

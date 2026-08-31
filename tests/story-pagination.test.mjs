@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  countStoryBodyCharacters,
   countStoryCharacters,
   getStoryBodyWarnings,
   NODE_BODY_MAX_LENGTH,
@@ -21,6 +22,18 @@ import { storyFixture } from "./story-fixture.mjs";
 test("正文计数排除空白和分页符，并按完整 Emoji 计数", () => {
   const body = ` 你 好！\n${STORY_PAGE_BREAK}\n👨‍👩‍👧‍👦 `;
   assert.equal(countStoryCharacters(body), 4);
+});
+
+test("短篇字数汇总所有剧情节点且不计算标题与小雾台词", () => {
+  const story = storyFixture();
+  story.nodes[0].title = "不计标题";
+  story.nodes[0].body = `甲 乙${STORY_PAGE_BREAK}👨‍👩‍👧‍👦`;
+  story.nodes[0].terminalEvent.message = "不计小雾台词";
+  const second = structuredClone(story.nodes[0]);
+  second.id = "second";
+  second.body = "丙\n丁";
+  story.nodes = [story.nodes[0], second];
+  assert.equal(countStoryBodyCharacters(story), 5);
 });
 
 test("手动分页符决定分页位置且不会展示给读者", () => {

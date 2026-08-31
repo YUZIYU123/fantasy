@@ -1,19 +1,12 @@
-import {
-  creationLifecycle,
-} from "../../../../db/creation-lifecycle";
+import { creationLifecycle } from "../../../../db/creation-lifecycle";
 import { creationLifecycleErrorResponse, creationLifecycleResponse, parseCreationCommand } from "../../../_creation-lifecycle-http";
 import { SessionAuthorizationError, sessionAuthorization } from "../../../../lib/session-authorization";
 import { sessionAuthorizationResponse } from "../../../_session-authorization-http";
 
-const actor = { kind: "administrator" } as const;
-
 export async function GET(request: Request) {
   try {
     await sessionAuthorization.requireAdministrator(request);
-    const [novels, shorts] = await Promise.all([
-      creationLifecycle.list(actor, "novel"), creationLifecycle.listShorts(actor),
-    ]);
-    return Response.json({ novels, shorts });
+    return Response.json({ shorts: await creationLifecycle.listShorts({ kind: "administrator" }) });
   } catch (error) {
     const response = creationLifecycleErrorResponse(error);
     if (response) return response;
@@ -25,8 +18,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     await sessionAuthorization.requireAdministrator(request);
-    const command = parseCreationCommand("novel", await request.json());
-    return creationLifecycleResponse(await creationLifecycle.execute(actor, command));
+    const command = parseCreationCommand("short", await request.json());
+    return creationLifecycleResponse(await creationLifecycle.execute({ kind: "administrator" }, command));
   } catch (error) {
     const response = creationLifecycleErrorResponse(error);
     if (response) return response;

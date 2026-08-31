@@ -12,7 +12,7 @@ import { companionLifecycle, drizzleD1CompanionStore } from "../db/companion-lif
 import { sessionAuthorization } from "../lib/session-authorization";
 import { AuthError, hashToken } from "../lib/auth";
 import { CompanionLifecycle } from "../lib/companion-lifecycle";
-import { createBlankNovel, createBlankStory, createStoryChoice } from "../lib/story";
+import { countStoryBodyCharacters, createBlankNovel, createBlankStory, createStoryChoice } from "../lib/story";
 import { getD1Binding } from "../db";
 
 type TestEnv = { ASSET_BUCKET: R2Bucket };
@@ -590,6 +590,259 @@ const lifecycleWorker = {
       await creationLifecycle.execute(fixture.administrator, { entity: "chapter", action: "publish", id: nextChapter.id, story });
       const page = await bookshelfLifecycle.execute(actor, { action: "list" });
       return Response.json({ status: "items" in page ? page.items[0]?.status : null });
+    }
+
+    if (pathname === "/creation-short" && request.method === "POST") {
+      const owner = { kind: "author" as const, id: crypto.randomUUID() };
+      const stranger = { kind: "author" as const, id: crypto.randomUUID() };
+      const created = await creationLifecycle.execute(owner, { entity: "short", action: "create" });
+      if (created.kind !== "created") throw new Error("短篇创建失败");
+      const [ownerNovels, ownerShorts, strangerNovels] = await Promise.all([
+        creationLifecycle.list(owner, "novel"),
+        creationLifecycle.listShorts(owner),
+        creationLifecycle.list(stranger, "novel"),
+      ]);
+      return Response.json({
+        created,
+        novel: ownerNovels.find((novel) => novel.id === created.id),
+        chapters: ownerShorts.filter((item) => item.novel.id === created.id).map((item) => item.chapter),
+        strangerNovelIds: strangerNovels.map((novel) => novel.id),
+      });
+    }
+
+    if (pathname === "/creation-short-matrix" && request.method === "POST") {
+      const author = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const created = await creationLifecycle.execute(author, { entity: "short", action: "create" });
+      if (created.kind !== "created" || !created.chapterId) throw new Error("短篇创建失败");
+      const novel = createBlankNovel();
+      novel.name = "两万字短篇";
+      novel.summary = "验证短篇整体生命周期与原子发布。";
+      novel.coverUrl = "https://example.com/short-cover.jpg";
+      novel.coverAlt = "两万字短篇封面";
+      const story = createBlankStory();
+      story.nodes[0].title = "全文";
+      story.nodes[0].canEndChapter = true;
+      story.nodes[0].body = "字".repeat(20_001);
+      const statusOf = async (operation: () => Promise<unknown>) => {
+        try { await operation(); return 200; } catch (error) {
+          if (!(error instanceof Error) || !("status" in error)) throw error;
+          return Number(error.status);
+        }
+      };
+      const overLimitSaveStatus = await statusOf(() => creationLifecycle.execute(author, {
+        entity: "short", action: "save", id: created.id, novel, story,
+      }));
+      const saved = (await creationLifecycle.listShorts(author)).find((item) => item.chapter.id === created.chapterId)?.chapter;
+      const explicitCustomStory = structuredClone(saved?.draft ?? story);
+      explicitCustomStory.outroUsesNovelCover = false;
+      explicitCustomStory.outroImageUrl = novel.coverUrl;
+      explicitCustomStory.outroImageAlt = "明确保留旧封面作为自定义收尾图";
+      const oldCoverUrl = novel.coverUrl;
+      novel.coverUrl = "https://example.com/short-cover-custom-test.jpg";
+      await creationLifecycle.execute(author, {
+        entity: "short", action: "save", id: created.id, novel, story: explicitCustomStory,
+      });
+      const customSaved = (await creationLifecycle.listShorts(author)).find((item) => item.chapter.id === created.chapterId)?.chapter;
+      const overLimitSubmitStatus = await statusOf(() => creationLifecycle.execute(author, {
+        entity: "short", action: "submit", id: created.id, novel, story,
+      }));
+      story.nodes[0].body = "字".repeat(20_000);
+      novel.coverUrl = "https://example.com/short-cover-updated.jpg";
+      novel.coverAlt = "更新后的两万字短篇封面";
+      await creationLifecycle.execute(author, { entity: "short", action: "submit", id: created.id, novel, story });
+      const submittedNovel = (await creationLifecycle.list(author, "novel")).find((item) => item.id === created.id);
+      const submittedChapter = (await creationLifecycle.listShorts(author)).find((item) => item.chapter.id === created.chapterId)?.chapter;
+      await creationLifecycle.execute(administrator, { entity: "short", action: "publish", id: created.id, novel, story });
+      const publishedNovel = (await creationLifecycle.list(author, "novel")).find((item) => item.id === created.id);
+      const publishedChapter = (await creationLifecycle.listShorts(author)).find((item) => item.chapter.id === created.chapterId)?.chapter;
+      return Response.json({
+        overLimitSaveStatus,
+        overLimitSubmitStatus,
+        savedWordCount: saved ? countStoryBodyCharacters(saved.draft) : -1,
+        explicitCustomOutroPreserved: customSaved?.draft.outroImageUrl === oldCoverUrl
+          && customSaved.draft.outroUsesNovelCover === false,
+        submittedStates: [submittedNovel?.draftStatus, submittedChapter?.draftStatus],
+        formatLockedAt: submittedNovel?.formatLockedAt,
+        publishedStates: [publishedNovel?.status, publishedChapter?.status],
+        publishedWordCount: publishedChapter?.published ? countStoryBodyCharacters(publishedChapter.published) : -1,
+        outroUsesCover: publishedChapter?.published?.outroImageUrl === novel.coverUrl,
+        openingUsesCover: publishedChapter?.published?.openingImageUrl === novel.coverUrl,
+        versions: [publishedNovel?.version, publishedChapter?.version],
+      });
+    }
+
+    if (pathname === "/creation-short-state-matrix" && request.method === "POST") {
+      const author = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const created = await creationLifecycle.execute(author, { entity: "short", action: "create" });
+      if (created.kind !== "created" || !created.chapterId) throw new Error("短篇创建失败");
+      const novel = createBlankNovel();
+      novel.name = "状态矩阵短篇"; novel.summary = "覆盖整体审核和版本状态。";
+      novel.coverUrl = "https://example.com/state-short.jpg"; novel.coverAlt = "状态矩阵短篇封面";
+      const story = createBlankStory();
+      story.nodes[0].body = "短篇状态矩阵正文"; story.nodes[0].canEndChapter = true;
+      const states = async () => {
+        const item = (await creationLifecycle.listShorts(author)).find((entry) => entry.novel.id === created.id);
+        return item ? {
+          novel: [item.novel.status, item.novel.draftStatus, item.novel.version, item.novel.reviewNote],
+          chapter: [item.chapter.status, item.chapter.draftStatus, item.chapter.version, item.chapter.reviewNote],
+        } : null;
+      };
+      await creationLifecycle.execute(author, { entity: "short", action: "submit", id: created.id, novel, story });
+      await creationLifecycle.execute(author, { entity: "short", action: "withdraw", id: created.id });
+      const withdrawn = await states();
+      await creationLifecycle.execute(author, { entity: "short", action: "submit", id: created.id, novel, story });
+      await creationLifecycle.execute(administrator, { entity: "short", action: "reject", id: created.id, meta: { reviewNote: "请修改结尾" } });
+      const rejected = await states();
+      await creationLifecycle.execute(author, { entity: "short", action: "submit", id: created.id, novel, story });
+      await creationLifecycle.execute(administrator, { entity: "short", action: "publish", id: created.id, novel, story });
+      await creationLifecycle.execute(administrator, { entity: "short", action: "offline", id: created.id });
+      const offline = await states();
+      await creationLifecycle.execute(administrator, { entity: "short", action: "rollback", id: created.id, version: 1 });
+      const rolledBack = await states();
+      return Response.json({ withdrawn, rejected, offline, rolledBack });
+    }
+
+    if (pathname === "/creation-short-batch-failure" && request.method === "POST") {
+      const author = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      await creationLifecycle.list(author, "novel");
+      const binding = getD1Binding();
+      const createTriggerName = `fail_short_create_${author.id.replaceAll("-", "")}`;
+      await binding.prepare(`CREATE TRIGGER ${createTriggerName} BEFORE INSERT ON chapters
+        WHEN NEW.owner_id = '${author.id}' BEGIN SELECT RAISE(ABORT, 'forced short create failure'); END`).run();
+      let createFailed = false;
+      try { await creationLifecycle.execute(author, { entity: "short", action: "create" }); } catch { createFailed = true; }
+      const noPartialCreate = (await creationLifecycle.list(author, "novel")).length === 0;
+      await binding.prepare(`DROP TRIGGER ${createTriggerName}`).run();
+      const created = await creationLifecycle.execute(author, { entity: "short", action: "create" });
+      if (created.kind !== "created" || !created.chapterId) throw new Error("短篇创建失败");
+      const before = (await creationLifecycle.listShorts(author)).find((item) => item.novel.id === created.id);
+      if (!before) throw new Error("短篇读取失败");
+      const novel = structuredClone(before.novel.draft);
+      const story = structuredClone(before.chapter.draft);
+      novel.name = "批次应整体成功"; story.nodes[0].body = "不能只保存一半";
+      const triggerName = `fail_short_${created.chapterId.replaceAll("-", "")}`;
+      await binding.prepare(`CREATE TRIGGER ${triggerName} BEFORE UPDATE ON chapters
+        WHEN OLD.id = '${created.chapterId}' BEGIN SELECT RAISE(ABORT, 'forced short batch failure'); END`).run();
+      let failed = false;
+      try {
+        await creationLifecycle.execute(author, { entity: "short", action: "save", id: created.id, novel, story });
+      } catch { failed = true; }
+      const afterFailure = (await creationLifecycle.listShorts(author)).find((item) => item.novel.id === created.id);
+      await binding.prepare(`DROP TRIGGER ${triggerName}`).run();
+      await creationLifecycle.execute(author, { entity: "short", action: "save", id: created.id, novel, story });
+      const afterRetry = (await creationLifecycle.listShorts(author)).find((item) => item.novel.id === created.id);
+      novel.summary = "验证发布批次不会留下半版本。";
+      novel.coverUrl = "https://example.com/atomic-short.jpg"; novel.coverAlt = "原子短篇封面";
+      story.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(author, { entity: "short", action: "submit", id: created.id, novel, story });
+      const publishTriggerName = `fail_short_publish_${created.chapterId.replaceAll("-", "")}`;
+      await binding.prepare(`CREATE TRIGGER ${publishTriggerName} BEFORE UPDATE ON chapters
+        WHEN OLD.id = '${created.chapterId}' BEGIN SELECT RAISE(ABORT, 'forced short publish failure'); END`).run();
+      let publishFailed = false;
+      try {
+        await creationLifecycle.execute(administrator, { entity: "short", action: "publish", id: created.id, novel, story });
+      } catch { publishFailed = true; }
+      const afterPublishFailure = (await creationLifecycle.listShorts(author)).find((item) => item.novel.id === created.id);
+      const failedVersions = await Promise.all([
+        creationLifecycle.listVersions(author, "novel", created.id),
+        creationLifecycle.listVersions(author, "chapter", created.chapterId),
+      ]);
+      await binding.prepare(`DROP TRIGGER ${publishTriggerName}`).run();
+      await creationLifecycle.execute(administrator, { entity: "short", action: "publish", id: created.id, novel, story });
+      const afterPublishRetry = (await creationLifecycle.listShorts(author)).find((item) => item.novel.id === created.id);
+      return Response.json({
+        createFailed,
+        noPartialCreate,
+        failed,
+        unchanged: afterFailure?.novel.draft.name === before.novel.draft.name
+          && afterFailure?.chapter.draft.nodes[0].body === before.chapter.draft.nodes[0].body
+          && afterFailure?.novel.version === before.novel.version
+          && afterFailure?.chapter.version === before.chapter.version,
+        retried: afterRetry?.novel.draft.name === novel.name && afterRetry?.chapter.draft.nodes[0].body === story.nodes[0].body,
+        publishFailed,
+        publishUnchanged: afterPublishFailure?.novel.status === "draft"
+          && afterPublishFailure.chapter.status === "draft"
+          && afterPublishFailure.novel.version === 0
+          && afterPublishFailure.chapter.version === 0
+          && failedVersions.every((versions) => versions.length === 0),
+        publishRetried: afterPublishRetry?.novel.status === "published"
+          && afterPublishRetry.chapter.status === "published"
+          && afterPublishRetry.novel.version === 1
+          && afterPublishRetry.chapter.version === 1,
+      });
+    }
+
+    if (pathname === "/creation-short-guards" && request.method === "POST") {
+      const owner = { kind: "author" as const, id: crypto.randomUUID() };
+      const stranger = { kind: "author" as const, id: crypto.randomUUID() };
+      const created = await creationLifecycle.execute(owner, { entity: "novel", action: "create" });
+      if (created.kind !== "created") throw new Error("小说创建失败");
+      const statusOf = async (operation: () => Promise<unknown>) => {
+        try { await operation(); return 200; } catch (error) {
+          if (!(error instanceof Error) || !("status" in error)) throw error;
+          return Number(error.status);
+        }
+      };
+      await creationLifecycle.execute(owner, { entity: "novel", action: "convert", id: created.id, format: "short" });
+      const convertedToShort = (await creationLifecycle.list(owner, "novel")).find((item) => item.id === created.id);
+      const internal = (await creationLifecycle.listShorts(owner)).filter((item) => item.novel.id === created.id).map((item) => item.chapter);
+      const secondChapterStatus = await statusOf(() => creationLifecycle.execute(owner, {
+        entity: "chapter", action: "create", meta: { novelId: created.id },
+      }));
+      const directChildSaveStatus = await statusOf(() => creationLifecycle.execute(owner, {
+        entity: "chapter", action: "save", id: internal[0].id, story: internal[0].draft,
+      }));
+      await creationLifecycle.execute(owner, { entity: "novel", action: "convert", id: created.id, format: "serial" });
+      const convertedToSerial = (await creationLifecycle.list(owner, "novel")).find((item) => item.id === created.id);
+      const preservedChapterCount = (await creationLifecycle.list(owner, "chapter")).filter((item) => item.novelId === created.id).length;
+      await creationLifecycle.execute(owner, { entity: "novel", action: "convert", id: created.id, format: "short" });
+      const novel = createBlankNovel();
+      novel.name = "锁定格式短篇"; novel.summary = "格式首次提交后永久锁定。";
+      novel.coverUrl = "https://example.com/locked-short.jpg"; novel.coverAlt = "锁定格式短篇封面";
+      const story = createBlankStory();
+      story.nodes[0].title = "全文"; story.nodes[0].body = "短篇正文"; story.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(owner, { entity: "short", action: "submit", id: created.id, novel, story });
+      await creationLifecycle.execute(owner, { entity: "short", action: "withdraw", id: created.id });
+      const lockedConversionStatus = await statusOf(() => creationLifecycle.execute(owner, {
+        entity: "novel", action: "convert", id: created.id, format: "serial",
+      }));
+      const crossOwnerStatus = await statusOf(() => creationLifecycle.execute(stranger, {
+        entity: "short", action: "save", id: created.id, novel, story,
+      }));
+      const disposable = await creationLifecycle.execute(owner, { entity: "short", action: "create" });
+      if (disposable.kind !== "created" || !disposable.chapterId) throw new Error("待删除短篇创建失败");
+      await creationLifecycle.execute(owner, { entity: "short", action: "delete", id: disposable.id });
+      const deletedNovelPresent = (await creationLifecycle.list(owner, "novel")).some((item) => item.id === disposable.id);
+      const deletedChapterPresent = (await creationLifecycle.listShorts(owner)).some((item) => item.chapter.id === disposable.chapterId);
+      const retained = await creationLifecycle.execute(owner, { entity: "novel", action: "create" });
+      if (retained.kind !== "created") throw new Error("待锁定连载创建失败");
+      const retainedChapter = await creationLifecycle.execute(owner, { entity: "chapter", action: "create", meta: { novelId: retained.id } });
+      if (retainedChapter.kind !== "created") throw new Error("待锁定章节创建失败");
+      const retainedStory = createBlankStory();
+      retainedStory.openingImageUrl = "https://example.com/retained-opening.jpg"; retainedStory.openingImageAlt = "保留章节开场图";
+      retainedStory.outroImageUrl = "https://example.com/retained-outro.jpg"; retainedStory.outroImageAlt = "保留章节收尾图";
+      retainedStory.nodes[0].body = "曾提交章节"; retainedStory.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(owner, { entity: "chapter", action: "submit", id: retainedChapter.id, story: retainedStory });
+      await creationLifecycle.execute(owner, { entity: "chapter", action: "withdraw", id: retainedChapter.id });
+      const submittedChildConversionStatus = await statusOf(() => creationLifecycle.execute(owner, {
+        entity: "novel", action: "convert", id: retained.id, format: "short",
+      }));
+      return Response.json({
+        convertedToShort,
+        internalChapterCount: internal.length,
+        secondChapterStatus,
+        directChildSaveStatus,
+        convertedToSerial,
+        preservedChapterCount,
+        lockedConversionStatus,
+        crossOwnerStatus,
+        deletedNovelPresent,
+        deletedChapterPresent,
+        submittedChildConversionStatus,
+      });
     }
 
     if (pathname === "/creation" && request.method === "POST") {

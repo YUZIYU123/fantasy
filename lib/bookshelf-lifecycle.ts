@@ -5,12 +5,14 @@ export type BookshelfPublicSnapshot = {
   summary: string;
   coverUrl: string;
   coverAlt: string;
+  format?: "serial" | "short";
 };
 
 export type BookshelfNovelFacts = {
   id: string;
   slug: string;
   status: "draft" | "published" | "offline";
+  format?: "serial" | "short";
   published: BookshelfPublicSnapshot | null;
   chapters: Array<{ id: string; version: number; publishedAt: string }>;
 };
@@ -80,6 +82,7 @@ export type BookshelfItem = {
   novelId: string;
   slug: string | null;
   public: BookshelfPublicSnapshot;
+  format: "serial" | "short";
   status: BookshelfStatus;
   statusLabel: "阅读中" | "有更新" | "未开始" | "已读" | "暂不可读" | "暂时无法确认";
   addedAt: string;
@@ -271,7 +274,7 @@ export class BookshelfLifecycle {
       if (!readable) {
         const item: BookshelfItem = {
           id: entry.id, novelId: entry.novelId, slug: novel?.slug ?? null,
-          public: novel?.published ?? entry.publicSnapshot, status: "unavailable", statusLabel: labels.unavailable,
+          public: novel?.published ?? entry.publicSnapshot, format: novel?.format ?? entry.publicSnapshot.format ?? "serial", status: "unavailable", statusLabel: labels.unavailable,
           addedAt: entry.addedAt, action: { kind: "unavailable" },
         };
         return { item, facts: facts ?? { resumes: [], completions: [], frontier: null }, novel, frontierUpdate: null };
@@ -279,7 +282,7 @@ export class BookshelfLifecycle {
       if (!facts) {
         const item: BookshelfItem = {
           id: entry.id, novelId: entry.novelId, slug: novel?.slug ?? null,
-          public: novel?.published ?? entry.publicSnapshot, status: "unknown", statusLabel: labels.unknown,
+          public: novel?.published ?? entry.publicSnapshot, format: novel?.format ?? entry.publicSnapshot.format ?? "serial", status: "unknown", statusLabel: labels.unknown,
           addedAt: entry.addedAt, action: { kind: "view", novelId: entry.novelId },
         };
         return { item, facts: { resumes: [], completions: [], frontier: null }, novel };
@@ -302,7 +305,7 @@ export class BookshelfLifecycle {
       const latestResume = [...validResumes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       const item: BookshelfItem = {
         id: entry.id, novelId: entry.novelId, slug: novel?.slug ?? null,
-        public: novel?.published ?? entry.publicSnapshot, status, statusLabel: labels[status], addedAt: entry.addedAt,
+        public: novel?.published ?? entry.publicSnapshot, format: novel?.format ?? entry.publicSnapshot.format ?? "serial", status, statusLabel: labels[status], addedAt: entry.addedAt,
         action: status === "unavailable" ? { kind: "unavailable" }
           : latestResume ? { kind: "continue", chapterId: latestResume.chapterId }
           : { kind: "view", novelId: entry.novelId },

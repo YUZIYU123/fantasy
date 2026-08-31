@@ -17,17 +17,17 @@ import { FantasyTerminal } from "./fantasy-terminal";
 
 type ReaderNovel = NovelRecord & { chapters: unknown[] };
 
-function ReaderEntryState({ kind, onBack }: { kind: "loading" | "empty"; onBack: () => void }) {
+function ReaderEntryState({ kind, onBack, backLabel }: { kind: "loading" | "empty"; onBack: () => void; backLabel: string }) {
   const loading = kind === "loading";
   return <section className="reader reader-loading" aria-busy={loading || undefined}>
-    <button className="reader-loading-back" onClick={onBack} aria-label="返回章节目录">←</button>
+    <button className="reader-loading-back" onClick={onBack} aria-label={backLabel}>←</button>
     <div role={loading ? "status" : "alert"} aria-live={loading ? "polite" : undefined}>
       <span aria-hidden="true">{loading ? "✦" : "!"}</span><p>{loading ? "正在进入章节…" : "章节内容为空。"}</p>
     </div>
   </section>;
 }
 
-export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplete, preview = false, initialNodeId, novels = [], onOpenNovel }: {
+export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplete, preview = false, initialNodeId, novels = [], onOpenNovel, backLabel = "返回章节目录" }: {
   story: StoryDocument;
   chapterId: string;
   chapterVersion?: number;
@@ -37,6 +37,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   initialNodeId?: string;
   novels?: ReaderNovel[];
   onOpenNovel?: (id: string) => void;
+  backLabel?: string;
 }) {
   const storageKey = `mist-page-progress:${chapterId}`;
   const sessionRef = useRef<ReturnType<typeof createReadingSession> | null>(null);
@@ -272,8 +273,8 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
 
   const node = story.nodes.find((item) => item.id === state?.nodeId) || story.nodes[0];
   const pages = useMemo(() => paginateStoryBody(node?.body || ""), [node?.body]);
-  if (!state) return <ReaderEntryState kind="loading" onBack={onBack} />;
-  if (!node) return <ReaderEntryState kind="empty" onBack={onBack} />;
+  if (!state) return <ReaderEntryState kind="loading" onBack={onBack} backLabel={backLabel} />;
+  if (!node) return <ReaderEntryState kind="empty" onBack={onBack} backLabel={backLabel} />;
   const pageIndex = Math.min(state.pageIndex, Math.max(0, pages.length - 1));
   const isLastPage = pageIndex === pages.length - 1;
   const needsAfterImage = node.displayImagePosition === "after" && !state.afterImageDone;
@@ -287,7 +288,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     {state.choiceFeedback && <ChoiceFeedback choice={state.choiceFeedback} reducedMotion={reducedMotion} />}
     {node.videoMode === "background" && node.videoUrl && <video className="scene-video" src={node.videoUrl} poster={node.imageUrl || undefined} autoPlay muted loop playsInline onError={(event) => { event.currentTarget.style.display = "none"; }} />}
     {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={needsPlay} onEnded={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")} onError={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "failure")} />{needsPlay && <button onClick={() => { const id = activeVideoEffectId.current; if (!id) return; video.current?.play().then(() => setNeedsPlay(false)).catch(() => reportVideoOutcome(id, "failure")); }}>点击播放</button>}<button className="skip-video" onClick={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")}>跳过动画 →</button></div>}
-    <header className="reader-nav"><button onClick={onBack} aria-label="返回章节目录">←</button><div><span>{story.title}</span>{state.activeCueName && <small>♫ {state.activeCueName}</small>}</div><button onClick={() => setMuted((value) => !value)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
+    <header className="reader-nav"><button onClick={onBack} aria-label={backLabel}>←</button><div><span>{story.title}</span>{state.activeCueName && <small>♫ {state.activeCueName}</small>}</div><button onClick={() => setMuted((value) => !value)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
     {(state.phase === "beforeImage" || state.phase === "afterImage") && <NodeDisplayImage node={node} onContinue={() => dispatch({ type: "continue-image" })} />}
     {state.phase === "content" && <article className="story-panel" ref={storyPanel}><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${pageIndex}`} aria-live="polite">{pages[pageIndex]}</p>
       {pages.length > 1 && <nav className="story-pagination" aria-label="正文分页"><button disabled={pageIndex === 0 || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex - 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>← 上一页</button><span>{pageIndex + 1} / {pages.length}</span><button disabled={isLastPage || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex + 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>下一页 →</button></nav>}

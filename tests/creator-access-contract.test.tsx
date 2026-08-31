@@ -5,6 +5,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AdminStudio } from "../app/admin/studio";
 import { CreatorEntry } from "../app/creator/creator-entry";
+import { createBlankNovel, createBlankStory } from "../lib/story";
 
 let dom: JSDOM;
 let root: Root;
@@ -155,6 +156,43 @@ test("权限确认后内容接口返回 500 时保留权限并显示内容重试
   assert.doesNotMatch(container.textContent || "", /应急恢复密钥/);
 });
 
+test("作品管理提供两种新建入口且短篇进入合并式编辑页", async () => {
+  firstAccessAllowed = true;
+  const baseFetch = globalThis.fetch;
+  const draft = createBlankNovel();
+  draft.name = "契约短篇";
+  const story = createBlankStory();
+  story.nodes[0].body = "一二三";
+  story.nodes[0].canEndChapter = true;
+  const novel = {
+    id: "short", slug: "short", ownerId: null, format: "short", formatLockedAt: null, convertibleTo: "serial",
+    draftStatus: "draft", submittedAt: null, reviewNote: "", sortOrder: 1, status: "draft", version: 0,
+    draft, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  const chapter = {
+    id: "short-body", novelId: "short", slug: "short-body", title: story.title, summary: "", coverUrl: "",
+    sortOrder: 1, status: "draft", ownerId: null, draftStatus: "draft", submittedAt: null, reviewNote: "",
+    version: 0, draft: story, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === "/admin/api/novels" && !init?.method) return Response.json({ novels: [novel], shorts: [{ novel, chapter }] });
+    return baseFetch(input, init);
+  };
+  await act(async () => root.render(<AdminStudio />));
+  await settle();
+  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("新建短篇")));
+  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("新建连载小说")));
+  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("转为连载小说")));
+  const edit = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("编辑短篇"));
+  assert.ok(edit);
+  await act(async () => edit.click());
+  assert.match(container.textContent || "", /短篇编辑/);
+  assert.match(container.textContent || "", /3 \/ 20,000 字/);
+  assert.match(container.textContent || "", /可选自定义收尾图/);
+  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("开启互动编辑")));
+});
+
 test("写操作返回 401 时立即重新鉴权并退出失效工作台", async () => {
   firstAccessAllowed = true;
   const baseFetch = globalThis.fetch;
@@ -166,7 +204,7 @@ test("写操作返回 401 时立即重新鉴权并退出失效工作台", async 
   };
   await act(async () => root.render(<AdminStudio />));
   await settle();
-  const create = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("新建小说"));
+  const create = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("新建连载小说"));
   assert.ok(create);
   await act(async () => create.click());
   await settle();
