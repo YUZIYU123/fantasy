@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReadingDiscoveryFact, createReadingHeartbeatFact, createReadingSession } from "../lib/reading-session.ts";
+import {
+  createReadingDiscoveryFact,
+  createReadingHeartbeatFact,
+  createReadingSession,
+  observeReadingSession,
+} from "../lib/reading-session.ts";
 import { normalizeStory } from "../lib/story.ts";
 import { storyFixture } from "./story-fixture.mjs";
 
@@ -127,6 +132,15 @@ test("目标节点前的剧情转场等待前置图片和转场视频完成", ()
   const completed = session.dispatch({ type: "effect-result", id: transition.id, outcome: "timeout" });
   assert.equal(completed.state.phase, "content");
   assert.equal(completed.state.choiceLocked, false);
+});
+
+test("ReadingSession 在图片、视频和转场阶段统一收起小雾", () => {
+  const current = story();
+  const session = createReadingSession({ story: current, chapterId: "suppression", chapterVersion: 1, preview: true });
+  for (const phase of ["beforeImage", "transitionVideo", "transitionEffect"]) {
+    assert.equal(observeReadingSession(current, { ...session.state, phase }).terminalSuppressed, true);
+  }
+  assert.equal(observeReadingSession(current, { ...session.state, phase: "content" }).terminalSuppressed, false);
 });
 
 test("媒体失败回送后会解除选择锁并抵达可继续状态", () => {

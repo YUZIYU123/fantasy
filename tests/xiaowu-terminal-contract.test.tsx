@@ -23,6 +23,7 @@ beforeEach(() => {
     HTMLElement: window.HTMLElement,
     HTMLMediaElement: window.HTMLMediaElement,
     Event: window.Event,
+    KeyboardEvent: window.KeyboardEvent,
     MouseEvent: window.MouseEvent,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
@@ -69,7 +70,9 @@ test("隐藏启动器仍兼容受控打开，历史默认名称不重复显示",
   assert.doesNotMatch(container.textContent || "", /幻界终端/);
 
   await act(async () => root.render(<FantasyTerminal launcher="hidden" open config={{ ...DEFAULT_STORY_TERMINAL, name: "阿蓝" }} />));
-  assert.match(container.textContent || "", /阿蓝/);
+  const heading = container.querySelector(".xiaowu-dialog>header>div");
+  assert.equal(heading?.querySelector("strong")?.textContent, "小雾");
+  assert.equal(heading?.querySelector("small")?.textContent, "阿蓝");
 });
 
 test("剧情反馈使用反应神情和角色气泡而不是全屏终端", async () => {
@@ -92,7 +95,49 @@ test("剧情反馈使用反应神情和角色气泡而不是全屏终端", async
   assert.ok(container.querySelector(".xiaowu-playback"));
   assert.match(container.querySelector(".xiaowu-companion img")?.getAttribute("src") || "", /\/xiaowu\/warning\.webp/);
   assert.match(container.textContent || "", /这条路径暂时无法继续/);
-  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("跳过")));
+  const skip = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("跳过"));
+  assert.ok(skip);
+  assert.equal(document.activeElement, skip);
+  assert.equal(container.querySelector('.xiaowu-playback[role="dialog"]')?.hasAttribute("aria-modal"), false);
+  assert.match(container.querySelector('[role="status"]')?.textContent || "", /警告/);
+});
+
+test("键盘可以跳过自动反馈并把焦点还给原剧情选择", async () => {
+  const before = document.querySelector<HTMLButtonElement>("#before")!;
+  before.focus();
+  let completed = 0;
+  const playback = {
+    id: "keyboard-feedback",
+    message: "键盘也能继续剧情。",
+    speak: false,
+    voiceUrl: "",
+    interactionPreset: "none" as const,
+    imageUrl: "",
+    imageAlt: "",
+    imagePresentation: { fit: "cover" as const, positionX: 50, positionY: 50 },
+    task: createTerminalTask(),
+    reaction: "success" as const,
+  };
+
+  await act(async () => root.render(<FantasyTerminal playback={playback} reducedMotion onPlaybackComplete={() => { completed += 1; }} />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  const dialog = container.querySelector<HTMLElement>('.xiaowu-playback[role="dialog"]');
+  assert.ok(dialog);
+  assert.match(container.querySelector('[role="status"]')?.textContent || "", /成功/);
+
+  await act(async () => dialog.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.equal(completed, 1);
+  assert.equal(document.activeElement, before);
+
+  await act(async () => root.render(<FantasyTerminal reducedMotion />));
+  const launcher = container.querySelector<HTMLButtonElement>('[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  await act(async () => launcher.click());
+  const close = container.querySelector<HTMLButtonElement>('[aria-label="收起小雾"]');
+  assert.ok(close);
+  await act(async () => close.click());
+  assert.equal(document.activeElement, launcher);
 });
 
 test("媒体阶段收起小雾且回到正文时保持收起", async () => {
@@ -157,4 +202,5 @@ test("系统 reduced motion 自动取消逐字揭示", async () => {
 test("矮视口为小雾对话卡保留顶部空间", () => {
   const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(css, /@media\(max-height:600px\)\{\.reader-shell \.xiaowu-dialog\{bottom:8px;max-height:calc\(100svh - 112px\)\}\}/);
+  assert.match(css, /@media\(max-width:220px\)\{\.reader \.xiaowu-dialog\.xiaowu-playback\{top:88px;left:8px;width:calc\(100vw - 16px\);max-height:calc\(100svh - 104px\)\}\}/);
 });

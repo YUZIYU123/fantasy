@@ -184,6 +184,7 @@ body{background:#01040d}
 @keyframes xiaowu-dialog-open{from{opacity:0;transform:translate(-8px,8px) scale(.97)}to{opacity:1;transform:none}}
 @keyframes xiaowu-dialog-close{to{opacity:0;transform:translate(-8px,8px) scale(.97)}}
 @media(max-width:370px){.xiaowu-dialog{left:10px;width:calc(100vw - 20px)}.xiaowu-companion.is-open{left:-2px}.xiaowu-dialog .terminal-home,.xiaowu-dialog .terminal-message,.xiaowu-dialog .terminal-preferences,.xiaowu-dialog .terminal-task-panel,.xiaowu-dialog .terminal-playback-message{padding:14px}}
+@media(max-width:220px){.reader .xiaowu-dialog.xiaowu-playback{top:88px;left:8px;width:calc(100vw - 16px);max-height:calc(100svh - 104px)}}
 @media(max-height:600px){.reader-shell .xiaowu-dialog{bottom:8px;max-height:calc(100svh - 112px)}}
 @media(prefers-reduced-motion:reduce){.xiaowu-companion,.xiaowu-companion.is-open,.xiaowu-companion.state-notice,.xiaowu-companion.state-success,.xiaowu-companion.state-warning,.xiaowu-dialog,.xiaowu-signal,.xiaowu-dialog.terminal-phase-collapse,.terminal-caret{animation:none!important;transition:none!important}.terminal-caret{display:none}}
 

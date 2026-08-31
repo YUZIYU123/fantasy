@@ -428,7 +428,7 @@ export function validateStoryInputLengths(story: StoryDocument): string[] {
   if (story.title.length > 100) errors.push("章节名称不能超过 100 个字符");
   if (story.summary.length > 1000) errors.push("章节简介不能超过 1000 个字符");
   if ((story.openingImageAlt ?? story.coverAlt ?? "").length > 500 || story.outroImageAlt.length > 500) errors.push("图片替代文本不能超过 500 个字符");
-  if ((story.terminal?.name ?? "").length > 30) errors.push("小雾自定义称呼不能超过 30 个字符");
+  if ((story.terminal?.name ?? "").length > 30) errors.push("小雾副标题不能超过 30 个字符");
   if ((story.terminal?.voiceId ?? "").length > 100) errors.push("小雾音色 ID 不能超过 100 个字符");
   const initialTask = normalizeTerminalTask(story.terminal?.initialTask);
   if (initialTask.title.length > 100) errors.push("小雾任务标题不能超过 100 个字符");
