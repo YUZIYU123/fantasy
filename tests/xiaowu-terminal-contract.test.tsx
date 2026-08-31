@@ -129,6 +129,15 @@ test("键盘可以跳过自动反馈并把焦点还给原剧情选择", async ()
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
   assert.equal(completed, 1);
   assert.equal(document.activeElement, before);
+
+  await act(async () => root.render(<FantasyTerminal reducedMotion />));
+  const launcher = container.querySelector<HTMLButtonElement>('[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  await act(async () => launcher.click());
+  const close = container.querySelector<HTMLButtonElement>('[aria-label="收起小雾"]');
+  assert.ok(close);
+  await act(async () => close.click());
+  assert.equal(document.activeElement, launcher);
 });
 
 test("媒体阶段收起小雾且回到正文时保持收起", async () => {

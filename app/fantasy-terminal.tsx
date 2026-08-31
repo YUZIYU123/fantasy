@@ -154,8 +154,11 @@ export function FantasyTerminal({
   const completedObjectives = activeTask?.objectives.filter((objective) => objective.status === "completed").length ?? 0;
 
   const closeTerminal = useCallback(() => {
+    const focusTarget = playbackRef.current
+      ? playbackOpenerRef.current
+      : returnFocusRef?.current ?? launcherRef.current;
     setOpen(false);
-    queueMicrotask(() => (returnFocusRef?.current ?? playbackOpenerRef.current ?? launcherRef.current)?.focus());
+    queueMicrotask(() => focusTarget?.focus());
   }, [returnFocusRef, setOpen]);
 
   const clearTimers = useCallback(() => {
