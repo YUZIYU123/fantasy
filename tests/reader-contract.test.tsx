@@ -262,6 +262,26 @@ test("只有一部小说时只显示主档案而不制造重复列表", async ()
   assert.equal([...container.querySelectorAll("h3")].filter((heading) => heading.textContent === "唯一档案").length, 1);
 });
 
+test("小说详情把加入书架呈现为紧凑次级操作", async () => {
+  globalThis.fetch = async (input) => String(input) === "/api/novels"
+    ? Response.json({ novels: [publicNovel("compact-shelf", "微光档案", 1, ["入口"])] })
+    : String(input).startsWith("/api/account/bookshelf/membership")
+      ? Response.json({ present: false })
+      : Response.json({ user: null });
+
+  await act(async () => root.render(<StoryStudio />));
+  await settle();
+  await act(async () => clickButton("进入小说"));
+  await settle();
+
+  const action = [...container.querySelectorAll<HTMLButtonElement>("button")]
+    .find((button) => button.textContent?.includes("加入书架"));
+  assert.ok(action);
+  assert.equal(action.classList.contains("bookshelf-action"), true);
+  assert.equal(action.classList.contains("primary"), false);
+  assert.equal(action.querySelector('[aria-hidden="true"]')?.textContent, "+");
+});
+
 test("从世界档案进入小说时把新页面恢复到顶部", async () => {
   globalThis.fetch = async (input) => String(input) === "/api/novels"
     ? Response.json({ novels: [publicNovel("only", "唯一档案", 1, ["入口"])] })

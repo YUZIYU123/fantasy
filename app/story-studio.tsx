@@ -205,7 +205,7 @@ function BookshelfControl({ novelId }: { novelId: string }) {
       setPresent(Boolean(body.present));
     });
   }, [novelId]);
-  return <div className="bookshelf-control"><button className="primary" disabled={busy || present === true} onClick={async () => {
+  return <div className="bookshelf-control"><button className={`bookshelf-action${present ? " is-present" : ""}`} disabled={busy || present === true} onClick={async () => {
     setBusy(true); setMessage("正在加入…");
     const result = await executeBookshelfOperation({ action: "add", novelId, operationId });
     setOperationId(result.operationId);
@@ -214,7 +214,7 @@ function BookshelfControl({ novelId }: { novelId: string }) {
     else if (result.status === "confirming") setMessage("结果确认中；可以使用同一操作安全重试");
     else setMessage(result.message);
     setBusy(false);
-  }}>{present ? "已在书架" : "加入书架"}</button>{authRequired && <><a className="ghost link-button" href={`/login?next=${encodeURIComponent(`/?resume=bookshelf&target=${novelId}`)}`}>登录</a><a className="ghost link-button" href={`/register?intent=bookshelf&target=${encodeURIComponent(novelId)}`}>注册</a></>}<span role="status">{message}</span></div>;
+  }}><span className="bookshelf-action-icon" aria-hidden="true">{present ? "✓" : "+"}</span>{present ? "已在书架" : "加入书架"}</button>{authRequired && <><a className="ghost link-button" href={`/login?next=${encodeURIComponent(`/?resume=bookshelf&target=${novelId}`)}`}>登录</a><a className="ghost link-button" href={`/register?intent=bookshelf&target=${encodeURIComponent(novelId)}`}>注册</a></>}<span role="status">{message}</span></div>;
 }
 
 function Artwork({ src, alt, presentation = DEFAULT_COVER_PRESENTATION, priority = false }: {
