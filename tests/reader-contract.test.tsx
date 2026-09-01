@@ -243,6 +243,7 @@ test("首页先展示短篇区并从卡片直接进入唯一正文", async () =>
   const headings = [...container.querySelectorAll(".catalog-section-heading h2")].map((item) => item.textContent);
   assert.deepEqual(headings, ["短篇", "连载小说"]);
   assert.deepEqual([...container.querySelectorAll(".catalog-section-heading p")].map((item) => item.textContent), ["凝结于一瞬的幻境", "尚未闭合的世界线"]);
+  assert.ok([...container.querySelectorAll(".catalog-section-heading h2")].every((heading) => heading.previousElementSibling?.tagName === "P"));
   assert.deepEqual([...container.querySelectorAll(".catalog-section-heading>span")].map((item) => item.textContent), ["1 部", "1 部"]);
   assert.match(container.querySelector(".short-catalog .catalog-card")?.textContent || "", /3,210 字 · 线性/);
   assert.equal(container.querySelectorAll(".work-catalog").length, 2);

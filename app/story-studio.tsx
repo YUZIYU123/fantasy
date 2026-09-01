@@ -166,7 +166,7 @@ function WorkCatalog({ format, novels, onOpen }: { format: "short" | "serial"; n
   const subtitle = isShort ? "凝结于一瞬的幻境" : "尚未闭合的世界线";
   const titleId = `${format}-catalog-title`;
   return <section className={`shelf work-catalog ${format}-catalog`} aria-labelledby={titleId}>
-    <header className="catalog-section-heading"><i aria-hidden="true">/</i><div><h2 id={titleId}>{title}</h2><p>{subtitle}</p></div><span>{novels.length} 部</span></header>
+    <header className="catalog-section-heading"><i aria-hidden="true">/</i><div><p>{subtitle}</p><h2 id={titleId}>{title}</h2></div><span>{novels.length} 部</span></header>
     <div className="catalog-card-grid">{novels.map((novel) => {
       const latestChapter = novel.chapters.at(-1);
       const latestChapterTitle = latestChapter?.published?.title || latestChapter?.title;
