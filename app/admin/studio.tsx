@@ -520,7 +520,7 @@ function NovelDashboard({ scope, novels, chapters, onOpen, onChapters, onAssets,
   </section></div>;
 }
 
-function ShortEditor({ scope, novel, draft, setDraft, story, setStory, assets, folders, onBack, onAssets, onInteractive, onPreview, onSave, onSubmit }: {
+export function ShortEditor({ scope, novel, draft, setDraft, story, setStory, assets, folders, onBack, onAssets, onInteractive, onPreview, onSave, onSubmit }: {
   scope: StudioScope; novel: NovelRecord; draft: NovelDocument; setDraft: (value: NovelDocument) => void;
   story: StoryDocument; setStory: (value: StoryDocument) => void; assets: AssetRecord[]; folders: AssetFolder[];
   onBack: () => void; onAssets: () => void; onInteractive: () => void; onPreview: () => void; onSave: () => void; onSubmit: () => void;

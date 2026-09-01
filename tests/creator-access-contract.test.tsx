@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { AdminStudio } from "../app/admin/studio";
+import { AdminStudio, ShortEditor } from "../app/admin/studio";
 import { CreatorEntry } from "../app/creator/creator-entry";
 import { createBlankNovel, createBlankStory } from "../lib/story";
 
@@ -200,6 +200,39 @@ test("作品管理提供两种新建入口且短篇进入合并式编辑页", as
   assert.equal([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("发布短篇"))?.disabled, false);
   assert.match(container.textContent || "", /可选自定义收尾图/);
   assert.ok([...container.querySelectorAll("button")].some((button) => /开启互动编辑|打开互动编辑器/.test(button.textContent || "")));
+});
+
+test("短篇编辑器按 startNodeId 展示正文与阅读节奏", async () => {
+  const draft = createBlankNovel();
+  const story = createBlankStory();
+  const start = story.nodes[0];
+  start.body = "👨‍👩‍👧‍👦".repeat(361);
+  story.nodes = [{ ...start, id: "array-first", body: "旁".repeat(60) }, start];
+  const novel = {
+    id: "direct-short", slug: "direct-short", ownerId: null, format: "short" as const, formatLockedAt: null, convertibleTo: "serial" as const,
+    draftStatus: "draft" as const, submittedAt: null, reviewNote: "", sortOrder: 1, status: "draft" as const, version: 0,
+    draft, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+
+  await act(async () => root.render(<ShortEditor
+    scope="admin"
+    novel={novel}
+    draft={draft}
+    setDraft={() => {}}
+    story={story}
+    setStory={() => {}}
+    assets={[]}
+    folders={[]}
+    onBack={() => {}}
+    onAssets={() => {}}
+    onInteractive={() => {}}
+    onPreview={() => {}}
+    onSave={() => {}}
+    onSubmit={() => {}}
+  />));
+
+  assert.equal(container.querySelector<HTMLTextAreaElement>(".body-editor textarea")?.value, start.body);
+  assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /预计 4 页/);
 });
 
 test("连载章节编辑器显示与阅读会话一致的实时分页节奏", async () => {
