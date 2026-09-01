@@ -12,7 +12,7 @@ import type { AssetFolder, AssetRecord, AssetType } from "../../lib/assets";
 import {
   applyTerminalTaskEvents, countStoryBodyCharacters, countStoryCharacters, createBlankStory, createChildNode, createStandaloneNode, createStoryChoice, DEFAULT_STORY_TERMINAL, FLOW_NODE_HEIGHT,
   FLOW_NODE_WIDTH, getStoryBodyWarnings, getStoryTerminalWarnings, insertNodeOnChoice, NODE_BODY_MAX_LENGTH,
-  NODE_BODY_RECOMMENDED_LENGTH, normalizeNovel, normalizeStory, paginateStoryBody, SHORT_STORY_MAX_LENGTH, STORY_PAGE_BREAK,
+  NODE_BODY_RECOMMENDED_LENGTH, normalizeNovel, normalizeStory, SHORT_STORY_MAX_LENGTH, STORY_PAGE_BREAK,
   type ChapterRecord, type ImagePresentation, type NovelDocument, type NovelRecord,
   type InteractionPreset, type StoryChoice, type StoryDocument, type StoryMusicCue, type StoryNode,
   terminalVoiceSourceKey, type TerminalTaskAction, type TerminalTaskStatus,
@@ -20,7 +20,13 @@ import {
 } from "../../lib/story";
 import { SFX_GENERATION_DEFAULT_SECONDS, suggestChoiceSfxPrompt } from "../../lib/sfx";
 import type { TerminalVoiceOption } from "../../lib/tts";
-import { resolveTerminalReaction } from "../../lib/reading-session";
+import {
+  inspectReadingPages,
+  OPENING_PAGE_POLICY,
+  resolveTerminalReaction,
+  STANDARD_PAGE_POLICY,
+  type ReadingPage,
+} from "../../lib/reading-session";
 import type {
   AdministratorSource,
   CreatorAccessDecision,
@@ -527,8 +533,35 @@ function ShortEditor({ scope, novel, draft, setDraft, story, setStory, assets, f
   return <div className={`studio chapter-settings-page${locked ? " editor-locked" : ""}`}><StudioAside scope={scope} active="novels" onNovels={onBack} onAssets={onAssets} /><section className="studio-main short-editor-page"><header><div><button className="back-link" onClick={onBack}>← 作品管理</button><p>SHORT FICTION</p><h1>短篇编辑</h1></div><div className="settings-actions"><button className="ghost" onClick={onAssets}>素材库</button><button className="ghost" onClick={onInteractive}>{interactive ? "打开互动编辑器" : "开启互动编辑"}</button><button className="ghost" onClick={onPreview}>预览阅读</button><button className="ghost" disabled={locked} onClick={onSave}>保存草稿</button><button className="primary" disabled={locked || wordCount > SHORT_STORY_MAX_LENGTH} onClick={onSubmit}>{scope === "admin" ? "发布短篇" : "提交审核"}</button></div></header>
     {novel.reviewNote && <p className="inline-message">审核反馈：{novel.reviewNote}</p>}
     {interactive && <p className="inline-message">这篇作品含有多个剧情节点或选项，后续会默认进入完整互动编辑器。</p>}
-    <div className="short-editor-layout"><form className="chapter-settings-form" onSubmit={(event) => { event.preventDefault(); if (!locked) onSave(); }}><label>短篇名称<input disabled={locked} maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>简介<textarea disabled={locked} rows={4} maxLength={1000} value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} /></label><fieldset disabled={locked}><legend>封面与默认收尾图</legend><AssetSelect label="封面图片" type="image" value={draft.coverAssetId || draft.coverUrl} assets={assets} folders={folders} onChange={(id, url) => setDraft({ ...draft, coverAssetId: id, coverUrl: url })} /><label>封面替代文本<input maxLength={500} value={draft.coverAlt} onChange={(event) => setDraft({ ...draft, coverAlt: event.target.value })} /></label><small>未单独设置收尾图时，将明确使用这张封面作为收尾图。</small><AssetSelect label="可选自定义收尾图" type="image" value={story.outroUsesNovelCover ? "" : story.outroImageAssetId || story.outroImageUrl} assets={assets} folders={folders} onChange={(id, url) => setStory({ ...story, outroImageAssetId: id, outroImageUrl: url, outroImageAlt: id || url ? story.outroImageAlt : "", outroUsesNovelCover: !id && !url })} />{!story.outroUsesNovelCover && (story.outroImageAssetId || story.outroImageUrl) && <label>收尾图替代文本<input maxLength={500} value={story.outroImageAlt} onChange={(event) => setStory({ ...story, outroImageAlt: event.target.value })} /></label>}</fieldset><label className="body-editor"><span className="body-editor-head"><span>正文</span><b className={wordCount > SHORT_STORY_MAX_LENGTH ? "error" : ""}>{wordCount.toLocaleString("zh-CN")} / {SHORT_STORY_MAX_LENGTH.toLocaleString("zh-CN")} 字</b></span><textarea disabled={locked || interactive} rows={20} value={first?.body || ""} onChange={(event) => updateBody(event.target.value)} />{wordCount > SHORT_STORY_MAX_LENGTH && <span className="body-editor-notice error">草稿仍可保存；删减至 20,000 字以内后才能提交或发布。</span>}</label></form></div>
+    <div className="short-editor-layout"><form className="chapter-settings-form" onSubmit={(event) => { event.preventDefault(); if (!locked) onSave(); }}><label>短篇名称<input disabled={locked} maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>简介<textarea disabled={locked} rows={4} maxLength={1000} value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} /></label><fieldset disabled={locked}><legend>封面与默认收尾图</legend><AssetSelect label="封面图片" type="image" value={draft.coverAssetId || draft.coverUrl} assets={assets} folders={folders} onChange={(id, url) => setDraft({ ...draft, coverAssetId: id, coverUrl: url })} /><label>封面替代文本<input maxLength={500} value={draft.coverAlt} onChange={(event) => setDraft({ ...draft, coverAlt: event.target.value })} /></label><small>未单独设置收尾图时，将明确使用这张封面作为收尾图。</small><AssetSelect label="可选自定义收尾图" type="image" value={story.outroUsesNovelCover ? "" : story.outroImageAssetId || story.outroImageUrl} assets={assets} folders={folders} onChange={(id, url) => setStory({ ...story, outroImageAssetId: id, outroImageUrl: url, outroImageAlt: id || url ? story.outroImageAlt : "", outroUsesNovelCover: !id && !url })} />{!story.outroUsesNovelCover && (story.outroImageAssetId || story.outroImageUrl) && <label>收尾图替代文本<input maxLength={500} value={story.outroImageAlt} onChange={(event) => setStory({ ...story, outroImageAlt: event.target.value })} /></label>}</fieldset><label className="body-editor"><span className="body-editor-head"><span>正文</span><b className={wordCount > SHORT_STORY_MAX_LENGTH ? "error" : ""}>{wordCount.toLocaleString("zh-CN")} / {SHORT_STORY_MAX_LENGTH.toLocaleString("zh-CN")} 字</b></span><textarea disabled={locked || interactive} rows={20} value={first?.body || ""} onChange={(event) => updateBody(event.target.value)} />{wordCount > SHORT_STORY_MAX_LENGTH && <span className="body-editor-notice error">草稿仍可保存；删减至 20,000 字以内后才能提交或发布。</span>}</label><ReadingRhythmPanel story={story} nodeId={first?.id || story.startNodeId} /></form></div>
   </section></div>;
+}
+
+const rhythmAssessmentLabels: Record<ReadingPage["assessment"], string> = {
+  "opening-ideal": "开场理想",
+  balanced: "均衡",
+  short: "偏短",
+  long: "偏长",
+  hard: "硬切",
+  ending: "收尾",
+};
+
+function ReadingRhythmPanel({ story, nodeId }: { story: StoryDocument; nodeId: string }) {
+  const inspection = useMemo(() => inspectReadingPages(story, nodeId), [nodeId, story]);
+  const suggestions = inspection.pages.flatMap((page, index) => {
+    const number = index + 1;
+    if (page.breakReason === "hard") return [`第 ${number} 页没有可用的语义边界，建议在 ${page.characterCount} 字前补充句末或段落。`];
+    if (page.breakReason === "manual" && !page.semanticEnding) return [`第 ${number} 页的手动分页不在句末或段落结尾。`];
+    if (page.assessment === "short") return [`第 ${number} 页偏短，连续短页可能增加翻页负担。`];
+    if (page.assessment === "long") return [`第 ${number} 页偏长，可考虑提前在句末或段落分页。`];
+    return [];
+  });
+  return <aside className="reading-rhythm-panel" aria-label="阅读节奏">
+    <div><b>阅读节奏</b><span>预计 {inspection.pages.length} 页</span></div>
+    <p>开场前三页 {OPENING_PAGE_POLICY.minimum}–{OPENING_PAGE_POLICY.maximum} 字；后续页面 {STANDARD_PAGE_POLICY.minimum}–{STANDARD_PAGE_POLICY.maximum} 字，最长 {STANDARD_PAGE_POLICY.hardMaximum} 字。</p>
+    <ol>{inspection.pages.map((page, index) => <li className={`rhythm-${page.assessment}`} key={`${index}-${page.characterCount}-${page.breakReason}`}><span>第 {index + 1} 页</span><b>{page.characterCount} 字 · {rhythmAssessmentLabels[page.assessment]}</b></li>)}</ol>
+    {suggestions.length > 0 ? <div className="reading-rhythm-suggestions">{suggestions.map((suggestion) => <p key={suggestion}>⚠ {suggestion}</p>)}</div> : <p className="reading-rhythm-ready">分页节奏适合手机阅读。</p>}
+  </aside>;
 }
 
 function FantasyCoverPlaceholder() {
@@ -791,7 +824,7 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
   const selected = story.nodes.find((node) => node.id === selectedId) || story.nodes[0];
   const bodyLength = countStoryCharacters(selected?.body || "");
   const bodyLimit = shortMode ? SHORT_STORY_MAX_LENGTH : NODE_BODY_MAX_LENGTH;
-  const estimatedPages = paginateStoryBody(selected?.body || "").length;
+  const pageInspection = useMemo(() => inspectReadingPages(story, selected?.id || story.startNodeId), [selected?.id, story]);
   const updateNode = (patch: Partial<StoryNode>) => setStory({ ...story, nodes: story.nodes.map((node) => node.id === selected.id ? { ...node, ...patch } : node) });
   const insertPageBreak = () => {
     if (!selected) return;
@@ -832,10 +865,11 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
         <div className="form-intro"><div><p>NODE / {selected.id.toUpperCase()}</p><h2>{selected.title}</h2></div><div className="node-actions"><button onClick={duplicateNode}>复制</button><button className="danger" disabled={selected.id === story.startNodeId} onClick={() => removeNode()}>删除</button></div></div>
         <label>起始节点<select value={story.startNodeId} onChange={(event) => setStory({ ...story, startNodeId: event.target.value })}>{story.nodes.map((node) => <option key={node.id} value={node.id}>{node.title} · {node.id}</option>)}</select></label>
         <label>节点标题<input value={selected.title} onChange={(event) => updateNode({ title: event.target.value })} /></label>
-        <label className="body-editor"><span className="body-editor-head"><span>正文</span><button type="button" onClick={insertPageBreak}>＋ 插入分页</button></span><textarea ref={bodyEditor} rows={8} value={selected.body} onChange={(event) => updateNode({ body: event.target.value })} /><span className={`body-editor-meta${bodyLength > bodyLimit ? " error" : bodyLength > NODE_BODY_RECOMMENDED_LENGTH ? " warning" : ""}`}><span>{shortMode ? `${countStoryBodyCharacters(story)} / ${SHORT_STORY_MAX_LENGTH} 字（全文）` : `${bodyLength} / ${NODE_BODY_MAX_LENGTH} 字`}</span><span>预计 {estimatedPages} 页</span></span>
+        <label className="body-editor"><span className="body-editor-head"><span>正文</span><button type="button" onClick={insertPageBreak}>＋ 插入分页</button></span><textarea ref={bodyEditor} rows={8} value={selected.body} onChange={(event) => updateNode({ body: event.target.value })} /><span className={`body-editor-meta${bodyLength > bodyLimit ? " error" : bodyLength > NODE_BODY_RECOMMENDED_LENGTH ? " warning" : ""}`}><span>{shortMode ? `${countStoryBodyCharacters(story)} / ${SHORT_STORY_MAX_LENGTH} 字（全文）` : `${bodyLength} / ${NODE_BODY_MAX_LENGTH} 字`}</span><span>预计 {pageInspection.pages.length} 页</span></span>
           {bodyLength > bodyLimit && <span className="body-editor-notice error">已超过正文上限，请删减后再预览或提交。</span>}
           {bodyLength > NODE_BODY_RECOMMENDED_LENGTH && bodyLength <= bodyLimit && <span className="body-editor-notice warning">正文超过建议的 {NODE_BODY_RECOMMENDED_LENGTH} 字，可拆成节点或插入分页控制节奏。</span>}
         </label>
+        <ReadingRhythmPanel story={story} nodeId={selected.id} />
         <div className="two-col"><label className="toggle-field"><input type="checkbox" checked={selected.canEndChapter} onChange={(event) => updateNode({ canEndChapter: event.target.checked, type: event.target.checked ? "ending" : "scene" })} /><span>允许读者在此结束本章</span><small>可与剧情选项同时存在。</small></label><label>文字动画<select value={selected.animation} onChange={(event) => updateNode({ animation: event.target.value as StoryNode["animation"] })}><option value="none">无</option><option value="fade">淡入</option><option value="rise">上浮</option><option value="flash">闪白</option></select></label></div>
         <AssetSelect label="场景背景图 / 视频封面" type="image" value={selected.imageAssetId || selected.imageUrl} assets={assets} folders={folders} onChange={(id, url) => updateNode({ imageAssetId: id, imageUrl: url })} />
         {(selected.imageAssetId || selected.imageUrl) && <><label>背景图替代文本<input value={selected.imageAlt} placeholder="描述画面内容，供图片加载失败及无障碍阅读使用" onChange={(event) => updateNode({ imageAlt: event.target.value })} /></label><ImagePresentationEditor value={selected.imagePresentation} url={selected.imageUrl} alt={selected.imageAlt} onChange={(imagePresentation) => updateNode({ imagePresentation })} /></>}
