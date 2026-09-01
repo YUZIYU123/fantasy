@@ -10,9 +10,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AssetFolder, AssetRecord, AssetType } from "../../lib/assets";
 import {
-  applyTerminalTaskEvents, countStoryCharacters, createBlankStory, createChildNode, createStandaloneNode, createStoryChoice, DEFAULT_STORY_TERMINAL, FLOW_NODE_HEIGHT,
+  applyTerminalTaskEvents, countStoryBodyCharacters, countStoryCharacters, createBlankStory, createChildNode, createStandaloneNode, createStoryChoice, DEFAULT_STORY_TERMINAL, FLOW_NODE_HEIGHT,
   FLOW_NODE_WIDTH, getStoryBodyWarnings, getStoryTerminalWarnings, insertNodeOnChoice, NODE_BODY_MAX_LENGTH,
-  NODE_BODY_RECOMMENDED_LENGTH, normalizeNovel, normalizeStory, paginateStoryBody, STORY_PAGE_BREAK,
+  NODE_BODY_RECOMMENDED_LENGTH, normalizeNovel, normalizeStory, paginateStoryBody, SHORT_STORY_MAX_LENGTH, STORY_PAGE_BREAK,
   type ChapterRecord, type ImagePresentation, type NovelDocument, type NovelRecord,
   type InteractionPreset, type StoryChoice, type StoryDocument, type StoryMusicCue, type StoryNode,
   terminalVoiceSourceKey, type TerminalTaskAction, type TerminalTaskStatus,
@@ -35,7 +35,7 @@ import { FantasyTerminal, type TerminalPlayback } from "../fantasy-terminal";
 import { ChapterOutroScreen, Reader } from "../story-studio";
 
 type StudioScope = "admin" | "author";
-type View = "novels" | "novel-settings" | "chapters" | "settings" | "editor" | "preview" | "assets" | "users";
+type View = "novels" | "novel-settings" | "short" | "chapters" | "settings" | "editor" | "preview" | "assets" | "users";
 type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string; duration: number };
 type ReconcileOperationAccess = (status: number) => Promise<boolean>;
 
@@ -85,13 +85,13 @@ export function AdminStudio({
       if (responses.some((response) => response.status === 401 || response.status === 403)) return "access_stale";
       if (!responses.every((response) => response.ok)) return "failed";
       const [novelData, chapterData, assetData] = await Promise.all([
-        novelResponse.json() as Promise<{ novels?: NovelRecord[] }>,
+        novelResponse.json() as Promise<{ novels?: NovelRecord[]; shorts?: Array<{ novel: NovelRecord; chapter: ChapterRecord }> }>,
         chapterResponse.json() as Promise<{ chapters?: ChapterRecord[] }>,
         assetResponse.json() as Promise<{ assets?: AssetRecord[]; folders?: AssetFolder[] }>,
       ]);
       if (!isCurrent()) return "failed";
       setNovels(novelData.novels || []);
-      setChapters(chapterData.chapters || []);
+      setChapters([...(chapterData.chapters || []), ...(novelData.shorts || []).map((item) => item.chapter)]);
       setAssets(assetData.assets || []);
       setFolders(assetData.folders || []);
       setContentLoaded(true);
@@ -199,10 +199,17 @@ export function AdminStudio({
     queueMicrotask(() => {
       setActiveNovel(created);
       setNovelDraft(normalizeNovel(structuredClone(created.draft)));
-      setView("novel-settings");
+      if (created.format === "short") {
+        const body = chapters.find((chapter) => chapter.novelId === created.id);
+        if (body) {
+          setActive(body);
+          setStory(normalizeStory(structuredClone(body.draft)));
+          setView("short");
+        }
+      } else setView("novel-settings");
       setPendingNovelId("");
     });
-  }, [novels, pendingNovelId]);
+  }, [chapters, novels, pendingNovelId]);
   useEffect(() => { if (!message) return; const timer = setTimeout(() => setMessage(""), 4000); return () => clearTimeout(timer); }, [message]);
   useEffect(() => {
     const navigate = (event: Event) => {
@@ -259,6 +266,22 @@ export function AdminStudio({
     return data;
   }
 
+  async function shortAction(action: string, id?: string, extra: Record<string, unknown> = {}) {
+    setBusy(true);
+    const response = await fetch(`${apiBase}/shorts`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, id, ...extra }),
+    });
+    const data = await response.json() as { id?: string; chapterId?: string; updatedAt?: string; errors?: string[]; error?: string };
+    setBusy(false);
+    if (await reconcileOperationAccess(response.status)) return false;
+    if (!response.ok) { setMessage(data.errors?.join("；") || data.error || "短篇操作失败"); return false; }
+    setMessage(action === "publish" ? "短篇已发布" : action === "submit" ? "短篇已提交审核" : action === "save" ? "短篇草稿已保存" : "操作完成");
+    if (action === "create" && data.id) setPendingNovelId(data.id);
+    await refreshContent();
+    return data;
+  }
+
   const saveChapterDraft = useCallback(async (chapter: ChapterRecord, snapshot: StoryDocument) => {
     const response = await fetch(`${apiBase}/chapters`, {
       method: "POST",
@@ -297,6 +320,16 @@ export function AdminStudio({
   const openNovel = (novel: NovelRecord, destination: "novel-settings" | "chapters") => {
     setActiveNovel(novel);
     setNovelDraft(normalizeNovel(structuredClone(novel.draft)));
+    if (novel.format === "short") {
+      const body = chapters.find((chapter) => chapter.novelId === novel.id);
+      if (body) {
+        setActive(body);
+        setStory(normalizeStory(structuredClone(body.draft)));
+        const interactive = body.draft.nodes.length > 1 || body.draft.nodes.some((node) => node.choices.length > 0);
+        setView(interactive ? "editor" : "short");
+      }
+      return;
+    }
     setView(destination);
   };
   const openChapter = (chapter: ChapterRecord, destination: "settings" | "editor") => {
@@ -324,13 +357,18 @@ export function AdminStudio({
     {busy && <div className="loading-bar" aria-label="加载中" />}{message && <div className="toast" role="status">{message}</div>}
     {scope === "admin" && adminSource === "local_bypass" && view !== "preview" && <span className="local-admin-badge">本地管理员模式</span>}
     {authenticated && view !== "preview" && adminSource !== "local_bypass" && <button className="creator-logout" onClick={logout}>{scope === "author" ? "退出登录" : "退出创作"}</button>}
-    {view === "novels" && <NovelDashboard scope={scope} novels={novels} onOpen={(novel) => openNovel(novel, "novel-settings")} onChapters={(novel) => openNovel(novel, "chapters")} onAssets={() => openAssets("novels")} onUsers={() => setView("users")} onAction={novelAction} />}
+    {view === "novels" && <NovelDashboard scope={scope} novels={novels} chapters={chapters} onOpen={(novel) => openNovel(novel, "novel-settings")} onChapters={(novel) => openNovel(novel, "chapters")} onAssets={() => openAssets("novels")} onUsers={() => setView("users")} onAction={novelAction} onShortAction={shortAction} />}
+    {view === "short" && activeNovel?.format === "short" && novelDraft && active && <ShortEditor scope={scope} novel={activeNovel} draft={novelDraft} setDraft={setNovelDraft} story={story} setStory={setStory} assets={assets} folders={folders} onBack={() => setView("novels")} onAssets={() => openAssets("short")} onInteractive={() => setView("editor")} onPreview={() => { setPreviewNodeId(story.startNodeId); setPreviewReturnView("short"); setView("preview"); }} onSave={() => shortAction("save", activeNovel.id, { novel: novelDraft, story, meta: { slug: activeNovel.slug, sortOrder: activeNovel.sortOrder } })} onSubmit={() => shortAction(scope === "admin" ? "publish" : "submit", activeNovel.id, { novel: novelDraft, story })} />}
     {view === "novel-settings" && activeNovel && novelDraft && <NovelSettings scope={scope} novel={activeNovel} draft={novelDraft} setDraft={setNovelDraft} assets={assets} folders={folders} onBack={() => setView("novels")} onChapters={() => setView("chapters")} onAssets={() => openAssets("novel-settings")} onSave={() => novelAction("save", activeNovel.id, { novel: novelDraft, meta: { slug: activeNovel.slug, sortOrder: activeNovel.sortOrder } })} onSubmit={() => novelAction(scope === "admin" ? "publish" : "submit", activeNovel.id, { novel: novelDraft })} />}
     {view === "chapters" && activeNovel && <ChapterDashboard scope={scope} novel={activeNovel} chapters={chapters.filter((chapter) => chapter.novelId === activeNovel.id)} onNovels={() => setView("novels")} onSettings={(chapter) => openChapter(chapter, "settings")} onEdit={(chapter) => openChapter(chapter, "editor")} onAssets={() => openAssets("chapters")} onUsers={() => setView("users")} onAction={(action, id, extra = {}) => chapterAction(action, id, action === "create" ? { ...extra, meta: { novelId: activeNovel.id } } : extra)} />}
     {view === "settings" && active && <ChapterSettings scope={scope} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onBack={() => setView("chapters")} onAssets={() => openAssets("settings")} onEdit={() => setView("editor")} onPreview={() => { setPreviewNodeId(story.startNodeId); setPreviewReturnView("settings"); setView("preview"); }} onSave={() => chapterAction("save", active.id, { story, meta: { slug: active.slug, sortOrder: active.sortOrder } })} />}
     {view === "assets" && <AssetManager scope={scope} apiBase={apiBase} assets={assets} folders={folders} onBack={() => setView(assetReturnView)} onReload={refreshContent} onMessage={setMessage} onAccessStatus={reconcileOperationAccess} />}
     {view === "users" && scope === "admin" && <UserManager onBack={() => setView("novels")} onAssets={() => openAssets("users")} onAccessStatus={reconcileOperationAccess} />}
-    {view === "editor" && active && <StoryEditor key={active.id} scope={scope} apiBase={apiBase} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onAssetCreated={(asset) => setAssets((current) => [asset, ...current.filter((item) => item.id !== asset.id)])} onBack={() => setView("chapters")} onSettings={() => setView("settings")} onAssets={() => openAssets("editor")} onPreview={(nodeId) => { setPreviewNodeId(nodeId); setPreviewReturnView("editor"); setView("preview"); }} onSave={saveChapterDraft} onPublish={() => chapterAction(scope === "admin" ? "publish" : "submit", active.id, { story })} onRollback={async (version) => { if (scope === "admin" && await chapterAction("rollback", active.id, { version })) setView("chapters"); }} onAccessStatus={reconcileOperationAccess} />}
+    {view === "editor" && active && <StoryEditor key={active.id} scope={scope} apiBase={apiBase} chapter={active} story={story} setStory={setStory} assets={assets} folders={folders} onAssetCreated={(asset) => setAssets((current) => [asset, ...current.filter((item) => item.id !== asset.id)])} onBack={() => setView(activeNovel?.format === "short" ? "novels" : "chapters")} onSettings={() => setView(activeNovel?.format === "short" ? "short" : "settings")} onAssets={() => openAssets("editor")} onPreview={(nodeId) => { setPreviewNodeId(nodeId); setPreviewReturnView("editor"); setView("preview"); }} onSave={activeNovel?.format === "short" && novelDraft ? async (chapter, snapshot) => {
+      const result = await shortAction("save", activeNovel.id, { novel: novelDraft, story: snapshot, meta: { slug: activeNovel.slug, sortOrder: activeNovel.sortOrder } });
+      if (!result) throw new Error("短篇保存失败");
+      return { updatedAt: new Date().toISOString() };
+    } : saveChapterDraft} onPublish={() => activeNovel?.format === "short" && novelDraft ? void shortAction(scope === "admin" ? "publish" : "submit", activeNovel.id, { novel: novelDraft, story }) : void chapterAction(scope === "admin" ? "publish" : "submit", active.id, { story })} onRollback={async (version) => { if (scope === "admin" && await (activeNovel?.format === "short" ? shortAction("rollback", activeNovel.id, { version }) : chapterAction("rollback", active.id, { version }))) setView("novels"); }} onAccessStatus={reconcileOperationAccess} shortMode={activeNovel?.format === "short"} />}
     {view === "preview" && <div className="preview-wrap"><div className="preview-toolbar"><button className="preview-exit" onClick={() => setView(previewReturnView)}>← 返回编辑</button><label>从节点预览<select value={previewNodeId || story.startNodeId} onChange={(event) => setPreviewNodeId(event.target.value)}><option value={story.startNodeId}>章节起点 · {story.nodes.find((node) => node.id === story.startNodeId)?.title}</option>{story.nodes.filter((node) => node.id !== story.startNodeId).map((node) => <option key={node.id} value={node.id}>{node.title} · {node.id}</option>)}</select></label></div><div className="phone-frame"><StoryPreview key={previewNodeId || story.startNodeId} story={story} novelName={activeNovel?.draft.name || ""} initialNodeId={previewNodeId || story.startNodeId} onBack={() => setView(previewReturnView)} /></div></div>}
   </main>;
 }
@@ -454,23 +492,42 @@ function StudioAside({ scope, active, onNovels, onChapters, onAssets, onUsers }:
   </nav><div className="aside-bottom"><Link href="/">← 查看读者端</Link></div></aside>;
 }
 
-function NovelDashboard({ scope, novels, onOpen, onChapters, onAssets, onUsers, onAction }: {
+function NovelDashboard({ scope, novels, chapters, onOpen, onChapters, onAssets, onUsers, onAction, onShortAction }: {
   scope: StudioScope;
   novels: NovelRecord[];
+  chapters: ChapterRecord[];
   onOpen: (novel: NovelRecord) => void;
   onChapters: (novel: NovelRecord) => void;
   onAssets: () => void;
   onUsers: () => void;
   onAction: (action: string, id?: string, extra?: Record<string, unknown>) => Promise<unknown>;
+  onShortAction: (action: string, id?: string, extra?: Record<string, unknown>) => Promise<unknown>;
 }) {
-  return <div className="studio"><StudioAside scope={scope} active="novels" onNovels={() => {}} onAssets={onAssets} onUsers={onUsers} /><section className="studio-main"><header><div><p>{scope === "admin" ? "ADMIN CONSOLE" : "AUTHOR STUDIO"}</p><h1>小说管理</h1></div><button className="primary" onClick={() => onAction("create")}>＋ 新建小说</button></header>
+  return <div className="studio"><StudioAside scope={scope} active="novels" onNovels={() => {}} onAssets={onAssets} onUsers={onUsers} /><section className="studio-main"><header><div><p>{scope === "admin" ? "ADMIN CONSOLE" : "AUTHOR STUDIO"}</p><h1>作品管理</h1></div><div className="settings-actions"><button className="ghost" onClick={() => onAction("create")}>＋ 新建连载小说</button><button className="primary" onClick={() => onShortAction("create")}>＋ 新建短篇</button></div></header>
     <div className="stats"><div><span>全部小说</span><b>{novels.length}</b></div><div><span>{scope === "admin" ? "待审核" : "审核中"}</span><b>{novels.filter((item) => item.draftStatus === "submitted").length}</b></div><div><span>已发布</span><b>{novels.filter((item) => item.status === "published").length}</b></div></div>
     <div className="novel-grid">{novels.map((novel) => <article className="novel-manage-card" key={novel.id}>
       <div className="novel-cover-thumb">{novel.draft.coverUrl ? <Image src={novel.draft.coverUrl} alt={novel.draft.coverAlt || novel.draft.name} fill unoptimized style={{ objectFit: novel.draft.coverPresentation.fit, objectPosition: `${novel.draft.coverPresentation.positionX}% ${novel.draft.coverPresentation.positionY}%` }} /> : <FantasyCoverPlaceholder />}</div>
-      <div><span className={`status ${novel.draftStatus === "submitted" ? "submitted" : novel.status}`}>{novel.draftStatus === "submitted" ? "待审核" : novel.status === "published" ? "已发布" : novel.status === "offline" ? "已下线" : "草稿"}</span><h2>{novel.draft.name}</h2><p>{novel.draft.summary || "尚未填写小说简介"}</p><small>/{novel.slug} · v{novel.version}</small></div>
-      <div className="row-actions"><button onClick={() => onOpen(novel)}>小说设置</button><button onClick={() => onChapters(novel)}>章节目录</button><button title="复制" onClick={() => onAction("duplicate", novel.id)}>⧉</button>{scope === "admin" && novel.draftStatus === "submitted" && <><button onClick={() => onAction("publish", novel.id, { novel: novel.draft })}>发布</button><button onClick={() => { const reviewNote = prompt("填写驳回原因"); if (reviewNote) void onAction("reject", novel.id, { meta: { reviewNote } }); }}>驳回</button></>}{scope === "author" && novel.draftStatus === "submitted" && <button onClick={() => onAction("withdraw", novel.id)}>撤回</button>}{scope === "admin" && novel.status === "published" && <button onClick={() => onAction("offline", novel.id)}>下线</button>}{novel.status === "draft" && novel.draftStatus === "draft" && <button className="danger" onClick={() => { if (confirm("确定删除这个小说草稿吗？")) void onAction("delete", novel.id); }}>删除</button>}</div>
+      <div><span className={`status ${novel.draftStatus === "submitted" ? "submitted" : novel.status}`}>{novel.draftStatus === "submitted" ? "待审核" : novel.status === "published" ? "已发布" : novel.status === "offline" ? "已下线" : "草稿"}</span> <span className="format-badge">{novel.format === "short" ? "短篇" : "连载小说"}</span><h2>{novel.draft.name}</h2><p>{novel.draft.summary || "尚未填写作品简介"}</p><small>/{novel.slug} · v{novel.version}</small></div>
+      <div className="row-actions"><button onClick={() => onOpen(novel)}>{novel.format === "short" ? "编辑短篇" : "小说设置"}</button>{novel.format !== "short" && <><button onClick={() => onChapters(novel)}>章节目录</button><button title="复制" onClick={() => onAction("duplicate", novel.id)}>⧉</button></>}{novel.convertibleTo && <button onClick={() => { const target = novel.convertibleTo; if (confirm(`确定转为${target === "short" ? "短篇" : "连载小说"}吗？`)) void onAction("convert", novel.id, { format: target }); }}>{novel.convertibleTo === "short" ? "转为短篇" : "转为连载小说"}</button>}{scope === "admin" && novel.draftStatus === "submitted" && (novel.format === "short" ? <><button onClick={() => { const body = chapters.find((chapter) => chapter.novelId === novel.id); if (body) void onShortAction("publish", novel.id, { novel: novel.draft, story: body.draft }); }}>发布</button><button onClick={() => { const reviewNote = prompt("填写驳回原因"); if (reviewNote) void onShortAction("reject", novel.id, { meta: { reviewNote } }); }}>驳回</button></> : <><button onClick={() => onAction("publish", novel.id, { novel: novel.draft })}>发布</button><button onClick={() => { const reviewNote = prompt("填写驳回原因"); if (reviewNote) void onAction("reject", novel.id, { meta: { reviewNote } }); }}>驳回</button></>)}{scope === "author" && novel.draftStatus === "submitted" && <button onClick={() => novel.format === "short" ? onShortAction("withdraw", novel.id) : onAction("withdraw", novel.id)}>撤回</button>}{scope === "admin" && novel.status === "published" && <button onClick={() => novel.format === "short" ? onShortAction("offline", novel.id) : onAction("offline", novel.id)}>下线</button>}{novel.status === "draft" && novel.draftStatus === "draft" && <button className="danger" onClick={() => { if (confirm(`确定删除这个${novel.format === "short" ? "短篇" : "小说"}草稿吗？`)) void (novel.format === "short" ? onShortAction("delete", novel.id) : onAction("delete", novel.id)); }}>删除</button>}</div>
     </article>)}</div>
     {novels.length === 0 && <div className="empty"><b>还没有小说</b><p>先创建一本小说，再为它添加章节。</p></div>}
+  </section></div>;
+}
+
+function ShortEditor({ scope, novel, draft, setDraft, story, setStory, assets, folders, onBack, onAssets, onInteractive, onPreview, onSave, onSubmit }: {
+  scope: StudioScope; novel: NovelRecord; draft: NovelDocument; setDraft: (value: NovelDocument) => void;
+  story: StoryDocument; setStory: (value: StoryDocument) => void; assets: AssetRecord[]; folders: AssetFolder[];
+  onBack: () => void; onAssets: () => void; onInteractive: () => void; onPreview: () => void; onSave: () => void; onSubmit: () => void;
+}) {
+  const locked = scope === "author" && novel.draftStatus === "submitted";
+  const wordCount = countStoryBodyCharacters(story);
+  const first = story.nodes[0];
+  const interactive = story.nodes.length > 1 || story.nodes.some((node) => node.choices.length > 0);
+  const updateBody = (body: string) => setStory({ ...story, nodes: story.nodes.map((node, index) => index === 0 ? { ...node, body, canEndChapter: true, type: "ending" } : node) });
+  return <div className={`studio chapter-settings-page${locked ? " editor-locked" : ""}`}><StudioAside scope={scope} active="novels" onNovels={onBack} onAssets={onAssets} /><section className="studio-main short-editor-page"><header><div><button className="back-link" onClick={onBack}>← 作品管理</button><p>SHORT FICTION</p><h1>短篇编辑</h1></div><div className="settings-actions"><button className="ghost" onClick={onAssets}>素材库</button><button className="ghost" onClick={onInteractive}>{interactive ? "打开互动编辑器" : "开启互动编辑"}</button><button className="ghost" onClick={onPreview}>预览阅读</button><button className="ghost" disabled={locked} onClick={onSave}>保存草稿</button><button className="primary" disabled={locked || wordCount > SHORT_STORY_MAX_LENGTH} onClick={onSubmit}>{scope === "admin" ? "发布短篇" : "提交审核"}</button></div></header>
+    {novel.reviewNote && <p className="inline-message">审核反馈：{novel.reviewNote}</p>}
+    {interactive && <p className="inline-message">这篇作品含有多个剧情节点或选项，后续会默认进入完整互动编辑器。</p>}
+    <div className="short-editor-layout"><form className="chapter-settings-form" onSubmit={(event) => { event.preventDefault(); if (!locked) onSave(); }}><label>短篇名称<input disabled={locked} maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>简介<textarea disabled={locked} rows={4} maxLength={1000} value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} /></label><fieldset disabled={locked}><legend>封面与默认收尾图</legend><AssetSelect label="封面图片" type="image" value={draft.coverAssetId || draft.coverUrl} assets={assets} folders={folders} onChange={(id, url) => setDraft({ ...draft, coverAssetId: id, coverUrl: url })} /><label>封面替代文本<input maxLength={500} value={draft.coverAlt} onChange={(event) => setDraft({ ...draft, coverAlt: event.target.value })} /></label><small>未单独设置收尾图时，将明确使用这张封面作为收尾图。</small><AssetSelect label="可选自定义收尾图" type="image" value={story.outroUsesNovelCover ? "" : story.outroImageAssetId || story.outroImageUrl} assets={assets} folders={folders} onChange={(id, url) => setStory({ ...story, outroImageAssetId: id, outroImageUrl: url, outroImageAlt: id || url ? story.outroImageAlt : "", outroUsesNovelCover: !id && !url })} />{!story.outroUsesNovelCover && (story.outroImageAssetId || story.outroImageUrl) && <label>收尾图替代文本<input maxLength={500} value={story.outroImageAlt} onChange={(event) => setStory({ ...story, outroImageAlt: event.target.value })} /></label>}</fieldset><label className="body-editor"><span className="body-editor-head"><span>正文</span><b className={wordCount > SHORT_STORY_MAX_LENGTH ? "error" : ""}>{wordCount.toLocaleString("zh-CN")} / {SHORT_STORY_MAX_LENGTH.toLocaleString("zh-CN")} 字</b></span><textarea disabled={locked || interactive} rows={20} value={first?.body || ""} onChange={(event) => updateBody(event.target.value)} />{wordCount > SHORT_STORY_MAX_LENGTH && <span className="body-editor-notice error">草稿仍可保存；删减至 20,000 字以内后才能提交或发布。</span>}</label></form></div>
   </section></div>;
 }
 
@@ -595,7 +652,7 @@ function UserManager({ onBack, onAssets, onAccessStatus }: { onBack: () => void;
   return <div className="studio"><StudioAside scope="admin" active="users" onNovels={onBack} onAssets={onAssets} onUsers={() => {}} /><section className="studio-main user-manager"><header><div><button className="back-link" onClick={onBack}>← 小说管理</button><p>ACCESS CONTROL</p><h1>用户与角色</h1></div></header>{message && <p className="inline-message" role="status">{message}</p>}<div className="user-table"><div className="user-row user-head"><span>用户</span><span>邮箱状态</span><span>角色</span><span>账号状态</span></div>{users.map((user) => <div className="user-row" key={user.id}><span><b>{user.displayName}</b><small>{user.email}<br />{new Date(user.createdAt).toLocaleDateString("zh-CN")}</small></span><span>{user.emailVerifiedAt ? "已验证" : "待验证"}</span><select aria-label={`${user.displayName}的角色`} value={user.role} disabled={user.status === "pending"} onChange={(event) => void update(user.id, { role: event.target.value as ManagedUser["role"] })}><option value="reader">读者</option><option value="author">作者</option><option value="admin">管理员</option></select><select aria-label={`${user.displayName}的状态`} value={user.status === "pending" ? "pending" : user.status} disabled={user.status === "pending"} onChange={(event) => void update(user.id, { status: event.target.value as "active" | "disabled" })}><option value="pending" disabled>待验证</option><option value="active">正常</option><option value="disabled">禁用</option></select></div>)}</div></section></div>;
 }
 
-function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders, onAssetCreated, onBack, onSettings, onAssets, onPreview, onSave, onPublish, onRollback, onAccessStatus }: {
+function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders, onAssetCreated, onBack, onSettings, onAssets, onPreview, onSave, onPublish, onRollback, onAccessStatus, shortMode = false }: {
   scope: StudioScope;
   apiBase: string;
   chapter: ChapterRecord;
@@ -612,6 +669,7 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
   onPublish: () => void;
   onRollback: (version: number) => void;
   onAccessStatus: ReconcileOperationAccess;
+  shortMode?: boolean;
 }) {
   const [selectedId, setSelectedId] = useState(story.startNodeId);
   const [tab, setTab] = useState<"content" | "image" | "music" | "terminal" | "versions">("content");
@@ -638,10 +696,15 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
     });
     return () => { active = false; };
   }, [apiBase, chapter.id, onAccessStatus]);
-  const errors = useMemo(() => validateStory(story), [story]);
+  const shortLengthError = shortMode && countStoryBodyCharacters(story) > SHORT_STORY_MAX_LENGTH
+    ? `短篇正文超过 ${SHORT_STORY_MAX_LENGTH} 字上限` : "";
+  const errors = useMemo(() => [
+    ...validateStory(story, { validateBodyLengths: !shortMode }),
+    ...(shortMode && countStoryBodyCharacters(story) > SHORT_STORY_MAX_LENGTH ? [`短篇正文超过 ${SHORT_STORY_MAX_LENGTH} 字上限`] : []),
+  ], [shortMode, story]);
   const publishErrors = useMemo(() => [...errors, ...validateStoryMedia(story)], [errors, story]);
-  const lengthErrors = useMemo(() => validateStoryBodyLengths(story), [story]);
-  const hardInputErrors = useMemo(() => [...lengthErrors, ...validateStoryInputLengths(story)], [lengthErrors, story]);
+  const lengthErrors = useMemo(() => shortMode ? (shortLengthError ? [shortLengthError] : []) : validateStoryBodyLengths(story), [shortLengthError, shortMode, story]);
+  const hardInputErrors = useMemo(() => [...(shortMode ? [] : lengthErrors), ...validateStoryInputLengths(story)], [lengthErrors, shortMode, story]);
   const warnings = useMemo(() => [...getStoryBodyWarnings(story), ...getStoryTerminalWarnings(story)], [story]);
   const locked = scope === "author" && chapter.draftStatus === "submitted";
   const persistLatest = useCallback(async () => {
@@ -652,7 +715,10 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
     }
     const snapshot = structuredClone(latestStoryRef.current);
     const signature = JSON.stringify(snapshot);
-    const hardErrors = [...validateStoryBodyLengths(snapshot), ...validateStoryInputLengths(snapshot)];
+    const hardErrors = [
+      ...(shortMode ? [] : validateStoryBodyLengths(snapshot)),
+      ...validateStoryInputLengths(snapshot),
+    ];
     if (hardErrors.length > 0) {
       setSaveStatus("blocked");
       setSaveMessage(hardErrors[0]);
@@ -686,7 +752,7 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
         setTimeout(() => void runSaveRef.current(), 0);
       }
     }
-  }, [locked, onSave, recoveryKey]);
+  }, [locked, onSave, recoveryKey, shortMode]);
   useEffect(() => { runSaveRef.current = persistLatest; }, [persistLatest]);
   useEffect(() => {
     const signature = JSON.stringify(story);
@@ -724,6 +790,7 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
   }, [recoveryKey, setStory]);
   const selected = story.nodes.find((node) => node.id === selectedId) || story.nodes[0];
   const bodyLength = countStoryCharacters(selected?.body || "");
+  const bodyLimit = shortMode ? SHORT_STORY_MAX_LENGTH : NODE_BODY_MAX_LENGTH;
   const estimatedPages = paginateStoryBody(selected?.body || "").length;
   const updateNode = (patch: Partial<StoryNode>) => setStory({ ...story, nodes: story.nodes.map((node) => node.id === selected.id ? { ...node, ...patch } : node) });
   const insertPageBreak = () => {
@@ -765,9 +832,9 @@ function StoryEditor({ scope, apiBase, chapter, story, setStory, assets, folders
         <div className="form-intro"><div><p>NODE / {selected.id.toUpperCase()}</p><h2>{selected.title}</h2></div><div className="node-actions"><button onClick={duplicateNode}>复制</button><button className="danger" disabled={selected.id === story.startNodeId} onClick={() => removeNode()}>删除</button></div></div>
         <label>起始节点<select value={story.startNodeId} onChange={(event) => setStory({ ...story, startNodeId: event.target.value })}>{story.nodes.map((node) => <option key={node.id} value={node.id}>{node.title} · {node.id}</option>)}</select></label>
         <label>节点标题<input value={selected.title} onChange={(event) => updateNode({ title: event.target.value })} /></label>
-        <label className="body-editor"><span className="body-editor-head"><span>正文</span><button type="button" onClick={insertPageBreak}>＋ 插入分页</button></span><textarea ref={bodyEditor} rows={8} value={selected.body} onChange={(event) => updateNode({ body: event.target.value })} /><span className={`body-editor-meta${bodyLength > NODE_BODY_MAX_LENGTH ? " error" : bodyLength > NODE_BODY_RECOMMENDED_LENGTH ? " warning" : ""}`}><span>{bodyLength} / {NODE_BODY_MAX_LENGTH} 字</span><span>预计 {estimatedPages} 页</span></span>
-          {bodyLength > NODE_BODY_MAX_LENGTH && <span className="body-editor-notice error">已超过正文上限，请删减后再保存或预览。</span>}
-          {bodyLength > NODE_BODY_RECOMMENDED_LENGTH && bodyLength <= NODE_BODY_MAX_LENGTH && <span className="body-editor-notice warning">正文超过建议的 {NODE_BODY_RECOMMENDED_LENGTH} 字，可拆成节点或插入分页控制节奏。</span>}
+        <label className="body-editor"><span className="body-editor-head"><span>正文</span><button type="button" onClick={insertPageBreak}>＋ 插入分页</button></span><textarea ref={bodyEditor} rows={8} value={selected.body} onChange={(event) => updateNode({ body: event.target.value })} /><span className={`body-editor-meta${bodyLength > bodyLimit ? " error" : bodyLength > NODE_BODY_RECOMMENDED_LENGTH ? " warning" : ""}`}><span>{shortMode ? `${countStoryBodyCharacters(story)} / ${SHORT_STORY_MAX_LENGTH} 字（全文）` : `${bodyLength} / ${NODE_BODY_MAX_LENGTH} 字`}</span><span>预计 {estimatedPages} 页</span></span>
+          {bodyLength > bodyLimit && <span className="body-editor-notice error">已超过正文上限，请删减后再预览或提交。</span>}
+          {bodyLength > NODE_BODY_RECOMMENDED_LENGTH && bodyLength <= bodyLimit && <span className="body-editor-notice warning">正文超过建议的 {NODE_BODY_RECOMMENDED_LENGTH} 字，可拆成节点或插入分页控制节奏。</span>}
         </label>
         <div className="two-col"><label className="toggle-field"><input type="checkbox" checked={selected.canEndChapter} onChange={(event) => updateNode({ canEndChapter: event.target.checked, type: event.target.checked ? "ending" : "scene" })} /><span>允许读者在此结束本章</span><small>可与剧情选项同时存在。</small></label><label>文字动画<select value={selected.animation} onChange={(event) => updateNode({ animation: event.target.value as StoryNode["animation"] })}><option value="none">无</option><option value="fade">淡入</option><option value="rise">上浮</option><option value="flash">闪白</option></select></label></div>
         <AssetSelect label="场景背景图 / 视频封面" type="image" value={selected.imageAssetId || selected.imageUrl} assets={assets} folders={folders} onChange={(id, url) => updateNode({ imageAssetId: id, imageUrl: url })} />

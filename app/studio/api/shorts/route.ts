@@ -1,6 +1,4 @@
-import {
-  creationLifecycle,
-} from "../../../../db/creation-lifecycle";
+import { creationLifecycle } from "../../../../db/creation-lifecycle";
 import { creationLifecycleErrorResponse, creationLifecycleResponse, parseCreationCommand } from "../../../_creation-lifecycle-http";
 import { assertSameOrigin, authErrorResponse } from "../../../../lib/auth";
 import { sessionAuthorization } from "../../../../lib/session-authorization";
@@ -8,11 +6,7 @@ import { sessionAuthorization } from "../../../../lib/session-authorization";
 export async function GET(request: Request) {
   try {
     const identity = await sessionAuthorization.requireRole(request, ["author"]);
-    const actor = { kind: "author", id: identity.id } as const;
-    const [novels, shorts] = await Promise.all([
-      creationLifecycle.list(actor, "novel"), creationLifecycle.listShorts(actor),
-    ]);
-    return Response.json({ novels, shorts });
+    return Response.json({ shorts: await creationLifecycle.listShorts({ kind: "author", id: identity.id }) });
   } catch (error) {
     return creationLifecycleErrorResponse(error) ?? authErrorResponse(error);
   }
@@ -22,9 +16,8 @@ export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
     const identity = await sessionAuthorization.requireRole(request, ["author"]);
-    const command = parseCreationCommand("novel", await request.json());
-    const actor = { kind: "author", id: identity.id } as const;
-    return creationLifecycleResponse(await creationLifecycle.execute(actor, command));
+    const command = parseCreationCommand("short", await request.json());
+    return creationLifecycleResponse(await creationLifecycle.execute({ kind: "author", id: identity.id }, command));
   } catch (error) {
     return creationLifecycleErrorResponse(error) ?? authErrorResponse(error);
   }

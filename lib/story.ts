@@ -128,6 +128,7 @@ export type StoryDocument = {
   openingImageUrl: string;
   openingImageAlt: string;
   openingImagePresentation: ImagePresentation;
+  openingUsesNovelCover: boolean;
   /** Legacy aliases retained while old published JSON is normalized. */
   coverAssetId: string;
   coverUrl: string;
@@ -136,6 +137,7 @@ export type StoryDocument = {
   outroImageUrl: string;
   outroImageAlt: string;
   outroImagePresentation: ImagePresentation;
+  outroUsesNovelCover: boolean;
   startNodeId: string;
   nodes: StoryNode[];
   musicCues: StoryMusicCue[];
@@ -149,10 +151,14 @@ export type NovelDocument = {
   coverAlt: string;
   coverPresentation: ImagePresentation;
 };
+export type NovelFormat = "serial" | "short";
 export type NovelRecord = {
   id: string;
   slug: string;
   ownerId: string | null;
+  format: NovelFormat;
+  formatLockedAt: string | null;
+  convertibleTo: NovelFormat | null;
   draftStatus: "draft" | "submitted";
   submittedAt: string | null;
   reviewNote: string;
@@ -185,6 +191,7 @@ export type ChapterRecord = {
 export const STORY_PAGE_BREAK = "[[PAGE_BREAK]]";
 export const NODE_BODY_RECOMMENDED_LENGTH = 600;
 export const NODE_BODY_MAX_LENGTH = 2000;
+export const SHORT_STORY_MAX_LENGTH = 20_000;
 export const STORY_PAGE_TARGET_LENGTH = 190;
 export const STORY_PAGE_MAX_LENGTH = 240;
 export const DEFAULT_COVER_PRESENTATION: ImagePresentation = { fit: "cover", positionX: 50, positionY: 50 };
@@ -358,6 +365,10 @@ export function countStoryCharacters(body: string) {
     .filter(isVisibleCharacter).length;
 }
 
+export function countStoryBodyCharacters(story: Pick<StoryDocument, "nodes">) {
+  return story.nodes.reduce((total, node) => total + countStoryCharacters(node.body), 0);
+}
+
 function splitAutomaticPage(section: string): string[] {
   const characters = graphemes(section);
   const pages: string[] = [];
@@ -526,6 +537,7 @@ export function createBlankStory(): StoryDocument {
     openingImageUrl: "",
     openingImageAlt: "",
     openingImagePresentation: { ...DEFAULT_COVER_PRESENTATION },
+    openingUsesNovelCover: false,
     coverAssetId: "",
     coverUrl: "",
     coverAlt: "",
@@ -533,6 +545,7 @@ export function createBlankStory(): StoryDocument {
     outroImageUrl: "",
     outroImageAlt: "",
     outroImagePresentation: { ...DEFAULT_COVER_PRESENTATION },
+    outroUsesNovelCover: false,
     startNodeId: "start",
     musicCues: [],
     terminal: { ...DEFAULT_STORY_TERMINAL },
@@ -644,6 +657,7 @@ export function normalizeStory(story: StoryDocument): StoryDocument {
     openingImageUrl,
     openingImageAlt,
     openingImagePresentation: normalizeImagePresentation(story.openingImagePresentation),
+    openingUsesNovelCover: story.openingUsesNovelCover === true,
     coverAssetId: story.coverAssetId ?? openingImageAssetId,
     coverUrl: story.coverUrl ?? openingImageUrl,
     coverAlt: story.coverAlt ?? openingImageAlt,
@@ -651,6 +665,7 @@ export function normalizeStory(story: StoryDocument): StoryDocument {
     outroImageUrl: story.outroImageUrl ?? "",
     outroImageAlt: story.outroImageAlt ?? "",
     outroImagePresentation: normalizeImagePresentation(story.outroImagePresentation),
+    outroUsesNovelCover: story.outroUsesNovelCover === true,
     musicCues: legacyMusicCues.map((cue, index) => ({
       id: cue.id || `music-${index + 1}`,
       name: cue.name || `配乐 ${index + 1}`,
@@ -774,8 +789,11 @@ export function resolveMusicCueAction(
   };
 }
 
-export function validateStory(story: StoryDocument): string[] {
-  const errors = [...validateStoryBodyLengths(story), ...validateStoryInputLengths(story)];
+export function validateStory(story: StoryDocument, options: { validateBodyLengths?: boolean } = {}): string[] {
+  const errors = [
+    ...(options.validateBodyLengths === false ? [] : validateStoryBodyLengths(story)),
+    ...validateStoryInputLengths(story),
+  ];
   const ids = new Set<string>();
   story.nodes.forEach((node) => {
     if (!node.id.trim()) errors.push("存在未填写 ID 的节点");

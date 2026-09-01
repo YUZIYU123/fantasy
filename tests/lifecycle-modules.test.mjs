@@ -23,6 +23,79 @@ test("CreationLifecycle 通过公开接口创建并按作者隔离小说", async
   assert.equal(payload.strangerIds.includes(payload.created.id), false);
 });
 
+test("CreationLifecycle 原子创建短篇及唯一内部章节", async () => {
+  const response = await fetch(`${runtime.origin}/creation-short`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.equal(payload.created.kind, "created");
+  assert.equal(payload.novel.format, "short");
+  assert.equal(payload.novel.formatLockedAt, null);
+  assert.equal(payload.chapters.length, 1);
+  assert.equal(payload.chapters[0].id, payload.created.chapterId);
+  assert.equal(payload.chapters[0].novelId, payload.created.id);
+  assert.equal(payload.strangerNovelIds.includes(payload.created.id), false);
+});
+
+test("CreationLifecycle 整体保存并在提交发布时执行 20,000 字上限", async () => {
+  const response = await fetch(`${runtime.origin}/creation-short-matrix`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.equal(payload.overLimitSaveStatus, 200);
+  assert.equal(payload.overLimitSubmitStatus, 400);
+  assert.equal(payload.savedWordCount, 20_001);
+  assert.equal(payload.explicitCustomOutroPreserved, true);
+  assert.deepEqual(payload.submittedStates, ["submitted", "submitted"]);
+  assert.ok(payload.formatLockedAt);
+  assert.deepEqual(payload.publishedStates, ["published", "published"]);
+  assert.equal(payload.publishedWordCount, 20_000);
+  assert.equal(payload.outroUsesCover, true);
+  assert.equal(payload.openingUsesCover, true);
+  assert.deepEqual(payload.versions, [1, 1]);
+});
+
+test("CreationLifecycle 整体处理短篇撤回、驳回、下线和回退", async () => {
+  const response = await fetch(`${runtime.origin}/creation-short-state-matrix`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.deepEqual(payload.withdrawn, { novel: ["draft", "draft", 0, ""], chapter: ["draft", "draft", 0, ""] });
+  assert.deepEqual(payload.rejected, { novel: ["draft", "draft", 0, "请修改结尾"], chapter: ["draft", "draft", 0, "请修改结尾"] });
+  assert.deepEqual(payload.offline, { novel: ["offline", "draft", 1, ""], chapter: ["offline", "draft", 1, ""] });
+  assert.deepEqual(payload.rolledBack, { novel: ["published", "draft", 2, ""], chapter: ["published", "draft", 2, ""] });
+});
+
+test("CreationLifecycle 在 D1 批次中途失败时整体回滚并可重试", async () => {
+  const response = await fetch(`${runtime.origin}/creation-short-batch-failure`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    createFailed: true,
+    noPartialCreate: true,
+    failed: true,
+    unchanged: true,
+    retried: true,
+    publishFailed: true,
+    publishUnchanged: true,
+    publishRetried: true,
+  });
+});
+
+test("CreationLifecycle 约束格式转换、锁定与短篇单章边界", async () => {
+  const response = await fetch(`${runtime.origin}/creation-short-guards`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.equal(payload.convertedToShort.format, "short");
+  assert.equal(payload.convertedToShort.convertibleTo, "serial");
+  assert.equal(payload.internalChapterCount, 1);
+  assert.equal(payload.secondChapterStatus, 409);
+  assert.equal(payload.directChildSaveStatus, 409);
+  assert.equal(payload.convertedToSerial.format, "serial");
+  assert.equal(payload.preservedChapterCount, 1);
+  assert.equal(payload.lockedConversionStatus, 409);
+  assert.equal(payload.crossOwnerStatus, 403);
+  assert.equal(payload.deletedNovelPresent, false);
+  assert.equal(payload.deletedChapterPresent, false);
+  assert.equal(payload.submittedChildConversionStatus, 409);
+});
+
 test("CreationLifecycle 公开接口覆盖小说与章节完整转换矩阵", async () => {
   const response = await fetch(`${runtime.origin}/creation-matrix`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);

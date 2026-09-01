@@ -555,6 +555,56 @@ test("创作者与管理员的小说章节生命周期保持兼容", async (t) =
     assert.equal((await adminPost("/admin/api/novels", { action: "delete", id: adminNovel.payload.id })).response.status, 200);
   });
 
+  await t.test("短篇通过整体 HTTP 命令发布并暴露公开格式、字数和互动标签", async () => {
+    const created = await authorPost("/studio/api/shorts", authorA.cookie, { action: "create" });
+    assert.equal(created.response.status, 201);
+    assert.ok(created.payload.chapterId);
+    const novels = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels;
+    const shorts = (await requestJson("/studio/api/shorts", { cookie: authorA.cookie })).payload.shorts;
+    const chapterDirectory = (await requestJson("/studio/api/chapters", { cookie: authorA.cookie })).payload.chapters;
+    const row = novels.find((novel) => novel.id === created.payload.id);
+    const body = shorts.find((item) => item.chapter.id === created.payload.chapterId).chapter;
+    assert.equal(chapterDirectory.some((chapter) => chapter.id === created.payload.chapterId), false);
+    assert.equal(row.format, "short");
+    const novel = structuredClone(row.draft);
+    novel.name = "公开短篇";
+    novel.summary = "一次读完，也可以做出选择。";
+    novel.coverUrl = "https://example.com/public-short.jpg";
+    novel.coverAlt = "公开短篇封面";
+    const story = structuredClone(body.draft);
+    story.nodes[0].title = "全文";
+    story.nodes[0].body = "甲 乙👨‍👩‍👧‍👦";
+    story.nodes[0].canEndChapter = true;
+    assert.equal((await authorPost("/studio/api/shorts", authorA.cookie, { action: "submit", id: row.id, novel, story })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/shorts", { action: "publish", id: row.id, novel, story })).response.status, 200);
+    const publicRow = (await requestJson("/api/novels")).payload.novels.find((item) => item.id === row.id);
+    assert.equal(publicRow.format, "short");
+    assert.equal(publicRow.wordCount, 3);
+    assert.equal(publicRow.interactive, false);
+    assert.equal(publicRow.chapters.length, 1);
+    assert.equal(publicRow.chapters[0].published.outroImageUrl, novel.coverUrl);
+
+    const interactiveCreated = await authorPost("/studio/api/shorts", authorA.cookie, { action: "create" });
+    assert.equal(interactiveCreated.response.status, 201);
+    const currentNovels = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels;
+    const currentShorts = (await requestJson("/studio/api/shorts", { cookie: authorA.cookie })).payload.shorts;
+    const interactiveRow = currentNovels.find((item) => item.id === interactiveCreated.payload.id);
+    const interactiveNovel = structuredClone(interactiveRow.draft);
+    interactiveNovel.name = "互动短篇"; interactiveNovel.summary = "一篇含有分支的短篇。";
+    interactiveNovel.coverUrl = "https://example.com/interactive-short.jpg"; interactiveNovel.coverAlt = "互动短篇封面";
+    const interactiveStory = publishableStory("互动短篇");
+    assert.equal((await authorPost("/studio/api/shorts", authorA.cookie, {
+      action: "submit", id: interactiveRow.id, novel: interactiveNovel, story: interactiveStory,
+    })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/shorts", {
+      action: "publish", id: interactiveRow.id, novel: interactiveNovel, story: interactiveStory,
+    })).response.status, 200);
+    const interactivePublic = (await requestJson("/api/novels")).payload.novels.find((item) => item.id === interactiveRow.id);
+    assert.equal(interactivePublic.interactive, true);
+    assert.ok(interactivePublic.wordCount > 0);
+    assert.equal(currentShorts.some((item) => item.novel.id === interactiveRow.id), true);
+  });
+
   let novelId = "";
   let publishedNovel;
   await t.test("作者小说经过提交、撤回、驳回、发布、下线与回滚", async () => {

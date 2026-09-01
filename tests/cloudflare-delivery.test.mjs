@@ -121,7 +121,7 @@ test("密钥只声明名称且本地统一使用 .dev.vars", async () => {
 });
 
 test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环境", async () => {
-  const [files, journal, packageJson, workflow, sourceGate, smoke, delivery] = await Promise.all([
+  const [files, journal, packageJson, workflow, sourceGate, smoke, delivery, shortFormatMigration] = await Promise.all([
     readdir(new URL("drizzle", root)),
     json("drizzle/meta/_journal.json"),
     json("package.json"),
@@ -129,10 +129,13 @@ test("D1 migrations 连续、被 Wrangler 追踪且发布命令显式选择环�
     readFile(new URL("scripts/verify-release-source.mjs", root), "utf8"),
     readFile(new URL("scripts/smoke-cloudflare.mjs", root), "utf8"),
     readFile(new URL("docs/cloudflare-delivery.md", root), "utf8"),
+    readFile(new URL("drizzle/0018_dusty_omega_sentinel.sql", root), "utf8"),
   ]);
   const migrations = files.filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   assert.deepEqual(migrations.map((file) => Number(file.slice(0, 4))), migrations.map((_, index) => index));
   assert.equal(journal.entries.length, migrations.length);
+  assert.match(shortFormatMigration, /`novels`\.`review_note`|`review_note` <> ''/);
+  assert.match(shortFormatMigration, /`chapters`\.`review_note` <> ''/);
   assert.match(packageJson.scripts["db:migrate:staging"], /--env staging/);
   assert.match(packageJson.scripts["db:migrate:production"], /--env production/);
   assert.match(packageJson.scripts["db:migrate:staging"], /release:source:staging/);

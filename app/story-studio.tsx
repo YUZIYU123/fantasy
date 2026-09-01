@@ -18,7 +18,7 @@ import { ReaderShell } from "./reader-shell";
 export { Reader } from "./reader";
 
 type PublicChapter = ChapterRecord;
-type PublicNovel = NovelRecord & { chapters: PublicChapter[] };
+type PublicNovel = NovelRecord & { chapters: PublicChapter[]; wordCount: number; interactive: boolean };
 type View = "library" | "novel" | "cover" | "reader" | "outro";
 
 export function StoryStudio() {
@@ -38,9 +38,13 @@ export function StoryStudio() {
   const chapter = chapterIndex >= 0 ? novel?.chapters[chapterIndex] ?? null : null;
   const nextChapter = novel && chapterIndex >= 0 ? novel.chapters[chapterIndex + 1] ?? null : null;
   const openRecommendedNovel = (id: string) => {
-    if (!novels.some((item) => item.id === id)) return;
+    const selected = novels.find((item) => item.id === id);
+    if (!selected) return;
     setNovelId(id);
-    setView("novel");
+    if (selected.format === "short" && selected.chapters[0]?.published) {
+      setChapterId(selected.chapters[0].id);
+      setView("reader");
+    } else setView("novel");
   };
   const readerShell = (content: ReactNode, contextLabel: string) => <ReaderShell
     active="world"
@@ -72,7 +76,14 @@ export function StoryStudio() {
       params.delete("novel");
       const query = params.toString();
       window.history.replaceState(window.history.state, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
-      queueMicrotask(() => { setNovelId(requestedNovelId); setView("novel"); });
+      const requested = novels.find((item) => item.id === requestedNovelId)!;
+      queueMicrotask(() => {
+        setNovelId(requestedNovelId);
+        if (requested.format === "short" && requested.chapters[0]?.published) {
+          setChapterId(requested.chapters[0].id);
+          setView("reader");
+        } else setView("novel");
+      });
       return;
     }
     const intent = normalizeRegistrationIntent({ kind: params.get("resume"), targetId: params.get("target") });
@@ -89,7 +100,10 @@ export function StoryStudio() {
       consumeIntent();
       queueMicrotask(() => {
         setNovelId(targetNovel.id);
-        setView("novel");
+        if (targetNovel.format === "short" && targetNovel.chapters[0]?.published) {
+          setChapterId(targetNovel.chapters[0].id);
+          setView("reader");
+        } else setView("novel");
       });
       return;
     }
@@ -116,10 +130,10 @@ export function StoryStudio() {
     return readerShell(<ChapterCover novel={novel} chapter={chapter} onBack={() => setView("novel")} onStart={() => setView("reader")} />, chapter.published.title);
   }
   if (view === "reader" && chapter?.published) {
-    return <Reader story={chapter.published} chapterId={chapter.id} chapterVersion={chapter.version} novels={novels} onOpenNovel={openRecommendedNovel} onBack={() => setView("novel")} onComplete={() => setView("outro")} />;
+    return <Reader story={chapter.published} chapterId={chapter.id} chapterVersion={chapter.version} novels={novels} onOpenNovel={openRecommendedNovel} backLabel={novel?.format === "short" ? "返回世界档案" : "返回章节目录"} onBack={() => setView(novel?.format === "short" ? "library" : "novel")} onComplete={() => setView("outro")} />;
   }
   if (view === "outro" && novel?.published && chapter?.published) {
-    return readerShell(<ChapterOutro novel={novel} chapter={chapter} nextChapter={nextChapter} onBack={() => setView("novel")} onNext={() => {
+    return readerShell(<ChapterOutro novel={novel} chapter={chapter} nextChapter={novel.format === "short" ? null : nextChapter} backLabel={novel.format === "short" ? "返回世界档案" : "返回章节目录"} onBack={() => setView(novel.format === "short" ? "library" : "novel")} onNext={() => {
       if (!nextChapter) return;
       setChapterId(nextChapter.id);
       setView("cover");
@@ -127,29 +141,39 @@ export function StoryStudio() {
   }
   return readerShell(<main className="app-shell">{busy && <div className="loading-bar" aria-label="加载中" />}<Library novels={novels} loadError={libraryError} onRetry={() => void load()} onOpen={(selected) => {
     setNovelId(selected.id);
-    setView("novel");
+    if (selected.format === "short" && selected.chapters[0]?.published) {
+      setChapterId(selected.chapters[0].id);
+      setView("reader");
+    } else setView("novel");
   }} /></main>, "主档案.001");
 }
 
 function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]; loadError: string; onRetry: () => void; onOpen: (novel: PublicNovel) => void }) {
-  const [primaryNovel, ...archiveNovels] = novels;
+  const shortNovels = novels.filter((novel) => novel.format === "short");
+  const serialNovels = novels.filter((novel) => novel.format !== "short");
+  const [primaryNovel, ...archiveNovels] = serialNovels;
   const latestChapterTitle = (novel: PublicNovel) => {
     const latestChapter = novel.chapters.at(-1);
     return latestChapter?.published?.title || latestChapter?.title;
   };
   return <div className="library fantasy-library">
     <section className="hero"><FantasyMark className="hero-system-mark" /><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
-    <section className="shelf archive-catalog"><div className="section-heading"><div><span>/</span><p>当前更新</p></div></div>
+    {shortNovels.length > 0 && <section className="shelf short-catalog" aria-labelledby="short-catalog-title"><div className="section-heading"><div><span>/</span><p>凝结于一瞬的幻境</p></div><h2 id="short-catalog-title">短篇</h2></div><div className="short-card-grid">{shortNovels.map((novel) => <article className="short-card" key={novel.id}>
+      <button className="short-card-open" onClick={() => onOpen(novel)} aria-label={`开始或继续阅读短篇：${novel.published?.name}`}><div className="short-card-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || "短篇封面"} presentation={novel.published?.coverPresentation} /></div><span><small>{novel.wordCount.toLocaleString("zh-CN")} 字 · {novel.interactive ? "互动" : "线性"}</small><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><i>开始 / 继续阅读 →</i></span></button>
+      <BookshelfControl novelId={novel.id} />
+    </article>)}</div></section>}
+    {serialNovels.length > 0 &&
+    <section className="shelf archive-catalog" aria-labelledby="serial-catalog-title"><div className="section-heading"><div><span>/</span><p>尚未闭合的世界线</p></div><h2 id="serial-catalog-title">连载小说</h2></div>
       {primaryNovel && <article className="archive-feature">
         <Artwork src={primaryNovel.published?.coverUrl || ""} alt={primaryNovel.published?.coverAlt || primaryNovel.published?.name || "小说封面"} presentation={primaryNovel.published?.coverPresentation} />
         <div className="card-copy"><p>主档案 · {primaryNovel.chapters.length} 个已发布章节</p><h3>{primaryNovel.published?.name}</h3><p>{primaryNovel.published?.summary}</p><small>最新章节 · {latestChapterTitle(primaryNovel)}</small><button onClick={() => onOpen(primaryNovel)}>进入小说 <span>→</span></button></div>
       </article>}
-      {archiveNovels.length > 0 && <section className="archive-list" aria-labelledby="archive-list-title"><div className="archive-list-heading"><h2 id="archive-list-title">全部世界档案</h2><span>{novels.length} 部已接入</span></div>{archiveNovels.map((novel) => <article key={novel.id}>
+      {archiveNovels.length > 0 && <section className="archive-list" aria-labelledby="archive-list-title"><div className="archive-list-heading"><h2 id="archive-list-title">连载小说</h2><span>{serialNovels.length} 部已接入</span></div>{archiveNovels.map((novel) => <article key={novel.id}>
         <div className="archive-list-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || "小说封面"} presentation={novel.published?.coverPresentation} /></div>
         <button onClick={() => onOpen(novel)}><span><small>{novel.chapters.length} 个章节 · 最新</small><h3>{novel.published?.name}</h3><p>{latestChapterTitle(novel)}</p></span><i>→</i></button>
       </article>)}</section>}
-      {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与章节发布后，会在这里出现。</p></div>}
-    </section>
+    </section>}
+    {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与短篇发布后，会在这里出现。</p></div>}
     <footer><Brand /><p>你的选择，构成世界。</p><a className="text-button" href="/creator">进入创作中心</a></footer>
   </div>;
 }
@@ -221,12 +245,12 @@ function ChapterCover({ novel, chapter, onBack, onStart }: { novel: PublicNovel;
   </main>;
 }
 
-function ChapterOutro({ novel, chapter, nextChapter, onBack, onNext }: { novel: PublicNovel; chapter: PublicChapter; nextChapter: PublicChapter | null; onBack: () => void; onNext: () => void }) {
+function ChapterOutro({ novel, chapter, nextChapter, backLabel, onBack, onNext }: { novel: PublicNovel; chapter: PublicChapter; nextChapter: PublicChapter | null; backLabel: string; onBack: () => void; onNext: () => void }) {
   const story = chapter.published!;
   return <ChapterOutroScreen
     story={story}
     novelName={novel.published?.name || ""}
-    backLabel="返回章节目录"
+    backLabel={backLabel}
     onBack={onBack}
     onNext={nextChapter ? onNext : undefined}
   />;

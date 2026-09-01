@@ -5,6 +5,8 @@ export const novels = sqliteTable("novels", {
   id: text("id").primaryKey(),
   slug: text("slug").notNull().unique(),
   ownerId: text("owner_id"),
+  format: text("format", { enum: ["serial", "short"] }).notNull().default("serial"),
+  formatLockedAt: text("format_locked_at"),
   draftStatus: text("draft_status", { enum: ["draft", "submitted"] }).notNull().default("draft"),
   submittedAt: text("submitted_at"),
   reviewNote: text("review_note").notNull().default(""),
@@ -18,6 +20,7 @@ export const novels = sqliteTable("novels", {
 }, (table) => [
   index("novels_owner_status_idx").on(table.ownerId, table.status),
   index("novels_status_sort_idx").on(table.status, table.sortOrder),
+  index("novels_format_status_sort_idx").on(table.format, table.status, table.sortOrder),
 ]);
 
 export const novelVersions = sqliteTable("novel_versions", {

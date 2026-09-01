@@ -223,6 +223,32 @@ test("多部小说只突出排序第一的主档案并按原顺序列出其余�
   assert.equal(container.querySelector(".archive-list")?.textContent?.includes("焦账员"), false);
 });
 
+test("首页先展示短篇区并从卡片直接进入唯一正文", async () => {
+  const short = {
+    ...publicNovel("short-one", "雾中来信", 1, ["全文"]),
+    format: "short" as const,
+    wordCount: 3210,
+    interactive: false,
+  };
+  const serial = { ...publicNovel("serial-one", "长夜连载", 2, ["第一章"]), format: "serial" as const };
+  globalThis.fetch = async (input) => String(input) === "/api/novels"
+    ? Response.json({ novels: [short, serial] })
+    : String(input).startsWith("/api/account/progress")
+      ? Response.json({ progress: null })
+      : Response.json({ user: null });
+
+  await act(async () => root.render(<StoryStudio />));
+  await settle();
+
+  const headings = [...container.querySelectorAll(".shelf .section-heading h2")].map((item) => item.textContent);
+  assert.deepEqual(headings, ["短篇", "连载小说"]);
+  assert.match(container.querySelector(".short-card")?.textContent || "", /3,210 字 · 线性/);
+  await act(async () => clickButton("开始 / 继续阅读"));
+  await settle();
+  assert.match(container.textContent || "", /起点正文/);
+  assert.equal(container.querySelector(".novel-home"), null);
+});
+
 test("只有一部小说时只显示主档案而不制造重复列表", async () => {
   globalThis.fetch = async (input) => String(input) === "/api/novels"
     ? Response.json({ novels: [publicNovel("only", "唯一档案", 1, ["入口"])] })
