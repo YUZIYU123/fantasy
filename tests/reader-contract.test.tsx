@@ -201,7 +201,7 @@ test("世界档案直接使用幻界 OS Dock 而不再折叠主导航", async ()
   assert.equal(container.querySelector("details.reader-navigation"), null);
 });
 
-test("多部小说只突出排序第一的主档案并按原顺序列出其余档案", async () => {
+test("多部连载小说在同一分区按原顺序使用统一卡片展示", async () => {
   const novels = [
     publicNovel("primary", "焦账员", 1, ["失火", "虚假报警的代价"]),
     publicNovel("second", "白塔沉默", 2, ["雪城", "回声"]),
@@ -214,13 +214,13 @@ test("多部小说只突出排序第一的主档案并按原顺序列出其余�
   await act(async () => root.render(<StoryStudio />));
   await settle();
 
-  assert.equal(container.querySelector(".archive-feature h3")?.textContent, "焦账员");
-  assert.match(container.querySelector(".archive-feature")?.textContent || "", /虚假报警的代价/);
   assert.deepEqual(
-    [...container.querySelectorAll(".archive-list article h3")].map((heading) => heading.textContent),
-    ["白塔沉默", "时隙观测者"],
+    [...container.querySelectorAll(".serial-catalog .catalog-card h3")].map((heading) => heading.textContent),
+    ["焦账员", "白塔沉默", "时隙观测者"],
   );
-  assert.equal(container.querySelector(".archive-list")?.textContent?.includes("焦账员"), false);
+  assert.equal(container.querySelector(".serial-catalog .catalog-card")?.textContent?.includes("虚假报警的代价"), true);
+  assert.equal(container.querySelector(".serial-catalog .archive-list"), null);
+  assert.equal(container.querySelector(".serial-catalog .archive-feature"), null);
 });
 
 test("首页先展示短篇区并从卡片直接进入唯一正文", async () => {
@@ -240,16 +240,20 @@ test("首页先展示短篇区并从卡片直接进入唯一正文", async () =>
   await act(async () => root.render(<StoryStudio />));
   await settle();
 
-  const headings = [...container.querySelectorAll(".shelf .section-heading h2")].map((item) => item.textContent);
+  const headings = [...container.querySelectorAll(".catalog-section-heading h2")].map((item) => item.textContent);
   assert.deepEqual(headings, ["短篇", "连载小说"]);
-  assert.match(container.querySelector(".short-card")?.textContent || "", /3,210 字 · 线性/);
+  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading p")].map((item) => item.textContent), ["凝结于一瞬的幻境", "尚未闭合的世界线"]);
+  assert.ok([...container.querySelectorAll(".catalog-section-heading h2")].every((heading) => heading.previousElementSibling?.tagName === "P"));
+  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading>span")].map((item) => item.textContent), ["1 部", "1 部"]);
+  assert.match(container.querySelector(".short-catalog .catalog-card")?.textContent || "", /3,210 字 · 线性/);
+  assert.equal(container.querySelectorAll(".work-catalog").length, 2);
   await act(async () => clickButton("开始 / 继续阅读"));
   await settle();
   assert.match(container.textContent || "", /起点正文/);
   assert.equal(container.querySelector(".novel-home"), null);
 });
 
-test("只有一部小说时只显示主档案而不制造重复列表", async () => {
+test("只有一部连载小说时只显示一张统一卡片", async () => {
   globalThis.fetch = async (input) => String(input) === "/api/novels"
     ? Response.json({ novels: [publicNovel("only", "唯一档案", 1, ["入口"])] })
     : Response.json({ user: null });
@@ -257,8 +261,8 @@ test("只有一部小说时只显示主档案而不制造重复列表", async ()
   await act(async () => root.render(<StoryStudio />));
   await settle();
 
-  assert.equal(container.querySelector(".archive-feature h3")?.textContent, "唯一档案");
-  assert.equal(container.querySelector(".archive-list"), null);
+  assert.equal(container.querySelector(".serial-catalog .catalog-card h3")?.textContent, "唯一档案");
+  assert.equal(container.querySelector(".serial-catalog .catalog-card-grid")?.children.length, 1);
   assert.equal([...container.querySelectorAll("h3")].filter((heading) => heading.textContent === "唯一档案").length, 1);
 });
 
