@@ -158,12 +158,12 @@ function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]
   };
   return <div className="library fantasy-library">
     <section className="hero"><FantasyMark className="hero-system-mark" /><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
-    {shortNovels.length > 0 && <section className="shelf short-catalog" aria-labelledby="short-catalog-title"><div className="section-heading"><div><span>/</span><p>完整独立的叙事</p></div><h2 id="short-catalog-title">短篇</h2></div><div className="short-card-grid">{shortNovels.map((novel) => <article className="short-card" key={novel.id}>
+    {shortNovels.length > 0 && <section className="shelf short-catalog" aria-labelledby="short-catalog-title"><div className="section-heading"><div><span>/</span><p>凝结于一瞬的幻境</p></div><h2 id="short-catalog-title">短篇</h2></div><div className="short-card-grid">{shortNovels.map((novel) => <article className="short-card" key={novel.id}>
       <button className="short-card-open" onClick={() => onOpen(novel)} aria-label={`开始或继续阅读短篇：${novel.published?.name}`}><div className="short-card-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || "短篇封面"} presentation={novel.published?.coverPresentation} /></div><span><small>{novel.wordCount.toLocaleString("zh-CN")} 字 · {novel.interactive ? "互动" : "线性"}</small><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><i>开始 / 继续阅读 →</i></span></button>
       <BookshelfControl novelId={novel.id} />
     </article>)}</div></section>}
     {serialNovels.length > 0 &&
-    <section className="shelf archive-catalog" aria-labelledby="serial-catalog-title"><div className="section-heading"><div><span>/</span><p>持续展开的世界线</p></div><h2 id="serial-catalog-title">连载小说</h2></div>
+    <section className="shelf archive-catalog" aria-labelledby="serial-catalog-title"><div className="section-heading"><div><span>/</span><p>尚未闭合的世界线</p></div><h2 id="serial-catalog-title">连载小说</h2></div>
       {primaryNovel && <article className="archive-feature">
         <Artwork src={primaryNovel.published?.coverUrl || ""} alt={primaryNovel.published?.coverAlt || primaryNovel.published?.name || "小说封面"} presentation={primaryNovel.published?.coverPresentation} />
         <div className="card-copy"><p>主档案 · {primaryNovel.chapters.length} 个已发布章节</p><h3>{primaryNovel.published?.name}</h3><p>{primaryNovel.published?.summary}</p><small>最新章节 · {latestChapterTitle(primaryNovel)}</small><button onClick={() => onOpen(primaryNovel)}>进入小说 <span>→</span></button></div>
