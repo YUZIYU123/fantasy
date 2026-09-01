@@ -6,6 +6,7 @@ import {
   DEFAULT_COVER_PRESENTATION,
   type ChapterRecord,
   type ImagePresentation,
+  type NovelFormat,
   type NovelRecord,
   type StoryDocument,
 } from "../lib/story";
@@ -160,13 +161,17 @@ function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]
   </div>;
 }
 
-function WorkCatalog({ format, novels, onOpen }: { format: "short" | "serial"; novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
+const catalogPresentation: Record<NovelFormat, { title: string; subtitle: string; ariaAction: string; cta: string }> = {
+  short: { title: "短篇", subtitle: "凝结于一瞬的幻境", ariaAction: "开始或继续阅读短篇", cta: "开始 / 继续阅读" },
+  serial: { title: "连载小说", subtitle: "尚未闭合的世界线", ariaAction: "进入连载小说", cta: "进入小说" },
+};
+
+function WorkCatalog({ format, novels, onOpen }: { format: NovelFormat; novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
   const isShort = format === "short";
-  const title = isShort ? "短篇" : "连载小说";
-  const subtitle = isShort ? "凝结于一瞬的幻境" : "尚未闭合的世界线";
+  const presentation = catalogPresentation[format];
   const titleId = `${format}-catalog-title`;
   return <section className={`shelf work-catalog ${format}-catalog`} aria-labelledby={titleId}>
-    <header className="catalog-section-heading"><i aria-hidden="true">/</i><div><p>{subtitle}</p><h2 id={titleId}>{title}</h2></div><span>{novels.length} 部</span></header>
+    <header className="catalog-section-heading"><i aria-hidden="true">/</i><div><p>{presentation.subtitle}</p><h2 id={titleId}>{presentation.title}</h2></div><span>{novels.length} 部</span></header>
     <div className="catalog-card-grid">{novels.map((novel) => {
       const latestChapter = novel.chapters.at(-1);
       const latestChapterTitle = latestChapter?.published?.title || latestChapter?.title;
@@ -174,9 +179,9 @@ function WorkCatalog({ format, novels, onOpen }: { format: "short" | "serial"; n
         ? `${novel.wordCount.toLocaleString("zh-CN")} 字 · ${novel.interactive ? "互动" : "线性"}`
         : `${novel.chapters.length} 个章节${latestChapterTitle ? ` · 最新 ${latestChapterTitle}` : ""}`;
       return <article className="catalog-card" key={novel.id}>
-        <button className="catalog-card-open" onClick={() => onOpen(novel)} aria-label={`${isShort ? "开始或继续阅读短篇" : "进入连载小说"}：${novel.published?.name}`}>
-          <div className="catalog-card-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || `${title}封面`} presentation={novel.published?.coverPresentation} /></div>
-          <span><small>{metadata}</small><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><i>{isShort ? "开始 / 继续阅读" : "进入小说"} →</i></span>
+        <button className="catalog-card-open" onClick={() => onOpen(novel)} aria-label={`${presentation.ariaAction}：${novel.published?.name}`}>
+          <div className="catalog-card-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || `${presentation.title}封面`} presentation={novel.published?.coverPresentation} /></div>
+          <span><small>{metadata}</small><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><i>{presentation.cta} →</i></span>
         </button>
         {isShort && <BookshelfControl novelId={novel.id} />}
       </article>;
