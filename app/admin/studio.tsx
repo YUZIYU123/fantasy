@@ -527,9 +527,9 @@ function ShortEditor({ scope, novel, draft, setDraft, story, setStory, assets, f
 }) {
   const locked = scope === "author" && novel.draftStatus === "submitted";
   const wordCount = countStoryBodyCharacters(story);
-  const first = story.nodes[0];
+  const first = story.nodes.find((node) => node.id === story.startNodeId) ?? story.nodes[0];
   const interactive = story.nodes.length > 1 || story.nodes.some((node) => node.choices.length > 0);
-  const updateBody = (body: string) => setStory({ ...story, nodes: story.nodes.map((node, index) => index === 0 ? { ...node, body, canEndChapter: true, type: "ending" } : node) });
+  const updateBody = (body: string) => setStory({ ...story, nodes: story.nodes.map((node) => node.id === first?.id ? { ...node, body, canEndChapter: true, type: "ending" } : node) });
   return <div className={`studio chapter-settings-page${locked ? " editor-locked" : ""}`}><StudioAside scope={scope} active="novels" onNovels={onBack} onAssets={onAssets} /><section className="studio-main short-editor-page"><header><div><button className="back-link" onClick={onBack}>← 作品管理</button><p>SHORT FICTION</p><h1>短篇编辑</h1></div><div className="settings-actions"><button className="ghost" onClick={onAssets}>素材库</button><button className="ghost" onClick={onInteractive}>{interactive ? "打开互动编辑器" : "开启互动编辑"}</button><button className="ghost" onClick={onPreview}>预览阅读</button><button className="ghost" disabled={locked} onClick={onSave}>保存草稿</button><button className="primary" disabled={locked || wordCount > SHORT_STORY_MAX_LENGTH} onClick={onSubmit}>{scope === "admin" ? "发布短篇" : "提交审核"}</button></div></header>
     {novel.reviewNote && <p className="inline-message">审核反馈：{novel.reviewNote}</p>}
     {interactive && <p className="inline-message">这篇作品含有多个剧情节点或选项，后续会默认进入完整互动编辑器。</p>}
@@ -552,6 +552,7 @@ function ReadingRhythmPanel({ story, nodeId }: { story: StoryDocument; nodeId: s
     const number = index + 1;
     if (page.breakReason === "hard") return [`第 ${number} 页没有可用的语义边界，建议在 ${page.characterCount} 字前补充句末或段落。`];
     if (page.breakReason === "manual" && !page.semanticEnding) return [`第 ${number} 页的手动分页不在句末或段落结尾。`];
+    if (page.breakReason === "word") return [`第 ${number} 页在词间自动分页，建议在附近补充句末或段落，让收尾更自然。`];
     if (page.assessment === "short") return [`第 ${number} 页偏短，连续短页可能增加翻页负担。`];
     if (page.assessment === "long") return [`第 ${number} 页偏长，可考虑提前在句末或段落分页。`];
     return [];

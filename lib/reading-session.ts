@@ -42,6 +42,7 @@ function isReadingVisibleCharacter(value: string) {
 }
 
 type PageCandidate = { index: number; visible: number; reason: Exclude<ReadingPageBreakReason, "manual" | "hard" | "end"> };
+type RawReadingPage = Omit<ReadingPage, "assessment" | "semanticEnding">;
 
 function candidatePriority(reason: PageCandidate["reason"]) {
   return reason === "paragraph" ? 0 : reason === "sentence" ? 1 : 2;
@@ -54,7 +55,15 @@ function splitReadingSection(
   manualBoundaryAfter: boolean,
 ) {
   const characters = readingGraphemes(section);
-  const pages: Omit<ReadingPage, "assessment" | "semanticEnding">[] = [];
+  const pages: RawReadingPage[] = [];
+  if (characters.length === 0) {
+    return [{
+      text: "",
+      characterCount: 0,
+      pace: opening && startsAtPage < 3 ? "opening" : "standard",
+      breakReason: manualBoundaryAfter ? "manual" : "end",
+    } satisfies RawReadingPage];
+  }
   let offset = 0;
 
   while (offset < characters.length) {
@@ -138,21 +147,16 @@ function splitReadingSection(
 export function inspectReadingPages(story: StoryDocument, nodeId: string): ReadingPageInspection {
   const node = story.nodes.find((candidate) => candidate.id === nodeId);
   if (!node) return { nodeId, pages: [] };
-  const sections = node.body.split(STORY_PAGE_BREAK)
-    .filter((section) => countStoryCharacters(section) > 0);
-  const rawPages = sections.length === 0
-    ? [{ text: "", characterCount: 0, pace: nodeId === story.startNodeId ? "opening" as const : "standard" as const, breakReason: "end" as const }]
-    : sections.flatMap((section, index) => splitReadingSection(
+  const sections = node.body.split(STORY_PAGE_BREAK);
+  const rawPages: RawReadingPage[] = [];
+  for (const [index, section] of sections.entries()) {
+    rawPages.push(...splitReadingSection(
       section,
-      sections.slice(0, index).reduce((total, prior) => total + splitReadingSection(
-        prior,
-        total,
-        nodeId === story.startNodeId,
-        true,
-      ).length, 0),
+      rawPages.length,
       nodeId === story.startNodeId,
       index < sections.length - 1,
     ));
+  }
   const pages = rawPages.map((page, index): ReadingPage => {
     const policy = page.pace === "opening" ? OPENING_PAGE_POLICY : STANDARD_PAGE_POLICY;
     const isLastPage = index === rawPages.length - 1;

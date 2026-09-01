@@ -70,6 +70,19 @@ test("ReadingSession 保留手动分页并报告分页点是否语义完整", ()
   assert.equal(inspection.pages.map((page) => page.text).join(""), branch.body.replace(STORY_PAGE_BREAK, ""));
 });
 
+test("ReadingSession 保留空白手动页与全部正文，并让手动页计入开场前三页", () => {
+  const current = story();
+  const start = current.nodes.find((node) => node.id === current.startNodeId);
+  start.body = ["甲".repeat(60), "   ", "乙".repeat(60), "丙".repeat(120)].join(STORY_PAGE_BREAK);
+
+  const inspection = inspectReadingPages(current, current.startNodeId);
+
+  assert.deepEqual(inspection.pages.map((page) => page.pace), ["opening", "opening", "opening", "standard"]);
+  assert.deepEqual(inspection.pages.map((page) => page.breakReason), ["manual", "manual", "manual", "end"]);
+  assert.deepEqual(inspection.pages.map((page) => page.characterCount), [60, 0, 60, 120]);
+  assert.equal(inspection.pages.map((page) => page.text).join(""), start.body.replaceAll(STORY_PAGE_BREAK, ""));
+});
+
 test("ReadingSession observation 直接提供当前页面和末页状态", () => {
   const current = story();
   const start = current.nodes.find((node) => node.id === current.startNodeId);

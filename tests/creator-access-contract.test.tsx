@@ -199,7 +199,7 @@ test("作品管理提供两种新建入口且短篇进入合并式编辑页", as
   assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /120 字 · 硬切/);
   assert.equal([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("发布短篇"))?.disabled, false);
   assert.match(container.textContent || "", /可选自定义收尾图/);
-  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("开启互动编辑")));
+  assert.ok([...container.querySelectorAll("button")].some((button) => /开启互动编辑|打开互动编辑器/.test(button.textContent || "")));
 });
 
 test("连载章节编辑器显示与阅读会话一致的实时分页节奏", async () => {
@@ -242,6 +242,43 @@ test("连载章节编辑器显示与阅读会话一致的实时分页节奏", as
   assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /120 字 · 硬切/);
   assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("插入分页")));
   assert.equal([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("立即保存"))?.disabled, false);
+});
+
+test("阅读节奏面板会提示自动词间分页缺少语义收尾", async () => {
+  firstAccessAllowed = true;
+  const baseFetch = globalThis.fetch;
+  const draft = createBlankNovel();
+  const story = createBlankStory();
+  story.nodes[0].body = Array.from({ length: 80 }, (_, index) => `word${index}`).join(" ");
+  const novel = {
+    id: "word-break", slug: "word-break", ownerId: null, format: "serial", formatLockedAt: null, convertibleTo: "short",
+    draftStatus: "draft", submittedAt: null, reviewNote: "", sortOrder: 1, status: "draft", version: 0,
+    draft, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  const chapter = {
+    id: "word-break-chapter", novelId: "word-break", slug: "word-break-chapter", title: story.title, summary: "", coverUrl: "",
+    sortOrder: 1, status: "draft", ownerId: null, draftStatus: "draft", submittedAt: null, reviewNote: "",
+    version: 0, draft: story, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === "/admin/api/novels" && !init?.method) return Response.json({ novels: [novel] });
+    if (url === "/admin/api/chapters" && !init?.method) return Response.json({ chapters: [chapter] });
+    if (url === "/admin/api/chapters/versions?chapterId=word-break-chapter") return Response.json({ versions: [] });
+    return baseFetch(input, init);
+  };
+
+  await act(async () => root.render(<AdminStudio />));
+  await settle();
+  const chapters = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("章节目录"));
+  assert.ok(chapters);
+  await act(async () => chapters.click());
+  const edit = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("编辑剧情"));
+  assert.ok(edit);
+  await act(async () => edit.click());
+  await settle();
+
+  assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /词间自动分页/);
 });
 
 test("写操作返回 401 时立即重新鉴权并退出失效工作台", async () => {
