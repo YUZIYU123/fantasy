@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
@@ -233,6 +234,12 @@ test("短篇编辑器按 startNodeId 展示正文与阅读节奏", async () => {
 
   assert.equal(container.querySelector<HTMLTextAreaElement>(".body-editor textarea")?.value, start.body);
   assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /预计 4 页/);
+});
+
+test("连载阅读节奏面板在手机检查栏内可收缩且标签可滚动", () => {
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.flow-inspector\{min-width:0\}/);
+  assert.match(css, /@media\(max-width:700px\)\{\.flow-inspector>\.tabs\{overflow-x:auto/);
 });
 
 test("连载章节编辑器显示与阅读会话一致的实时分页节奏", async () => {
