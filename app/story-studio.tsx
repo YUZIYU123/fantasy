@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_COVER_PRESENTATION,
+  CATALOG_SECTIONS,
   type CatalogSection,
   type ChapterRecord,
   type ImagePresentation,
@@ -160,7 +161,7 @@ function Library({ catalog, loadError, onRetry, onOpen }: {
   const total = sections ? Object.values(sections).reduce((sum, page) => sum + page.total, 0) : 0;
   return <div className="library fantasy-library">
     <section className="hero"><FantasyMark className="hero-system-mark" /><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
-    {sections && (["short", "ongoing", "completed"] as CatalogSection[]).map((section) => sections[section].total > 0
+    {sections && CATALOG_SECTIONS.map((section) => sections[section].total > 0
       ? <WorkCatalog key={section} section={section} page={sections[section]} onOpen={onOpen} /> : null)}
     {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : catalog && total === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与短篇发布后，会在这里出现。</p></div>}
     <footer><Brand /><p>你的选择，构成世界。</p><a className="text-button" href="/creator">进入创作中心</a></footer>

@@ -2,11 +2,9 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import type { CatalogSection, PublicCatalogPage } from "../../lib/story";
+import { CATALOG_SECTIONS, type CatalogSection, type PublicCatalogPage } from "../../lib/story";
 import { ReaderShell } from "../reader-shell";
 import { CatalogGrid, catalogPresentation } from "./catalog-ui";
-
-const sections: CatalogSection[] = ["short", "ongoing", "completed"];
 
 export function CatalogScreen({ section }: { section: CatalogSection }) {
   const presentation = catalogPresentation[section];
@@ -53,7 +51,7 @@ export function CatalogScreen({ section }: { section: CatalogSection }) {
       <span>{page ? `${page.total} 部作品` : "正在读取世界坐标"}</span>
     </header>
     <nav className="catalog-tabs" aria-label="作品目录分类">
-      {sections.map((value) => <Link
+      {CATALOG_SECTIONS.map((value) => <Link
         key={value}
         href={catalogPresentation[value].href}
         aria-current={value === section ? "page" : undefined}

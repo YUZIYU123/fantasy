@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { DEFAULT_COVER_PRESENTATION, type CatalogSection, type PublicCatalogItem, type PublicCatalogPage } from "../../lib/story";
 import { executeBookshelfOperation } from "../bookshelf-operation-client";
 
@@ -104,20 +104,27 @@ export function CatalogGrid({
 }) {
   const presentation = catalogPresentation[section];
   const [memberships, setMemberships] = useState<Record<string, boolean>>({});
-  const shortIds = section === "short" ? page.items.map((item) => item.id).slice(0, 20) : [];
+  const requestedMembershipIds = useRef(new Set<string>());
+  const shortIds = section === "short" ? page.items.map((item) => item.id) : [];
   const shortKey = shortIds.join("\u0000");
   useEffect(() => {
     if (!shortKey) return;
-    const params = new URLSearchParams();
-    for (const id of shortIds) params.append("novelId", id);
+    const pending = shortKey.split("\u0000").filter((id) => !requestedMembershipIds.current.has(id));
+    if (pending.length === 0) return;
+    for (const id of pending) requestedMembershipIds.current.add(id);
     queueMicrotask(async () => {
-      const response = await fetch(`/api/account/bookshelf/membership?${params}`);
-      if (!response.ok) return;
-      const body = await response.json() as { memberships?: Record<string, boolean>; present?: boolean };
-      if (body.memberships) setMemberships(body.memberships);
-      else if (shortIds.length === 1) setMemberships({ [shortIds[0]]: Boolean(body.present) });
+      for (let offset = 0; offset < pending.length; offset += 20) {
+        const ids = pending.slice(offset, offset + 20);
+        const params = new URLSearchParams();
+        for (const id of ids) params.append("novelId", id);
+        const response = await fetch(`/api/account/bookshelf/membership?${params}`);
+        if (!response.ok) continue;
+        const body = await response.json() as { memberships?: Record<string, boolean>; present?: boolean };
+        const next = body.memberships ?? (ids.length === 1 ? { [ids[0]]: Boolean(body.present) } : {});
+        setMemberships((current) => ({ ...current, ...next }));
+      }
     });
-  }, [shortKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [shortKey]);
 
   return <div className="catalog-card-grid catalog-card-grid-compact">{page.items.map((item) => {
     const href = `/?novel=${encodeURIComponent(item.id)}`;

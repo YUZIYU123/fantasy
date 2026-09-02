@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import type { CatalogSection } from "../../../lib/story";
+import { isCatalogSection } from "../../../lib/story";
 import { CatalogScreen } from "../catalog-screen";
 
 export const metadata: Metadata = {
@@ -10,7 +10,6 @@ export const metadata: Metadata = {
 
 export default async function CatalogPage({ params }: { params: Promise<{ section: string }> }) {
   const { section } = await params;
-  if (!(["short", "ongoing", "completed"] as string[]).includes(section)) notFound();
-  return <CatalogScreen section={section as CatalogSection} />;
+  if (!isCatalogSection(section)) notFound();
+  return <CatalogScreen section={section} />;
 }
-

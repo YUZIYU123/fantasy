@@ -16,6 +16,7 @@ import {
   validateStoryInputLengths,
   validateStoryMedia,
   SHORT_STORY_MAX_LENGTH,
+  isCatalogSection,
   type CatalogSection,
   type ChapterRecord,
   type NovelDocument,
@@ -269,7 +270,7 @@ function catalogSectionWhere(section: CatalogSection) {
 
 async function listPublicCatalog(input: { section: CatalogSection; limit?: number; cursor?: string | null }): Promise<PublicCatalogPage> {
   await ensureSeed();
-  if (!(["short", "ongoing", "completed"] as string[]).includes(input.section)) fail("作品目录分类无效", 400);
+  if (!isCatalogSection(input.section)) fail("作品目录分类无效", 400);
   const limit = input.limit ?? 20;
   if (!Number.isInteger(limit) || limit < 1 || limit > 20) fail("作品目录每页只能读取一至二十部", 400);
   const cursor = catalogCursor(input.cursor);

@@ -153,7 +153,11 @@ export type NovelDocument = {
 };
 export type NovelFormat = "serial" | "short";
 export type NovelSerialStatus = "ongoing" | "completed";
-export type CatalogSection = "short" | "ongoing" | "completed";
+export const CATALOG_SECTIONS = ["short", "ongoing", "completed"] as const;
+export type CatalogSection = typeof CATALOG_SECTIONS[number];
+export function isCatalogSection(value: string): value is CatalogSection {
+  return (CATALOG_SECTIONS as readonly string[]).includes(value);
+}
 type PublicCatalogCommon = {
   id: string;
   slug: string;

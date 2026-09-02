@@ -32,6 +32,21 @@ function catalogItem(index: number) {
   };
 }
 
+function shortCatalogItem(index: number) {
+  const item = catalogItem(index);
+  return {
+    ...item,
+    id: `short-${String(index).padStart(2, "0")}`,
+    slug: `short-${String(index).padStart(2, "0")}`,
+    format: "short" as const,
+    serialStatus: null,
+    wordCount: 1200 + index,
+    interactive: index % 2 === 0,
+    chapterCount: undefined,
+    latestChapterTitle: undefined,
+  };
+}
+
 async function settle() {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
@@ -114,4 +129,33 @@ test("分类全集页首次失败可重试且加载更多失败保留已有作�
   await settle();
   assert.equal(container.querySelectorAll(".catalog-card").length, 1);
   assert.match(container.textContent || "", /更多档案暂时没有加载出来/);
+});
+
+test("短篇加载更多后只为新增作品追加至多二十个标识的书架批量查询", async () => {
+  const membershipBatches: string[][] = [];
+  let catalogRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith("/api/account/bookshelf/membership?")) {
+      const ids = new URL(url, "http://localhost").searchParams.getAll("novelId");
+      membershipBatches.push(ids);
+      return Response.json({ memberships: Object.fromEntries(ids.map((id) => [id, false])) });
+    }
+    if (url.startsWith("/api/catalog?")) {
+      catalogRequests += 1;
+      return catalogRequests === 1
+        ? Response.json({ items: Array.from({ length: 20 }, (_, index) => shortCatalogItem(index)), total: 23, nextCursor: "next" })
+        : Response.json({ items: Array.from({ length: 3 }, (_, index) => shortCatalogItem(index + 20)), total: 23, nextCursor: null });
+    }
+    return Response.json({ user: null });
+  };
+
+  await act(async () => root.render(<CatalogScreen section="short" />));
+  await settle();
+  const more = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "加载更多");
+  assert.ok(more);
+  await act(async () => more.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await settle();
+  assert.deepEqual(membershipBatches.map((ids) => ids.length), [20, 3]);
+  assert.deepEqual(membershipBatches[1], ["short-20", "short-21", "short-22"]);
 });
