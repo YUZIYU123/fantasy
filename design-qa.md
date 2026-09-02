@@ -1,5 +1,32 @@
 # 小雾精灵化终端 Design QA
 
+## 可拖拽与隐藏增量（Issue #71）
+
+- 验收日期：2026-09-02
+- 隐藏后贴边入口：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-drag-hide/01-hidden-edge.png`
+- 拖拽后展开对话：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-drag-hide/02-dragged-dialog.png`
+- 浏览器 200% 缩放：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-drag-hide/03-zoom-200.png`
+
+### 结果
+
+- 鼠标、触屏指针均可拖动小雾；拖动超过阈值不会误开对话，位置按视口比例保存在浏览器并同步到同源标签页。
+- 键盘聚焦小雾后可用方向键移动；`Shift` 加方向键使用 24px 大步进。移动始终受顶部与 Dock 安全区约束。
+- 对话卡会跟随小雾：手机窄视口优先在角色上方或下方展开，宽视口优先左右展开，且始终夹紧在可见区域。
+- 对话中的“隐藏”将小雾替换为最近屏幕边缘的具名“唤回小雾”按钮；唤回后焦点回到小雾。损坏或不可写的本地偏好安全回退，不阻断交互。
+- 剧情反馈会临时唤出已隐藏的小雾，反馈结束后恢复隐藏；正式阅读仍隐藏 Dock，但保留可移动、可隐藏的小雾入口。`launcher="hidden"` 的作者预览不读取读者偏好。
+- 360×800、390×844、430×932 均满足 `scrollWidth === clientWidth`；角色和对话卡没有横向溢出。
+- 浏览器 200% 缩放实测 `visualViewport.width = 195`，对话卡保持在 8–187px 可见范围，页面无新增横向滚动。
+- `prefers-reduced-motion: reduce` 下角色与对话卡的 `animation-name` 为 `none`、`transition-duration` 为 `0s`。
+- Standards 审查以 `origin/main` 为基线，未发现 AGENTS.md 模块边界、移动端约束或代码异味问题；位置计算集中在 `companion-placement`，React 只处理输入事件与视图状态。
+- Spec 审查逐项核对 Issue #71，未发现缺失或越界；补充了作者预览不读取／改写读者偏好的显式回归测试。
+- 基于最新 `origin/main` 复验通过：`pnpm typecheck`、`pnpm lint`、生产构建、174 项模块／HTTP 测试与 73 项 React 测试。
+
+### 最终结果
+
+passed
+
+---
+
 - 视觉基准：`/Users/yuruby/.codex/generated_images/01a00a04-64ab-7a60-8f2b-913d1eb879a9/exec-732f81dd-8747-4ce7-8597-05095011def8.png`
 - 实现范围：标准读者外壳、正式阅读、小雾剧情反馈、360–430px 手机视口
 - 基准视口：390×844，DSF 1；补充检查 360×800、430×932 与 200% 有效缩放

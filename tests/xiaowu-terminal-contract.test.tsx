@@ -2,14 +2,27 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
-import React, { act } from "react";
+import React, { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { FantasyTerminal } from "../app/fantasy-terminal";
+import { COMPANION_PREFERENCE_STORAGE_KEY } from "../lib/companion-placement";
 import { DEFAULT_STORY_TERMINAL, createTerminalTask } from "../lib/story";
 
 let dom: JSDOM;
 let root: Root;
 let container: HTMLDivElement;
+
+function dispatchPointer(target: EventTarget, type: string, x: number, y: number, pointerId = 1) {
+  const event = new dom.window.Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    button: { value: 0 },
+    clientX: { value: x },
+    clientY: { value: y },
+    isPrimary: { value: true },
+    pointerId: { value: pointerId },
+  });
+  target.dispatchEvent(event);
+}
 
 beforeEach(() => {
   dom = new JSDOM('<!doctype html><html><body><button id="before">正文选择</button><div id="root"></div></body></html>', { url: "http://localhost/" });
@@ -63,9 +76,116 @@ test("小雾默认探头，点击后展开对话卡并在收起后恢复焦点",
   assert.equal(document.activeElement, launcher);
 });
 
+test("小雾可以隐藏并通过边缘入口唤回且恢复焦点", async () => {
+  await act(async () => root.render(<FantasyTerminal />));
+  const launcher = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  await act(async () => launcher.click());
+
+  const hide = container.querySelector<HTMLButtonElement>('button[aria-label="隐藏小雾"]');
+  assert.ok(hide);
+  await act(async () => hide.click());
+  const restore = container.querySelector<HTMLButtonElement>('button[aria-label="唤回小雾"]');
+  assert.ok(restore);
+  assert.equal(container.querySelector(".xiaowu-companion"), null);
+  assert.equal(document.activeElement, restore);
+  assert.equal(JSON.parse(localStorage.getItem(COMPANION_PREFERENCE_STORAGE_KEY) || "{}").hidden, true);
+
+  await act(async () => restore.click());
+  const restored = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(restored);
+  assert.equal(document.activeElement, restored);
+  assert.equal(JSON.parse(localStorage.getItem(COMPANION_PREFERENCE_STORAGE_KEY) || "{}").hidden, false);
+});
+
+test("浏览器偏好存储不可用时隐藏与唤回仍在本页生效", async () => {
+  Object.defineProperty(localStorage, "setItem", { configurable: true, value() { throw new Error("storage unavailable"); } });
+  await act(async () => root.render(<FantasyTerminal />));
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]')?.click());
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="隐藏小雾"]')?.click());
+  assert.ok(container.querySelector('button[aria-label="唤回小雾"]'));
+
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="唤回小雾"]')?.click());
+  assert.ok(container.querySelector('button[aria-label="打开小雾"]'));
+});
+
+test("拖拽小雾会保存位置且不会误触发打开对话", async () => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+  await act(async () => root.render(<FantasyTerminal />));
+  const launcher = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  Object.defineProperty(launcher, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({ x: 0, y: 500, left: 0, top: 500, right: 70, bottom: 598, width: 70, height: 98, toJSON() {} }),
+  });
+
+  await act(async () => {
+    dispatchPointer(launcher, "pointerdown", 10, 510);
+    dispatchPointer(window, "pointermove", 200, 410);
+    dispatchPointer(window, "pointerup", 200, 410);
+  });
+
+  assert.equal(launcher.getAttribute("aria-expanded"), "false");
+  assert.equal(launcher.style.left, "190px");
+  assert.equal(launcher.style.top, "400px");
+  const preference = JSON.parse(localStorage.getItem(COMPANION_PREFERENCE_STORAGE_KEY) || "{}");
+  assert.equal(preference.hidden, false);
+  assert.ok(preference.position.x > 0 && preference.position.x < 1);
+  assert.ok(preference.position.y > 0 && preference.position.y < 1);
+
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  await act(async () => launcher.click());
+  assert.equal(launcher.getAttribute("aria-expanded"), "true");
+});
+
+test("键盘方向键移动小雾并遵守视口安全区", async () => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+  await act(async () => root.render(<FantasyTerminal />));
+  const launcher = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  Object.defineProperty(launcher, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({ x: 0, y: 500, left: 0, top: 500, right: 70, bottom: 598, width: 70, height: 98, toJSON() {} }),
+  });
+
+  await act(async () => launcher.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true, bubbles: true })));
+  assert.equal(launcher.style.left, "24px");
+  assert.equal(launcher.style.top, "500px");
+  assert.equal(launcher.getAttribute("aria-keyshortcuts"), "ArrowUp ArrowDown ArrowLeft ArrowRight");
+});
+
+test("保存的位置跨页面恢复且对话卡跟随小雾留在视口内", async () => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+  localStorage.setItem(COMPANION_PREFERENCE_STORAGE_KEY, JSON.stringify({
+    version: 1,
+    hidden: false,
+    position: { x: 1, y: 0.75 },
+  }));
+
+  await act(async () => root.render(<FantasyTerminal />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  const launcher = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  assert.equal(launcher.style.left, "320px");
+  await act(async () => launcher.click());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+  const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="小雾对话"]');
+  assert.ok(dialog);
+  assert.match(dialog.className, /dialog-side-above/);
+  assert.notEqual(dialog.style.left, "");
+  assert.notEqual(dialog.style.top, "");
+  assert.equal(dialog.style.bottom, "auto");
+});
+
 test("隐藏启动器仍兼容受控打开，历史默认名称不重复显示", async () => {
+  localStorage.setItem(COMPANION_PREFERENCE_STORAGE_KEY, JSON.stringify({ version: 1, hidden: true, position: { x: 1, y: 1 } }));
   await act(async () => root.render(<FantasyTerminal launcher="hidden" open config={DEFAULT_STORY_TERMINAL} />));
   assert.equal(container.querySelector('button[aria-label="打开小雾"]'), null);
+  assert.equal(container.querySelector('button[aria-label="唤回小雾"]'), null);
   assert.ok(container.querySelector('[role="dialog"][aria-label="小雾对话"]'));
   assert.doesNotMatch(container.textContent || "", /幻界终端/);
 
@@ -73,6 +193,50 @@ test("隐藏启动器仍兼容受控打开，历史默认名称不重复显示",
   const heading = container.querySelector(".xiaowu-dialog>header>div");
   assert.equal(heading?.querySelector("strong")?.textContent, "小雾");
   assert.equal(heading?.querySelector("small")?.textContent, "阿蓝");
+});
+
+test("作者预览不读取或改写读者的小雾位置偏好", async () => {
+  const saved = JSON.stringify({ version: 1, hidden: true, position: { x: 1, y: 1 } });
+  localStorage.setItem(COMPANION_PREFERENCE_STORAGE_KEY, saved);
+  await act(async () => root.render(<FantasyTerminal preview open />));
+
+  assert.ok(container.querySelector('.xiaowu-companion'));
+  assert.equal(container.querySelector('[aria-label="唤回小雾"]'), null);
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="隐藏小雾"]')?.click());
+  assert.equal(localStorage.getItem(COMPANION_PREFERENCE_STORAGE_KEY), saved);
+  assert.ok(container.querySelector('[role="dialog"][aria-label="小雾对话"]'));
+});
+
+test("隐藏偏好不吞掉剧情反馈且反馈结束后恢复隐藏", async () => {
+  localStorage.setItem(COMPANION_PREFERENCE_STORAGE_KEY, JSON.stringify({ version: 1, hidden: true, position: null }));
+  const playback = {
+    id: "hidden-feedback",
+    message: "这条提示仍然需要看见。",
+    speak: false,
+    voiceUrl: "",
+    interactionPreset: "none" as const,
+    imageUrl: "",
+    imageAlt: "",
+    imagePresentation: { fit: "cover" as const, positionX: 50, positionY: 50 },
+    task: createTerminalTask(),
+    reaction: "notice" as const,
+  };
+
+  function FeedbackHarness() {
+    const [active, setActive] = useState(true);
+    return <FantasyTerminal playback={active ? playback : null} reducedMotion onPlaybackComplete={() => setActive(false)} />;
+  }
+
+  await act(async () => root.render(<FeedbackHarness />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.ok(container.querySelector(".xiaowu-companion"));
+  assert.ok(container.querySelector('[role="dialog"][aria-label="小雾对话"]'));
+  assert.equal(container.querySelector('[aria-label="唤回小雾"]'), null);
+
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="跳过小雾反馈"]')?.click());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.equal(container.querySelector(".xiaowu-companion"), null);
+  assert.ok(container.querySelector('[aria-label="唤回小雾"]'));
 });
 
 test("剧情反馈使用反应神情和角色气泡而不是全屏终端", async () => {

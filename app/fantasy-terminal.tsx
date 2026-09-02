@@ -1,7 +1,32 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { SparkleIcon } from "@phosphor-icons/react/dist/csr/Sparkle";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
+import {
+  clampCompanionPoint,
+  COMPANION_PREFERENCE_STORAGE_KEY,
+  DEFAULT_COMPANION_PREFERENCE,
+  normalizeCompanionPoint,
+  parseCompanionPreference,
+  placeCompanionDialog,
+  placeCompanionRestore,
+  resolveCompanionPoint,
+  type CompanionPoint,
+  type CompanionPreference,
+  type CompanionSize,
+  type CompanionViewport,
+} from "../lib/companion-placement";
 import type { SessionTerminalPlayback, TerminalReaction } from "../lib/reading-session";
 import {
   DEFAULT_STORY_TERMINAL,
@@ -36,6 +61,19 @@ export type TerminalPlayback = SessionTerminalPlayback;
 
 const taskStatusLabels = { active: "进行中", completed: "已完成", failed: "已失败" } as const;
 const reactionLabels: Record<TerminalReaction, string> = { notice: "提示", success: "成功", warning: "警告" };
+const CLOSED_COMPANION_SIZE: CompanionSize = { width: 70, height: 98 };
+const OPEN_COMPANION_SIZE: CompanionSize = { width: 132, height: 150 };
+const COMPANION_DRAG_THRESHOLD = 6;
+
+function currentCompanionViewport(): CompanionViewport {
+  const visualViewport = window.visualViewport;
+  return {
+    width: visualViewport?.width ?? window.innerWidth,
+    height: visualViewport?.height ?? window.innerHeight,
+    topInset: 76,
+    bottomInset: 96,
+  };
+}
 
 function XiaowuPortrait({ src, state }: { src: string; state: "idle" | "greeting" | "notice" | "success" | "warning" }) {
   // The five local WebP states are already losslessly compressed to their exact display budget.
@@ -124,8 +162,17 @@ export function FantasyTerminal({
   const [revealedMessage, setRevealedMessage] = useState("");
   const [needsVoicePlay, setNeedsVoicePlay] = useState(false);
   const [narrationMode, setNarrationMode] = useState<NarrationMode>("text");
+  const movableCompanion = launcher === "default" && !preview;
+  const [companionPreference, setCompanionPreference] = useState<CompanionPreference>(DEFAULT_COMPANION_PREFERENCE);
+  const [companionPoint, setCompanionPoint] = useState<CompanionPoint | null>(null);
+  const [draggingCompanion, setDraggingCompanion] = useState(false);
+  const persistCompanionPreference = useCallback((next: CompanionPreference) => {
+    setCompanionPreference(next);
+    try { localStorage.setItem(COMPANION_PREFERENCE_STORAGE_KEY, JSON.stringify(next)); } catch {}
+  }, []);
   const proactiveCount = useRef(0);
   const launcherRef = useRef<HTMLButtonElement>(null);
+  const restoreRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const playbackOpenerRef = useRef<HTMLElement | null>(null);
   const playbackAudio = useRef<HTMLAudioElement>(null);
@@ -141,6 +188,15 @@ export function FantasyTerminal({
   const reducedMotionRef = useRef(reducedMotion);
   const onPlaybackCompleteRef = useRef(onPlaybackComplete);
   const onDuckingChangeRef = useRef(onDuckingChange);
+  const companionDrag = useRef<{
+    pointerId: number;
+    start: CompanionPoint;
+    origin: CompanionPoint;
+    current: CompanionPoint;
+    dragged: boolean;
+  } | null>(null);
+  const companionDragCleanup = useRef<(() => void) | null>(null);
+  const suppressNextCompanionClick = useRef(false);
   useEffect(() => {
     playbackRef.current = playback;
     configRef.current = config;
@@ -152,6 +208,40 @@ export function FantasyTerminal({
   const recommendations = useMemo(() => recommendNovels(novels, preferences), [novels, preferences]);
   const activeTask = playback?.task ?? task;
   const completedObjectives = activeTask?.objectives.filter((objective) => objective.status === "completed").length ?? 0;
+  const companionSize = open ? OPEN_COMPANION_SIZE : CLOSED_COMPANION_SIZE;
+
+  useEffect(() => {
+    if (!movableCompanion) return;
+    const loadPreference = () => {
+      let next = DEFAULT_COMPANION_PREFERENCE;
+      try { next = parseCompanionPreference(localStorage.getItem(COMPANION_PREFERENCE_STORAGE_KEY)); } catch {}
+      setCompanionPreference(next);
+    };
+    loadPreference();
+    const syncPreference = (event: StorageEvent) => {
+      if (event.key === COMPANION_PREFERENCE_STORAGE_KEY) loadPreference();
+    };
+    window.addEventListener("storage", syncPreference);
+    return () => window.removeEventListener("storage", syncPreference);
+  }, [movableCompanion]);
+
+  useEffect(() => {
+    let active = true;
+    const syncPoint = () => {
+      if (!active) return;
+      setCompanionPoint(movableCompanion && companionPreference.position
+        ? resolveCompanionPoint(companionPreference.position, currentCompanionViewport(), companionSize)
+        : null);
+    };
+    queueMicrotask(syncPoint);
+    window.addEventListener("resize", syncPoint);
+    window.visualViewport?.addEventListener("resize", syncPoint);
+    return () => {
+      active = false;
+      window.removeEventListener("resize", syncPoint);
+      window.visualViewport?.removeEventListener("resize", syncPoint);
+    };
+  }, [companionPreference.position, companionSize, movableCompanion]);
 
   const closeTerminal = useCallback(() => {
     const focusTarget = playbackRef.current
@@ -395,7 +485,12 @@ export function FantasyTerminal({
     if (audio) audio.volume = muted ? 0 : Math.max(0, Math.min(1, config.volume));
     if (speechUtterance.current) speechUtterance.current.volume = muted ? 0 : Math.max(0, Math.min(1, config.volume));
   }, [config.volume, muted]);
-  useEffect(() => () => { clearTimers(); stopNarration(); onDuckingChangeRef.current?.(false); }, [clearTimers, stopNarration]);
+  useEffect(() => () => {
+    companionDragCleanup.current?.();
+    clearTimers();
+    stopNarration();
+    onDuckingChangeRef.current?.(false);
+  }, [clearTimers, stopNarration]);
 
   if (!config.enabled || (suppressed && !playback)) return null;
   const displayedEvent = activeMessage ?? event;
@@ -435,6 +530,88 @@ export function FantasyTerminal({
     setSignal(false);
     setOpen(true);
   };
+  const saveCompanionPoint = (point: CompanionPoint) => {
+    const viewport = currentCompanionViewport();
+    const clamped = clampCompanionPoint(point, viewport, companionSize);
+    setCompanionPoint(clamped);
+    persistCompanionPreference({
+      version: 1,
+      hidden: false,
+      position: normalizeCompanionPoint(clamped, viewport, companionSize),
+    });
+  };
+  const handleCompanionPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!movableCompanion || playback || event.button !== 0 || !event.isPrimary) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const origin = companionPoint ?? { x: rect.left, y: rect.top };
+    companionDrag.current = {
+      pointerId: event.pointerId,
+      start: { x: event.clientX, y: event.clientY },
+      origin,
+      current: origin,
+      dragged: false,
+    };
+    const move = (pointerEvent: PointerEvent) => {
+      const drag = companionDrag.current;
+      if (!drag || drag.pointerId !== pointerEvent.pointerId) return;
+      const delta = { x: pointerEvent.clientX - drag.start.x, y: pointerEvent.clientY - drag.start.y };
+      if (!drag.dragged && Math.hypot(delta.x, delta.y) < COMPANION_DRAG_THRESHOLD) return;
+      drag.dragged = true;
+      drag.current = clampCompanionPoint({ x: drag.origin.x + delta.x, y: drag.origin.y + delta.y }, currentCompanionViewport(), companionSize);
+      setDraggingCompanion(true);
+      setCompanionPoint(drag.current);
+      pointerEvent.preventDefault();
+    };
+    const finish = (pointerEvent: PointerEvent) => {
+      const drag = companionDrag.current;
+      if (!drag || drag.pointerId !== pointerEvent.pointerId) return;
+      if (drag.dragged) {
+        suppressNextCompanionClick.current = true;
+        queueMicrotask(() => { suppressNextCompanionClick.current = false; });
+        saveCompanionPoint(drag.current);
+      }
+      companionDrag.current = null;
+      setDraggingCompanion(false);
+      try { launcherRef.current?.releasePointerCapture?.(pointerEvent.pointerId); } catch {}
+      companionDragCleanup.current?.();
+      companionDragCleanup.current = null;
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    companionDragCleanup.current?.();
+    companionDragCleanup.current = cleanup;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch {}
+  };
+  const handleCompanionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const movement = {
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+    }[event.key];
+    if (!movableCompanion || playback || !movement) return;
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const origin = companionPoint ?? { x: rect.left, y: rect.top };
+    const step = event.shiftKey ? 24 : 8;
+    saveCompanionPoint({ x: origin.x + movement.x * step, y: origin.y + movement.y * step });
+  };
+  const hideCompanion = () => {
+    if (!movableCompanion || playback) return;
+    setOpen(false);
+    persistCompanionPreference({ ...companionPreference, hidden: true });
+    queueMicrotask(() => restoreRef.current?.focus());
+  };
+  const restoreCompanion = () => {
+    persistCompanionPreference({ ...companionPreference, hidden: false });
+    queueMicrotask(() => launcherRef.current?.focus());
+  };
   const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key !== "Escape") return;
     event.preventDefault();
@@ -442,8 +619,38 @@ export function FantasyTerminal({
     else closeTerminal();
   };
 
+  const companionHidden = movableCompanion && companionPreference.hidden && !playback;
+  const companionStyle: CSSProperties | undefined = companionPoint
+    ? { left: companionPoint.x, top: companionPoint.y, bottom: "auto" }
+    : undefined;
+  const placementViewport = companionPoint && typeof window !== "undefined" ? currentCompanionViewport() : null;
+  const restorePoint = companionPoint && placementViewport
+    ? placeCompanionRestore(companionPoint, placementViewport, companionSize, { width: 42, height: 52 })
+    : null;
+  const restoreStyle: CSSProperties | undefined = restorePoint
+    ? { left: restorePoint.x, top: restorePoint.y, bottom: "auto" }
+    : undefined;
+  const dialogWidth = placementViewport ? Math.max(0, Math.min(playback ? 278 : 340, placementViewport.width - 16)) : 0;
+  const dialogHeight = placementViewport ? placementViewport.height * (playback ? 0.46 : 0.62) : 0;
+  const dialogPlacement = companionPoint && placementViewport
+    ? placeCompanionDialog(
+        companionPoint,
+        placementViewport,
+        companionSize,
+        { width: dialogWidth, height: dialogHeight },
+      )
+    : null;
+  const dialogStyle: CSSProperties | undefined = dialogPlacement
+    ? {
+        left: dialogPlacement.x,
+        top: dialogPlacement.y,
+        bottom: "auto",
+        width: dialogWidth,
+        maxHeight: dialogPlacement.maxHeight,
+      }
+    : undefined;
   const terminal = <aside
-    className={`fantasy-terminal xiaowu-terminal${open ? " open" : ""}`}
+    className={`fantasy-terminal xiaowu-terminal${open ? " open" : ""}${companionPoint ? " has-custom-placement" : ""}`}
     aria-live={playback ? "off" : "polite"}
   >
     <audio
@@ -456,20 +663,33 @@ export function FantasyTerminal({
         if (!speakWithDevice(current.message, token)) scheduleTextFallback(getTerminalMessageTiming(current.message, reducedMotionRef.current).fallbackDurationMs);
       }}
     />
-    {launcher !== "hidden" ? <button
+    {launcher !== "hidden" && !companionHidden ? <button
       ref={launcherRef}
-      className={companionClassName}
+      className={`${companionClassName}${draggingCompanion ? " is-dragging" : ""}`}
+      style={companionStyle}
       type="button"
       aria-label={open ? "收起小雾" : "打开小雾"}
       aria-expanded={open}
       aria-controls="xiaowu-dialog"
-      onClick={() => open ? closeTerminal() : openFromCompanion()}
+      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+      title="拖动小雾；方向键也可以移动"
+      onPointerDown={handleCompanionPointerDown}
+      onKeyDown={handleCompanionKeyDown}
+      onClick={() => {
+        if (suppressNextCompanionClick.current) {
+          suppressNextCompanionClick.current = false;
+          return;
+        }
+        if (open) closeTerminal();
+        else openFromCompanion();
+      }}
     ><XiaowuPortrait src={companionImage} state={companionState} /></button> : open ? <div className={companionClassName} aria-hidden="true"><XiaowuPortrait src={companionImage} state={companionState} /></div> : null}
-    {launcher !== "hidden" && signal && !open && <button className="xiaowu-signal" onClick={openFromCompanion}><small>小雾发现了新消息</small><span>{displayedEvent?.message}</span></button>}
-    {launcher !== "hidden" && !open && config.idleMode === "topTask" && activeTask?.title ? <button className={`xiaowu-task-strip status-${activeTask.status}`} onClick={openTask}><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
-    {open && <section ref={dialogRef} id="xiaowu-dialog" className={`xiaowu-dialog terminal-phase-${playbackPhase}${playback ? " xiaowu-playback" : ""}`} role="dialog" aria-label="小雾对话" onKeyDown={handleDialogKeyDown}>
+    {launcher !== "hidden" && companionHidden && <button ref={restoreRef} className="xiaowu-restore" style={restoreStyle} type="button" aria-label="唤回小雾" onClick={restoreCompanion}><SparkleIcon aria-hidden size={20} weight="fill" /></button>}
+    {launcher !== "hidden" && !companionHidden && signal && !open && <button className="xiaowu-signal" onClick={openFromCompanion}><small>小雾发现了新消息</small><span>{displayedEvent?.message}</span></button>}
+    {launcher !== "hidden" && !companionHidden && !open && config.idleMode === "topTask" && activeTask?.title ? <button className={`xiaowu-task-strip status-${activeTask.status}`} onClick={openTask}><strong>{activeTask.title}</strong><small>{completedObjectives}/{activeTask.objectives.length} · {taskStatusLabels[activeTask.status]}</small></button> : null}
+    {open && !companionHidden && <section ref={dialogRef} id="xiaowu-dialog" style={dialogStyle} className={`xiaowu-dialog terminal-phase-${playbackPhase}${playback ? " xiaowu-playback" : ""}${dialogPlacement ? ` dialog-side-${dialogPlacement.side}` : ""}`} role="dialog" aria-label="小雾对话" onKeyDown={handleDialogKeyDown}>
       {playback?.imageUrl && section === "playback" && <div className="xiaowu-playback-art"><Image src={playback.imageUrl} alt={playback.imageAlt} fill unoptimized sizes="340px" style={{ objectFit: playback.imagePresentation.fit, objectPosition: `${playback.imagePresentation.positionX}% ${playback.imagePresentation.positionY}%` }} /></div>}
-      <header><div><strong>小雾</strong>{customName && <small>{customName}</small>}</div>{section === "playback" ? <button aria-label="跳过小雾反馈" onClick={finishPlayback}>跳过</button> : <button aria-label="收起小雾" onClick={closeTerminal}>×</button>}</header>
+      <header><div><strong>小雾</strong>{customName && <small>{customName}</small>}</div>{section === "playback" ? <button aria-label="跳过小雾反馈" onClick={finishPlayback}>跳过</button> : <span className="xiaowu-dialog-controls"><button aria-label="隐藏小雾" onClick={hideCompanion}>隐藏</button><button aria-label="收起小雾" onClick={closeTerminal}>×</button></span>}</header>
       {section === "playback" && playback ? <div className="terminal-playback-message">
         <span className="sr-only" role="status">小雾反馈：{reactionLabels[reaction]}</span>
         {playbackPhase === "boot" ? <div className="xiaowu-arriving" aria-hidden="true"><small>小雾正在赶来</small><i>任务与语音同步中…</i></div> : <>
