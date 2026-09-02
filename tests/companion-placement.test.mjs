@@ -5,6 +5,7 @@ import {
   normalizeCompanionPoint,
   parseCompanionPreference,
   placeCompanionDialog,
+  placeCompanionLauncher,
   placeCompanionRestore,
   resolveCompanionPoint,
 } from "../lib/companion-placement.ts";
@@ -20,6 +21,46 @@ test("小雾位置始终夹紧在手机安全区内", () => {
   assert.deepEqual(
     clampCompanionPoint({ x: -30, y: 900 }, viewport, launcher),
     { x: 0, y: 650 },
+  );
+});
+
+test("桌面端将小雾限制在居中的手机内容框而不是浏览器留白", () => {
+  const framedViewport = {
+    width: 1200,
+    height: 844,
+    topInset: 76,
+    bottomInset: 96,
+    leftInset: 385,
+    rightInset: 385,
+  };
+  const fullCompanion = { width: 132, height: 150 };
+  assert.deepEqual(clampCompanionPoint({ x: 20, y: 300 }, framedViewport, fullCompanion), { x: 385, y: 300 });
+  assert.deepEqual(clampCompanionPoint({ x: 1100, y: 300 }, framedViewport, fullCompanion), { x: 683, y: 300 });
+  assert.deepEqual(normalizeCompanionPoint({ x: 534, y: 337 }, framedViewport, fullCompanion), { x: 0.5, y: 0.5 });
+});
+
+test("小雾贴左右边框时对称探头，拖回内部后恢复完整身体", () => {
+  const framedViewport = {
+    width: 1200,
+    height: 844,
+    topInset: 76,
+    bottomInset: 96,
+    leftInset: 385,
+    rightInset: 385,
+  };
+  const fullCompanion = { width: 132, height: 150 };
+  const peekCompanion = { width: 70, height: 98 };
+  assert.deepEqual(
+    placeCompanionLauncher({ x: 385, y: 300 }, framedViewport, fullCompanion, peekCompanion),
+    { point: { x: 385, y: 300 }, edge: "left" },
+  );
+  assert.deepEqual(
+    placeCompanionLauncher({ x: 683, y: 300 }, framedViewport, fullCompanion, peekCompanion),
+    { point: { x: 745, y: 300 }, edge: "right" },
+  );
+  assert.deepEqual(
+    placeCompanionLauncher({ x: 520, y: 300 }, framedViewport, fullCompanion, peekCompanion),
+    { point: { x: 520, y: 300 }, edge: null },
   );
 });
 
@@ -41,6 +82,15 @@ test("对话卡跟随小雾选择左右方向并保持完整可见", () => {
   assert.deepEqual(
     placeCompanionDialog({ x: 100, y: 300 }, { ...viewport, width: 900 }, launcher, { width: 340, height: 520 }),
     { x: 162, y: 220, side: "right", maxHeight: 520 },
+  );
+  assert.deepEqual(
+    placeCompanionDialog(
+      { x: 55, y: 128 },
+      { width: 240, height: 422, topInset: 76, bottomInset: 96 },
+      { width: 132, height: 150 },
+      { width: 224, height: 261 },
+    ),
+    { x: 8, y: 76, side: "above", maxHeight: 242 },
   );
 });
 

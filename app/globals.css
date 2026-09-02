@@ -160,7 +160,9 @@ body{background:#01040d}
 .xiaowu-companion.is-dragging{cursor:grabbing;animation:none!important}
 .xiaowu-companion img{display:block;width:142px;height:142px;max-width:none;object-fit:contain;user-select:none;pointer-events:none}
 .xiaowu-companion.is-peeking{left:0;width:70px;height:98px;overflow:hidden}.xiaowu-companion.is-peeking img{position:absolute;top:-4px;left:-66px}
+.xiaowu-companion.edge-right img{transform:scaleX(-1)}
 .xiaowu-companion:focus-visible{outline:2px solid var(--xiaowu-cyan);outline-offset:-18px;border-radius:50%}
+.xiaowu-companion.is-floating{width:132px;height:150px;overflow:visible}.xiaowu-companion.is-floating img{width:150px;height:150px}
 .xiaowu-companion.is-open{left:3px;bottom:-18px;width:132px;height:150px;overflow:visible;animation:xiaowu-greeting .42s cubic-bezier(.2,.8,.2,1) both}
 .xiaowu-companion.is-open img{width:150px;height:150px}
 .xiaowu-companion.state-notice{animation:xiaowu-notice .65s ease-out both}
