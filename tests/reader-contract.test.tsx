@@ -249,6 +249,22 @@ test("世界档案直接使用幻界 OS Dock 而不再折叠主导航", async ()
   assert.equal(container.querySelector("details.reader-navigation"), null);
 });
 
+test("首页即使分类为空也固定展示三类世界档案与全部入口", async () => {
+  globalThis.fetch = storyStudioFetch([]);
+  await act(async () => root.render(<StoryStudio />));
+  await settle();
+
+  assert.deepEqual(
+    [...container.querySelectorAll(".work-catalog h2")].map((heading) => heading.textContent),
+    ["短篇", "连载小说", "完结小说"],
+  );
+  assert.deepEqual(
+    [...container.querySelectorAll<HTMLAnchorElement>(".work-catalog .catalog-section-heading > a")]
+      .map((link) => [link.textContent, link.getAttribute("href")]),
+    [["全部 0 部 →", "/catalog/short"], ["全部 0 部 →", "/catalog/ongoing"], ["全部 0 部 →", "/catalog/completed"]],
+  );
+});
+
 test("首页每类只展示前四部紧凑双列卡片并提供全部入口", async () => {
   const novels = [
     publicNovel("primary", "焦账员", 1, ["失火", "虚假报警的代价"]),
@@ -288,12 +304,12 @@ test("首页先展示短篇区并从卡片直接进入唯一正文", async () =>
   await settle();
 
   const headings = [...container.querySelectorAll(".catalog-section-heading h2")].map((item) => item.textContent);
-  assert.deepEqual(headings, ["短篇", "连载小说"]);
-  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading p")].map((item) => item.textContent), ["凝结于一瞬的幻境", "尚未闭合的世界线"]);
+  assert.deepEqual(headings, ["短篇", "连载小说", "完结小说"]);
+  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading p")].map((item) => item.textContent), ["凝结于一瞬的幻境", "尚未闭合的世界线", "已经闭合的世界线"]);
   assert.ok([...container.querySelectorAll(".catalog-section-heading h2")].every((heading) => heading.previousElementSibling?.tagName === "P"));
-  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading>a")].map((item) => item.textContent), ["全部 1 部 →", "全部 1 部 →"]);
+  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading>a")].map((item) => item.textContent), ["全部 1 部 →", "全部 1 部 →", "全部 0 部 →"]);
   assert.match(container.querySelector(".short-catalog .catalog-card")?.textContent || "", /3,210 字 · 线性/);
-  assert.equal(container.querySelectorAll(".work-catalog").length, 2);
+  assert.equal(container.querySelectorAll(".work-catalog").length, 3);
   const shortLink = container.querySelector<HTMLAnchorElement>('a[aria-label="开始或继续阅读短篇：雾中来信"]');
   assert.ok(shortLink);
   await act(async () => shortLink.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true })));
