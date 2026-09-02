@@ -23,6 +23,72 @@ test("CreationLifecycle 通过公开接口创建并按作者隔离小说", async
   assert.equal(payload.strangerIds.includes(payload.created.id), false);
 });
 
+test("CreationLifecycle 返回三类轻量作品目录并按需读取完整作品", async () => {
+  const response = await fetch(`${runtime.origin}/creation-public-catalog`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.deepEqual(Object.keys(payload.home.sections), ["short", "ongoing", "completed"]);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(payload.home.sections).map(([key, page]) => [key, {
+      total: page.total,
+      names: page.items.map((item) => item.published.name),
+      nextCursor: page.nextCursor,
+    }])),
+    {
+      short: { total: 1, names: ["一瞬档案"], nextCursor: null },
+      ongoing: { total: 1, names: ["未闭合档案"], nextCursor: null },
+      completed: { total: 1, names: ["闭合档案"], nextCursor: null },
+    },
+  );
+  const short = payload.home.sections.short.items[0];
+  assert.deepEqual(
+    { format: short.format, wordCount: short.wordCount, interactive: short.interactive, hasChapters: "chapters" in short },
+    { format: "short", wordCount: 4, interactive: false, hasChapters: false },
+  );
+  const ongoing = payload.home.sections.ongoing.items[0];
+  assert.deepEqual(
+    { status: ongoing.serialStatus, chapterCount: ongoing.chapterCount, latestChapterTitle: ongoing.latestChapterTitle },
+    { status: "ongoing", chapterCount: 1, latestChapterTitle: "第一道裂隙" },
+  );
+  const completed = payload.home.sections.completed.items[0];
+  assert.deepEqual(
+    { status: completed.serialStatus, chapterCount: completed.chapterCount, readable: completed.hasReadableContent },
+    { status: "completed", chapterCount: 0, readable: false },
+  );
+  assert.deepEqual(payload.detailed, { id: short.id, chapterCount: 1, hasNodes: true });
+  assert.equal(payload.detailedByChapter.id, ongoing.id);
+  assert.match(payload.detailedByChapter.chapterId, /./);
+});
+
+test("CreationLifecycle 以稳定游标分页并拒绝非法目录请求", async () => {
+  const response = await fetch(`${runtime.origin}/creation-public-catalog-pagination`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  const payload = await response.json();
+  assert.equal(payload.first.ids.length, 20);
+  assert.ok(payload.first.cursor);
+  assert.equal(payload.second.cursor, null);
+  assert.equal(payload.first.total, payload.baselineTotal + 23);
+  assert.equal(payload.second.total, payload.baselineTotal + 23);
+  const allIds = [...payload.first.ids, ...payload.second.ids];
+  assert.equal(allIds.length, payload.baselineTotal + 23);
+  assert.equal(new Set(allIds).size, payload.baselineTotal + 23);
+  assert.deepEqual(
+    allIds.filter((id) => id.startsWith("catalog-page-")),
+    Array.from({ length: 23 }, (_, index) => `catalog-page-${String(index).padStart(2, "0")}`),
+  );
+  assert.deepEqual(
+    {
+      invalidSection: payload.invalidSection, invalidLimit: payload.invalidLimit, invalidCursor: payload.invalidCursor,
+      invalidHomeSection: payload.invalidHomeSection, invalidHomeLimit: payload.invalidHomeLimit,
+      invalidHomeCursor: payload.invalidHomeCursor,
+    },
+    {
+      invalidSection: 400, invalidLimit: 400, invalidCursor: 400,
+      invalidHomeSection: 400, invalidHomeLimit: 400, invalidHomeCursor: 400,
+    },
+  );
+});
+
 test("CreationLifecycle 管理连载完结状态并在重新连载前拒绝更新", async () => {
   const response = await fetch(`${runtime.origin}/creation-serial-completion`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);

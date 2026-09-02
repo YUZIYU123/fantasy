@@ -22,6 +22,7 @@ export const novels = sqliteTable("novels", {
   index("novels_owner_status_idx").on(table.ownerId, table.status),
   index("novels_status_sort_idx").on(table.status, table.sortOrder),
   index("novels_format_status_sort_idx").on(table.format, table.status, table.sortOrder),
+  index("novels_catalog_sort_idx").on(table.format, table.serialStatus, table.status, table.sortOrder, table.id),
 ]);
 
 export const novelVersions = sqliteTable("novel_versions", {

@@ -43,6 +43,7 @@ export interface BookshelfStore {
   addEntry(userId: string, novel: BookshelfNovelFacts, now: string): Promise<"added" | "already_present">;
   removeEntry(userId: string, novelId: string): Promise<"removed" | "already_absent">;
   listEntries(userId: string): Promise<BookshelfEntryRecord[]>;
+  findEntries(userId: string, novelIds: string[]): Promise<BookshelfEntryRecord[]>;
   listResolvedEntries(userId: string, entryIds?: string[]): Promise<BookshelfResolvedEntry[]>;
   createListSnapshot(userId: string, orderedEntryIds: string[], expiresAt: string): Promise<string>;
   readListSnapshot(userId: string, snapshotId: string, offset: number, limit: number, now: string): Promise<{ entryIds: string[]; total: number } | null>;
@@ -93,6 +94,7 @@ export type BookshelfCommand =
   | { action: "add"; novelId: string; operationId: string; sourceKey: string }
   | { action: "remove"; novelId: string; operationId: string; sourceKey: string }
   | { action: "membership"; novelId: string }
+  | { action: "membership-batch"; novelIds: string[] }
   | { action: "list"; cursor?: string | null; limit?: number }
   | { action: "resolve-entry"; novelId: string }
   | { action: "result"; operationId: string }
@@ -215,6 +217,17 @@ export class BookshelfLifecycle {
     }
     if (command.action === "membership") {
       return { kind: "membership" as const, present: Boolean(await this.store.findEntry(actor.id, command.novelId)) };
+    }
+    if (command.action === "membership-batch") {
+      const novelIds = [...new Set(command.novelIds)];
+      if (novelIds.length === 0 || novelIds.length > 20 || novelIds.some((id) => !id)) {
+        throw new BookshelfError("批量书架查询需要一至二十个小说标识");
+      }
+      const presentIds = new Set((await this.store.findEntries(actor.id, novelIds)).map((entry) => entry.novelId));
+      return {
+        kind: "membership-batch" as const,
+        memberships: Object.fromEntries(novelIds.map((id) => [id, presentIds.has(id)])),
+      };
     }
     if (command.action === "purge") {
       await this.store.purge(actor.id);

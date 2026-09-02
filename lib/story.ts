@@ -153,6 +153,40 @@ export type NovelDocument = {
 };
 export type NovelFormat = "serial" | "short";
 export type NovelSerialStatus = "ongoing" | "completed";
+export const CATALOG_SECTIONS = ["short", "ongoing", "completed"] as const;
+export type CatalogSection = typeof CATALOG_SECTIONS[number];
+export function isCatalogSection(value: string): value is CatalogSection {
+  return (CATALOG_SECTIONS as readonly string[]).includes(value);
+}
+type PublicCatalogCommon = {
+  id: string;
+  slug: string;
+  sortOrder: number;
+  version: number;
+  published: NovelDocument;
+  hasReadableContent: boolean;
+};
+export type PublicCatalogItem =
+  | PublicCatalogCommon & {
+    format: "short";
+    serialStatus: null;
+    wordCount: number;
+    interactive: boolean;
+  }
+  | PublicCatalogCommon & {
+    format: "serial";
+    serialStatus: NovelSerialStatus;
+    chapterCount: number;
+    latestChapterTitle: string | null;
+  };
+export type PublicCatalogPage = {
+  items: PublicCatalogItem[];
+  total: number;
+  nextCursor: string | null;
+};
+export type PublicCatalogHome = {
+  sections: Record<CatalogSection, PublicCatalogPage>;
+};
 export type NovelRecord = {
   id: string;
   slug: string;

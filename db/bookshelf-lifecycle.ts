@@ -86,6 +86,14 @@ export const drizzleD1BookshelfStore: BookshelfStore = {
     return (await getDb().select().from(bookshelfEntries).where(eq(bookshelfEntries.userId, userId))).map(entryRecord);
   },
 
+  async findEntries(userId, novelIds) {
+    await ensureSchema();
+    if (novelIds.length === 0) return [];
+    return (await getDb().select().from(bookshelfEntries).where(and(
+      eq(bookshelfEntries.userId, userId), inArray(bookshelfEntries.novelId, novelIds),
+    ))).map(entryRecord);
+  },
+
   async listResolvedEntries(userId, entryIds) {
     await ensureSchema();
     const entryRows = entryIds

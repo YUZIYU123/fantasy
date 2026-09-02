@@ -267,14 +267,19 @@ test("进度注册意图由阅读界面所有者接回目标章节", async () =>
   story.nodes[0].body = "回到原来的阅读位置。";
   globalThis.fetch = async (input) => {
     const url = String(input);
-    if (url === "/api/novels") return Response.json({ novels: [{
+    if (url === "/api/catalog") return Response.json({ sections: {
+      short: { items: [], total: 0, nextCursor: null },
+      ongoing: { items: [], total: 0, nextCursor: null },
+      completed: { items: [], total: 0, nextCursor: null },
+    } });
+    if (url === "/api/novels?chapterId=chapter-42") return Response.json({ novel: {
       id: "novel-42", sortOrder: 1, version: 1,
       published: {
         name: "接续小说", summary: "接续简介", coverUrl: "", coverAlt: "",
         coverPresentation: { fit: "cover", positionX: 50, positionY: 50 },
       },
       chapters: [{ id: "chapter-42", title: story.title, summary: story.summary, version: 1, published: story }],
-    }] });
+    } });
     if (url === "/api/auth/me") return Response.json({ user: { displayName: "旅伴", role: "reader" } });
     if (url.startsWith("/api/account/progress")) return Response.json({ progress: [] });
     if (url === "/api/account/guide-memory") return Response.json({ memory: { preferences: [], guideCompletedAt: null } });

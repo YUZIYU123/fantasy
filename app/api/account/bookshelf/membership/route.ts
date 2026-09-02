@@ -6,10 +6,12 @@ import { bookshelfLifecycleErrorResponse, bookshelfLifecycleResponse } from "../
 export async function GET(request: Request) {
   try {
     const identity = await sessionAuthorization.require(request);
-    const novelId = new URL(request.url).searchParams.get("novelId");
-    if (!novelId) throw new BookshelfError("小说标识无效");
+    const novelIds = new URL(request.url).searchParams.getAll("novelId");
+    if (novelIds.length === 0) throw new BookshelfError("小说标识无效");
     return bookshelfLifecycleResponse(await bookshelfLifecycle.execute(
-      { kind: "account", id: identity.id }, { action: "membership", novelId },
+      { kind: "account", id: identity.id }, novelIds.length === 1
+        ? { action: "membership", novelId: novelIds[0] }
+        : { action: "membership-batch", novelIds },
     ));
   } catch (error) {
     return bookshelfLifecycleErrorResponse(error);

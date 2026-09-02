@@ -1,0 +1,1 @@
+CREATE INDEX `novels_catalog_sort_idx` ON `novels` (`format`,`serial_status`,`status`,`sort_order`,`id`);

@@ -860,6 +860,161 @@ const lifecycleWorker = {
       });
     }
 
+    if (pathname === "/creation-public-catalog" && request.method === "POST") {
+      const owner = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+
+      const shortCreated = await creationLifecycle.execute(owner, { entity: "short", action: "create" });
+      if (shortCreated.kind !== "created") throw new Error("短篇创建失败");
+      const shortNovel = createBlankNovel();
+      shortNovel.name = "一瞬档案";
+      shortNovel.summary = "短篇目录摘要。";
+      shortNovel.coverUrl = "https://example.com/short.jpg";
+      shortNovel.coverAlt = "一瞬档案封面";
+      const shortStory = createBlankStory();
+      shortStory.title = "一瞬档案";
+      shortStory.summary = shortNovel.summary;
+      shortStory.openingImageUrl = shortNovel.coverUrl;
+      shortStory.openingImageAlt = shortNovel.coverAlt;
+      shortStory.outroUsesNovelCover = true;
+      shortStory.nodes[0].body = "四个字符";
+      shortStory.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(owner, {
+        entity: "short", action: "submit", id: shortCreated.id, novel: shortNovel, story: shortStory,
+        meta: { sortOrder: 1 },
+      });
+      await creationLifecycle.execute(administrator, {
+        entity: "short", action: "publish", id: shortCreated.id, novel: shortNovel, story: shortStory,
+        meta: { sortOrder: 1 },
+      });
+
+      const ongoingCreated = await creationLifecycle.execute(owner, { entity: "novel", action: "create" });
+      if (ongoingCreated.kind !== "created") throw new Error("连载创建失败");
+      const ongoingNovel = createBlankNovel();
+      ongoingNovel.name = "未闭合档案";
+      ongoingNovel.summary = "连载目录摘要。";
+      ongoingNovel.coverUrl = "https://example.com/ongoing.jpg";
+      ongoingNovel.coverAlt = "未闭合档案封面";
+      await creationLifecycle.execute(owner, {
+        entity: "novel", action: "submit", id: ongoingCreated.id, novel: ongoingNovel, meta: { sortOrder: 2 },
+      });
+      await creationLifecycle.execute(administrator, {
+        entity: "novel", action: "publish", id: ongoingCreated.id, novel: ongoingNovel, meta: { sortOrder: 2 },
+      });
+      const ongoingChapter = await creationLifecycle.execute(owner, {
+        entity: "chapter", action: "create", meta: { novelId: ongoingCreated.id },
+      });
+      if (ongoingChapter.kind !== "created") throw new Error("章节创建失败");
+      const ongoingStory = createBlankStory();
+      ongoingStory.title = "第一道裂隙";
+      ongoingStory.summary = "连载第一章。";
+      ongoingStory.openingImageUrl = ongoingNovel.coverUrl;
+      ongoingStory.openingImageAlt = ongoingNovel.coverAlt;
+      ongoingStory.outroImageUrl = ongoingNovel.coverUrl;
+      ongoingStory.outroImageAlt = ongoingNovel.coverAlt;
+      ongoingStory.nodes[0].body = "连载正文。";
+      ongoingStory.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(owner, {
+        entity: "chapter", action: "submit", id: ongoingChapter.id, story: ongoingStory,
+      });
+      await creationLifecycle.execute(administrator, {
+        entity: "chapter", action: "publish", id: ongoingChapter.id, story: ongoingStory,
+      });
+
+      const completedCreated = await creationLifecycle.execute(owner, { entity: "novel", action: "create" });
+      if (completedCreated.kind !== "created") throw new Error("完结小说创建失败");
+      const completedNovel = createBlankNovel();
+      completedNovel.name = "闭合档案";
+      completedNovel.summary = "零章节展示。";
+      completedNovel.coverUrl = "https://example.com/completed.jpg";
+      completedNovel.coverAlt = "闭合档案封面";
+      await creationLifecycle.execute(owner, {
+        entity: "novel", action: "submit", id: completedCreated.id, novel: completedNovel, meta: { sortOrder: 3 },
+      });
+      await creationLifecycle.execute(administrator, {
+        entity: "novel", action: "publish", id: completedCreated.id, novel: completedNovel, meta: { sortOrder: 3 },
+      });
+      await creationLifecycle.execute(owner, { entity: "novel", action: "complete", id: completedCreated.id });
+
+      const home = await creationLifecycle.getPublicCatalogHome({ limitPerSection: 4 });
+      const detailed = await creationLifecycle.getPublicNovel({ id: shortCreated.id });
+      const detailedByChapter = await creationLifecycle.getPublicNovel({ chapterId: ongoingChapter.id });
+      return Response.json({
+        home,
+        detailed: detailed ? {
+          id: detailed.id,
+          chapterCount: detailed.chapters.length,
+          hasNodes: Boolean(detailed.chapters[0]?.published?.nodes.length),
+        } : null,
+        detailedByChapter: detailedByChapter ? {
+          id: detailedByChapter.id,
+          chapterId: detailedByChapter.chapters[0]?.id ?? null,
+        } : null,
+      });
+    }
+
+    if (pathname === "/creation-public-catalog-pagination" && request.method === "POST") {
+      const before = await creationLifecycle.listPublicCatalog({ section: "ongoing", limit: 1 });
+      const binding = getD1Binding();
+      const novel = createBlankNovel();
+      novel.summary = "分页目录摘要。";
+      novel.coverUrl = "https://example.com/page.jpg";
+      novel.coverAlt = "分页目录封面";
+      const story = createBlankStory();
+      story.title = "分页章节";
+      story.summary = "分页目录章节。";
+      story.openingImageUrl = novel.coverUrl;
+      story.openingImageAlt = novel.coverAlt;
+      story.outroImageUrl = novel.coverUrl;
+      story.outroImageAlt = novel.coverAlt;
+      story.nodes[0].body = "分页正文。";
+      story.nodes[0].canEndChapter = true;
+      const statements: D1PreparedStatement[] = [];
+      for (let index = 0; index < 23; index += 1) {
+        const suffix = String(index).padStart(2, "0");
+        const novelId = `catalog-page-${suffix}`;
+        const publishedNovel = { ...novel, name: `分页作品${suffix}` };
+        statements.push(binding.prepare(`INSERT INTO novels
+          (id, slug, owner_id, format, serial_status, format_locked_at, draft_status, submitted_at, review_note,
+           sort_order, status, draft_json, published_json, version, created_at, updated_at)
+          VALUES (?, ?, NULL, 'serial', 'ongoing', ?, 'draft', NULL, '', ?, 'published', ?, ?, 1, ?, ?)`)
+          .bind(novelId, novelId, "2026-09-02T00:00:00.000Z", 9_000 + Math.floor(index / 2),
+            JSON.stringify(publishedNovel), JSON.stringify(publishedNovel),
+            "2026-09-02T00:00:00.000Z", "2026-09-02T00:00:00.000Z"));
+        statements.push(binding.prepare(`INSERT INTO chapters
+          (id, novel_id, slug, title, summary, cover_url, owner_id, draft_status, submitted_at, review_note,
+           sort_order, status, draft_json, published_json, version, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, 'draft', NULL, '', 1, 'published', ?, ?, 1, ?, ?)`)
+          .bind(`${novelId}-chapter`, novelId, `${novelId}-chapter`, story.title, story.summary, novel.coverUrl,
+            JSON.stringify(story), JSON.stringify(story),
+            "2026-09-02T00:00:00.000Z", "2026-09-02T00:00:00.000Z"));
+      }
+      await binding.batch(statements);
+
+      const first = await creationLifecycle.listPublicCatalog({ section: "ongoing", limit: 20 });
+      const second = await creationLifecycle.listPublicCatalog({
+        section: "ongoing", limit: 20, cursor: first.nextCursor,
+      });
+      const statusOf = async (operation: () => Promise<unknown>) => {
+        try { await operation(); return 200; }
+        catch (error) {
+          if (!(error instanceof Error) || !("status" in error)) throw error;
+          return Number(error.status);
+        }
+      };
+      return Response.json({
+        baselineTotal: before.total,
+        first: { ids: first.items.map((item) => item.id), total: first.total, cursor: first.nextCursor },
+        second: { ids: second.items.map((item) => item.id), total: second.total, cursor: second.nextCursor },
+        invalidSection: await statusOf(() => creationLifecycle.listPublicCatalog({ section: "unknown" as never })),
+        invalidLimit: await statusOf(() => creationLifecycle.listPublicCatalog({ section: "ongoing", limit: 21 })),
+        invalidCursor: await statusOf(() => creationLifecycle.listPublicCatalog({ section: "ongoing", cursor: "broken" })),
+        invalidHomeSection: await statusOf(() => creationLifecycle.getPublicCatalog({ section: "", cursor: null })),
+        invalidHomeLimit: await statusOf(() => creationLifecycle.getPublicCatalog({ section: null, limit: 21, cursor: null })),
+        invalidHomeCursor: await statusOf(() => creationLifecycle.getPublicCatalog({ section: null, cursor: "broken" })),
+      });
+    }
+
     if (pathname === "/creation-serial-completion" && request.method === "POST") {
       const owner = { kind: "author" as const, id: crypto.randomUUID() };
       const stranger = { kind: "author" as const, id: crypto.randomUUID() };

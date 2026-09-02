@@ -9,13 +9,11 @@ import {
   normalizeChoiceSfxMaxDuration,
   paginateStoryBody,
   parseReadingProgress,
-  type NovelRecord,
   type StoryChoice,
   type StoryDocument,
 } from "../lib/story";
+import type { RecommendableNovel } from "../lib/terminal";
 import { FantasyTerminal } from "./fantasy-terminal";
-
-type ReaderNovel = NovelRecord & { chapters: unknown[] };
 
 function ReaderEntryState({ kind, onBack, backLabel }: { kind: "loading" | "empty"; onBack: () => void; backLabel: string }) {
   const loading = kind === "loading";
@@ -35,7 +33,7 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
   onComplete?: () => void;
   preview?: boolean;
   initialNodeId?: string;
-  novels?: ReaderNovel[];
+  novels?: RecommendableNovel[];
   onOpenNovel?: (id: string) => void;
   backLabel?: string;
 }) {
