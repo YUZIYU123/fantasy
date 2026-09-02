@@ -113,16 +113,13 @@ export function CatalogGrid({
     if (pending.length === 0) return;
     for (const id of pending) requestedMembershipIds.current.add(id);
     queueMicrotask(async () => {
-      for (let offset = 0; offset < pending.length; offset += 20) {
-        const ids = pending.slice(offset, offset + 20);
-        const params = new URLSearchParams();
-        for (const id of ids) params.append("novelId", id);
-        const response = await fetch(`/api/account/bookshelf/membership?${params}`);
-        if (!response.ok) continue;
-        const body = await response.json() as { memberships?: Record<string, boolean>; present?: boolean };
-        const next = body.memberships ?? (ids.length === 1 ? { [ids[0]]: Boolean(body.present) } : {});
-        setMemberships((current) => ({ ...current, ...next }));
-      }
+      const params = new URLSearchParams();
+      for (const id of pending) params.append("novelId", id);
+      const response = await fetch(`/api/account/bookshelf/membership?${params}`);
+      if (!response.ok) return;
+      const body = await response.json() as { memberships?: Record<string, boolean>; present?: boolean };
+      const next = body.memberships ?? (pending.length === 1 ? { [pending[0]]: Boolean(body.present) } : {});
+      setMemberships((current) => ({ ...current, ...next }));
     });
   }, [shortKey]);
 

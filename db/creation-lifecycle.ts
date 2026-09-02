@@ -344,6 +344,16 @@ async function getPublicCatalogHome(input: { limitPerSection?: number } = {}) {
   return { sections: { short, ongoing, completed } };
 }
 
+async function getPublicCatalog(input: { section: string | null; limit?: number; cursor: string | null }) {
+  if (input.section === null) {
+    if (input.limit !== undefined || input.cursor !== null) fail("作品目录分类无效", 400);
+    return getPublicCatalogHome({ limitPerSection: 4 });
+  }
+  if (!isCatalogSection(input.section)) fail("作品目录分类无效", 400);
+  if (input.cursor === "") fail("作品目录分页标识无效", 400);
+  return listPublicCatalog({ section: input.section, limit: input.limit, cursor: input.cursor });
+}
+
 async function getPublicNovel(input: { id?: string; slug?: string; chapterId?: string }) {
   await ensureSeed();
   if (!input.id && !input.slug && !input.chapterId) fail("小说标识无效", 400);
@@ -860,5 +870,5 @@ async function execute(actor: CreationActor, command: CreationCommand) {
 }
 
 export const creationLifecycle = {
-  list, listShorts, listPublicNovels, listPublicCatalog, getPublicCatalogHome, getPublicNovel, listVersions, execute,
+  list, listShorts, listPublicNovels, listPublicCatalog, getPublicCatalogHome, getPublicCatalog, getPublicNovel, listVersions, execute,
 };

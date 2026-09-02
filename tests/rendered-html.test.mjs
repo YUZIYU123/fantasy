@@ -162,9 +162,15 @@ test("公开作品目录 HTTP adapter 返回首页摘要并拒绝非法分页参
   const invalidSection = await requestJson("/api/catalog?section=unknown");
   const invalidLimit = await requestJson("/api/catalog?section=short&limit=21");
   const invalidCursor = await requestJson("/api/catalog?section=short&cursor=broken");
+  const invalidUnscopedLimit = await requestJson("/api/catalog?limit=21");
+  const invalidUnscopedCursor = await requestJson("/api/catalog?cursor=broken");
+  const invalidEmptySection = await requestJson("/api/catalog?section=");
   assert.deepEqual(
-    [invalidSection.response.status, invalidLimit.response.status, invalidCursor.response.status],
-    [400, 400, 400],
+    [
+      invalidSection.response.status, invalidLimit.response.status, invalidCursor.response.status,
+      invalidUnscopedLimit.response.status, invalidUnscopedCursor.response.status, invalidEmptySection.response.status,
+    ],
+    [400, 400, 400, 400, 400, 400],
   );
 });
 

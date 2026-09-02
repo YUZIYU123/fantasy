@@ -1009,6 +1009,9 @@ const lifecycleWorker = {
         invalidSection: await statusOf(() => creationLifecycle.listPublicCatalog({ section: "unknown" as never })),
         invalidLimit: await statusOf(() => creationLifecycle.listPublicCatalog({ section: "ongoing", limit: 21 })),
         invalidCursor: await statusOf(() => creationLifecycle.listPublicCatalog({ section: "ongoing", cursor: "broken" })),
+        invalidHomeSection: await statusOf(() => creationLifecycle.getPublicCatalog({ section: "", cursor: null })),
+        invalidHomeLimit: await statusOf(() => creationLifecycle.getPublicCatalog({ section: null, limit: 21, cursor: null })),
+        invalidHomeCursor: await statusOf(() => creationLifecycle.getPublicCatalog({ section: null, cursor: "broken" })),
       });
     }
 

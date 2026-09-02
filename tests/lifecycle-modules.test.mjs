@@ -77,8 +77,15 @@ test("CreationLifecycle 以稳定游标分页并拒绝非法目录请求", async
     Array.from({ length: 23 }, (_, index) => `catalog-page-${String(index).padStart(2, "0")}`),
   );
   assert.deepEqual(
-    { invalidSection: payload.invalidSection, invalidLimit: payload.invalidLimit, invalidCursor: payload.invalidCursor },
-    { invalidSection: 400, invalidLimit: 400, invalidCursor: 400 },
+    {
+      invalidSection: payload.invalidSection, invalidLimit: payload.invalidLimit, invalidCursor: payload.invalidCursor,
+      invalidHomeSection: payload.invalidHomeSection, invalidHomeLimit: payload.invalidHomeLimit,
+      invalidHomeCursor: payload.invalidHomeCursor,
+    },
+    {
+      invalidSection: 400, invalidLimit: 400, invalidCursor: 400,
+      invalidHomeSection: 400, invalidHomeLimit: 400, invalidHomeCursor: 400,
+    },
   );
 });
 
