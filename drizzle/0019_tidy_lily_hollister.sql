@@ -1,0 +1,1 @@
+ALTER TABLE `novels` ADD `serial_status` text DEFAULT 'ongoing' NOT NULL;

@@ -6,6 +6,7 @@ export const novels = sqliteTable("novels", {
   slug: text("slug").notNull().unique(),
   ownerId: text("owner_id"),
   format: text("format", { enum: ["serial", "short"] }).notNull().default("serial"),
+  serialStatus: text("serial_status", { enum: ["ongoing", "completed"] }).notNull().default("ongoing"),
   formatLockedAt: text("format_locked_at"),
   draftStatus: text("draft_status", { enum: ["draft", "submitted"] }).notNull().default("draft"),
   submittedAt: text("submitted_at"),

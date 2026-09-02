@@ -193,6 +193,33 @@ test("作品管理提供两种新建入口且短篇进入合并式编辑页", as
   assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("开启互动编辑")));
 });
 
+test("作品管理为已发布连载提供完结与重新连载操作", async () => {
+  firstAccessAllowed = true;
+  const baseFetch = globalThis.fetch;
+  const draft = createBlankNovel();
+  draft.name = "状态切换连载";
+  const ongoing = {
+    id: "ongoing", slug: "ongoing", ownerId: null, format: "serial", serialStatus: "ongoing",
+    formatLockedAt: "2026-09-02T00:00:00.000Z", convertibleTo: null,
+    draftStatus: "draft", submittedAt: null, reviewNote: "", sortOrder: 1, status: "published", version: 1,
+    draft, published: draft, updatedAt: "2026-09-02T00:00:00.000Z",
+  };
+  const completed = { ...ongoing, id: "completed", slug: "completed", serialStatus: "completed" };
+  globalThis.fetch = async (input, init) => {
+    if (String(input) === "/admin/api/novels" && !init?.method) {
+      return Response.json({ novels: [ongoing, completed], shorts: [] });
+    }
+    return baseFetch(input, init);
+  };
+
+  await act(async () => root.render(<AdminStudio />));
+  await settle();
+
+  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent === "标记完结"));
+  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent === "重新连载"));
+  assert.equal([...container.querySelectorAll(".format-badge")].filter((badge) => badge.textContent === "已完结").length, 1);
+});
+
 test("写操作返回 401 时立即重新鉴权并退出失效工作台", async () => {
   firstAccessAllowed = true;
   const baseFetch = globalThis.fetch;

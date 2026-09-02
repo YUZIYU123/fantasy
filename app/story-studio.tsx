@@ -6,7 +6,6 @@ import {
   DEFAULT_COVER_PRESENTATION,
   type ChapterRecord,
   type ImagePresentation,
-  type NovelFormat,
   type NovelRecord,
   type StoryDocument,
 } from "../lib/story";
@@ -151,26 +150,31 @@ export function StoryStudio() {
 
 function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]; loadError: string; onRetry: () => void; onOpen: (novel: PublicNovel) => void }) {
   const shortNovels = novels.filter((novel) => novel.format === "short");
-  const serialNovels = novels.filter((novel) => novel.format !== "short");
+  const serialNovels = novels.filter((novel) => novel.format !== "short" && novel.serialStatus !== "completed");
+  const completedNovels = novels.filter((novel) => novel.format !== "short" && novel.serialStatus === "completed");
   return <div className="library fantasy-library">
     <section className="hero"><FantasyMark className="hero-system-mark" /><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
-    {shortNovels.length > 0 && <WorkCatalog format="short" novels={shortNovels} onOpen={onOpen} />}
-    {serialNovels.length > 0 && <WorkCatalog format="serial" novels={serialNovels} onOpen={onOpen} />}
+    {shortNovels.length > 0 && <WorkCatalog section="short" novels={shortNovels} onOpen={onOpen} />}
+    {serialNovels.length > 0 && <WorkCatalog section="ongoingSerial" novels={serialNovels} onOpen={onOpen} />}
+    {completedNovels.length > 0 && <WorkCatalog section="completedSerial" novels={completedNovels} onOpen={onOpen} />}
     {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与短篇发布后，会在这里出现。</p></div>}
     <footer><Brand /><p>你的选择，构成世界。</p><a className="text-button" href="/creator">进入创作中心</a></footer>
   </div>;
 }
 
-const catalogPresentation: Record<NovelFormat, { title: string; subtitle: string; ariaAction: string; cta: string }> = {
-  short: { title: "短篇", subtitle: "凝结于一瞬的幻境", ariaAction: "开始或继续阅读短篇", cta: "开始 / 继续阅读" },
-  serial: { title: "连载小说", subtitle: "尚未闭合的世界线", ariaAction: "进入连载小说", cta: "进入小说" },
+type CatalogSection = "short" | "ongoingSerial" | "completedSerial";
+
+const catalogPresentation: Record<CatalogSection, { className: string; title: string; subtitle: string; ariaAction: string; cta: string }> = {
+  short: { className: "short", title: "短篇", subtitle: "凝结于一瞬的幻境", ariaAction: "开始或继续阅读短篇", cta: "开始 / 继续阅读" },
+  ongoingSerial: { className: "serial", title: "连载小说", subtitle: "尚未闭合的世界线", ariaAction: "进入连载小说", cta: "进入小说" },
+  completedSerial: { className: "completed", title: "完结小说", subtitle: "已经闭合的世界线", ariaAction: "进入完结小说", cta: "进入小说" },
 };
 
-function WorkCatalog({ format, novels, onOpen }: { format: NovelFormat; novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
-  const isShort = format === "short";
-  const presentation = catalogPresentation[format];
-  const titleId = `${format}-catalog-title`;
-  return <section className={`shelf work-catalog ${format}-catalog`} aria-labelledby={titleId}>
+function WorkCatalog({ section, novels, onOpen }: { section: CatalogSection; novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
+  const isShort = section === "short";
+  const presentation = catalogPresentation[section];
+  const titleId = `${presentation.className}-catalog-title`;
+  return <section className={`shelf work-catalog ${presentation.className}-catalog`} aria-labelledby={titleId}>
     <header className="catalog-section-heading"><i aria-hidden="true">/</i><div><p>{presentation.subtitle}</p><h2 id={titleId}>{presentation.title}</h2></div><span>{novels.length} 部</span></header>
     <div className="catalog-card-grid">{novels.map((novel) => {
       const latestChapter = novel.chapters.at(-1);
@@ -178,11 +182,15 @@ function WorkCatalog({ format, novels, onOpen }: { format: NovelFormat; novels: 
       const metadata = isShort
         ? `${novel.wordCount.toLocaleString("zh-CN")} 字 · ${novel.interactive ? "互动" : "线性"}`
         : `${novel.chapters.length} 个章节${latestChapterTitle ? ` · 最新 ${latestChapterTitle}` : ""}`;
-      return <article className="catalog-card" key={novel.id}>
-        <button className="catalog-card-open" onClick={() => onOpen(novel)} aria-label={`${presentation.ariaAction}：${novel.published?.name}`}>
+      const hasReadableContent = novel.chapters.length > 0;
+      const cardContent = <>
           <div className="catalog-card-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || `${presentation.title}封面`} presentation={novel.published?.coverPresentation} /></div>
-          <span><small>{metadata}</small><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><i>{presentation.cta} →</i></span>
-        </button>
+          <span><small>{metadata}</small><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><i>{hasReadableContent ? `${presentation.cta} →` : "暂无正文，仅作展示"}</i></span>
+        </>;
+      return <article className="catalog-card" key={novel.id}>
+        {hasReadableContent
+          ? <button className="catalog-card-open" onClick={() => onOpen(novel)} aria-label={`${presentation.ariaAction}：${novel.published?.name}`}>{cardContent}</button>
+          : <div className="catalog-card-open catalog-card-static" aria-label={`${novel.published?.name}：暂无正文，仅作展示`}>{cardContent}</div>}
         {isShort && <BookshelfControl novelId={novel.id} />}
       </article>;
     })}</div>

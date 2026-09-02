@@ -152,11 +152,13 @@ export type NovelDocument = {
   coverPresentation: ImagePresentation;
 };
 export type NovelFormat = "serial" | "short";
+export type NovelSerialStatus = "ongoing" | "completed";
 export type NovelRecord = {
   id: string;
   slug: string;
   ownerId: string | null;
   format: NovelFormat;
+  serialStatus: NovelSerialStatus | null;
   formatLockedAt: string | null;
   convertibleTo: NovelFormat | null;
   draftStatus: "draft" | "submitted";

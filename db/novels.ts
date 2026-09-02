@@ -15,6 +15,7 @@ export function rowToNovel(row: typeof novels.$inferSelect): NovelRecord {
     slug: row.slug,
     ownerId: row.ownerId,
     format: row.format ?? "serial",
+    serialStatus: (row.format ?? "serial") === "short" ? null : row.serialStatus ?? "ongoing",
     formatLockedAt: row.formatLockedAt ?? null,
     convertibleTo: null,
     draftStatus: row.draftStatus,

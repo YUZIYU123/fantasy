@@ -860,6 +860,100 @@ const lifecycleWorker = {
       });
     }
 
+    if (pathname === "/creation-serial-completion" && request.method === "POST") {
+      const owner = { kind: "author" as const, id: crypto.randomUUID() };
+      const stranger = { kind: "author" as const, id: crypto.randomUUID() };
+      const administrator = { kind: "administrator" as const };
+      const statusOf = async (operation: () => Promise<unknown>) => {
+        try {
+          await operation();
+          return 200;
+        } catch (error) {
+          if (!(error instanceof Error) || !("status" in error)) throw error;
+          return Number(error.status);
+        }
+      };
+
+      const unpublished = await creationLifecycle.execute(owner, { entity: "novel", action: "create" });
+      if (unpublished.kind !== "created") throw new Error("连载创建失败");
+      const unpublishedCompletionStatus = await statusOf(() => creationLifecycle.execute(owner, {
+        entity: "novel", action: "complete", id: unpublished.id,
+      }));
+
+      const created = await creationLifecycle.execute(owner, { entity: "novel", action: "create" });
+      if (created.kind !== "created") throw new Error("连载创建失败");
+      const novel = createBlankNovel();
+      novel.name = "闭合世界线";
+      novel.summary = "验证连载完结与重新连载。";
+      novel.coverUrl = "https://example.com/completed.jpg";
+      novel.coverAlt = "闭合世界线封面";
+      await creationLifecycle.execute(owner, { entity: "novel", action: "submit", id: created.id, novel });
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "publish", id: created.id, novel });
+      const binding = getD1Binding();
+      const completionTriggerName = `fail_serial_completion_${created.id.replaceAll("-", "")}`;
+      await binding.prepare(`CREATE TRIGGER ${completionTriggerName} BEFORE UPDATE ON novels
+        WHEN OLD.id = '${created.id}' AND NEW.serial_status = 'completed'
+        BEGIN SELECT RAISE(ABORT, 'forced serial completion failure'); END`).run();
+      let completionFailed = false;
+      try {
+        await creationLifecycle.execute(owner, { entity: "novel", action: "complete", id: created.id });
+      } catch { completionFailed = true; }
+      const afterCompletionFailure = (await creationLifecycle.list(owner, "novel")).find((item) => item.id === created.id);
+      await binding.prepare(`DROP TRIGGER ${completionTriggerName}`).run();
+      const crossOwnerCompletionStatus = await statusOf(() => creationLifecycle.execute(stranger, {
+        entity: "novel", action: "complete", id: created.id,
+      }));
+      await creationLifecycle.execute(owner, { entity: "novel", action: "complete", id: created.id });
+      const completed = (await creationLifecycle.list(owner, "novel")).find((item) => item.id === created.id);
+      const publicCompleted = (await creationLifecycle.listPublicNovels()).find((item) => item.id === created.id);
+
+      const chapter = await creationLifecycle.execute(owner, {
+        entity: "chapter", action: "create", meta: { novelId: created.id },
+      });
+      if (chapter.kind !== "created") throw new Error("章节创建失败");
+      const story = createBlankStory();
+      story.title = "闭合后的草稿";
+      story.summary = "只能保存，不能提交或发布。";
+      story.openingImageUrl = "https://example.com/completed-opening.jpg";
+      story.openingImageAlt = "闭合后的草稿开场图";
+      story.outroImageUrl = "https://example.com/completed-outro.jpg";
+      story.outroImageAlt = "闭合后的草稿收尾图";
+      story.nodes[0].body = "这段内容仍是草稿。";
+      story.nodes[0].canEndChapter = true;
+      await creationLifecycle.execute(owner, { entity: "chapter", action: "save", id: chapter.id, story });
+      const submitWhileCompletedStatus = await statusOf(() => creationLifecycle.execute(owner, {
+        entity: "chapter", action: "submit", id: chapter.id, story,
+      }));
+      const publishWhileCompletedStatus = await statusOf(() => creationLifecycle.execute(administrator, {
+        entity: "chapter", action: "publish", id: chapter.id, story,
+      }));
+      await creationLifecycle.execute(administrator, { entity: "novel", action: "reopen", id: created.id });
+      await creationLifecycle.execute(owner, { entity: "chapter", action: "submit", id: chapter.id, story });
+      const reopened = (await creationLifecycle.list(owner, "novel")).find((item) => item.id === created.id);
+
+      const short = await creationLifecycle.execute(owner, { entity: "short", action: "create" });
+      if (short.kind !== "created") throw new Error("短篇创建失败");
+      const shortCompletionStatus = await statusOf(() => creationLifecycle.execute(owner, {
+        entity: "novel", action: "complete", id: short.id,
+      }));
+
+      return Response.json({
+        unpublishedCompletionStatus,
+        completionFailed,
+        failurePreservedStatus: afterCompletionFailure?.serialStatus,
+        crossOwnerCompletionStatus,
+        completedStatus: completed?.serialStatus,
+        publicCompleted: publicCompleted ? {
+          serialStatus: publicCompleted.serialStatus,
+          chapterCount: publicCompleted.chapters.length,
+        } : null,
+        submitWhileCompletedStatus,
+        publishWhileCompletedStatus,
+        reopenedStatus: reopened?.serialStatus,
+        shortCompletionStatus,
+      });
+    }
+
     if (pathname === "/creation-matrix" && request.method === "POST") {
       const author = { kind: "author" as const, id: crypto.randomUUID() };
       const administrator = { kind: "administrator" as const };

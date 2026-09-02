@@ -253,6 +253,45 @@ test("首页先展示短篇区并从卡片直接进入唯一正文", async () =>
   assert.equal(container.querySelector(".novel-home"), null);
 });
 
+test("首页依次展示短篇、连载中与已完结，并让零正文示例保持静态", async () => {
+  const short = {
+    ...publicNovel("short-showcase", "雾中来信", 1, ["全文"]),
+    format: "short" as const,
+    serialStatus: null,
+    wordCount: 3210,
+    interactive: false,
+  };
+  const ongoing = {
+    ...publicNovel("ongoing-showcase", "长夜连载", 2, ["第一章"]),
+    format: "serial" as const,
+    serialStatus: "ongoing" as const,
+  };
+  const completed = {
+    ...publicNovel("completed-showcase", "群星沉睡以后", 3, []),
+    format: "serial" as const,
+    serialStatus: "completed" as const,
+  };
+  globalThis.fetch = async (input) => String(input) === "/api/novels"
+    ? Response.json({ novels: [short, ongoing, completed] })
+    : Response.json({ user: null });
+
+  await act(async () => root.render(<StoryStudio />));
+  await settle();
+
+  assert.deepEqual(
+    [...container.querySelectorAll(".catalog-section-heading p")].map((item) => item.textContent),
+    ["凝结于一瞬的幻境", "尚未闭合的世界线", "已经闭合的世界线"],
+  );
+  assert.deepEqual(
+    [...container.querySelectorAll(".catalog-section-heading h2")].map((item) => item.textContent),
+    ["短篇", "连载小说", "完结小说"],
+  );
+  const completedCard = container.querySelector(".completed-catalog .catalog-card");
+  assert.match(completedCard?.textContent || "", /0 个章节/);
+  assert.match(completedCard?.textContent || "", /暂无正文，仅作展示/);
+  assert.equal(completedCard?.querySelector("button.catalog-card-open"), null);
+});
+
 test("只有一部连载小说时只显示一张统一卡片", async () => {
   globalThis.fetch = async (input) => String(input) === "/api/novels"
     ? Response.json({ novels: [publicNovel("only", "唯一档案", 1, ["入口"])] })

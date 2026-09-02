@@ -23,6 +23,23 @@ test("CreationLifecycle 通过公开接口创建并按作者隔离小说", async
   assert.equal(payload.strangerIds.includes(payload.created.id), false);
 });
 
+test("CreationLifecycle 管理连载完结状态并在重新连载前拒绝更新", async () => {
+  const response = await fetch(`${runtime.origin}/creation-serial-completion`, { method: "POST" });
+  assert.equal(response.status, 200, runtime.output);
+  assert.deepEqual(await response.json(), {
+    unpublishedCompletionStatus: 409,
+    completionFailed: true,
+    failurePreservedStatus: "ongoing",
+    crossOwnerCompletionStatus: 403,
+    completedStatus: "completed",
+    publicCompleted: { serialStatus: "completed", chapterCount: 0 },
+    submitWhileCompletedStatus: 409,
+    publishWhileCompletedStatus: 409,
+    reopenedStatus: "ongoing",
+    shortCompletionStatus: 409,
+  });
+});
+
 test("CreationLifecycle 原子创建短篇及唯一内部章节", async () => {
   const response = await fetch(`${runtime.origin}/creation-short`, { method: "POST" });
   assert.equal(response.status, 200, runtime.output);
