@@ -3,13 +3,13 @@
 ## 内容框贴边探头增量（Issue #75）
 
 - 验收日期：2026-09-02
-- 右边框镜像探头：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-edge-peek/01-right-edge-peek.png`
+- 右边框保留左半身体：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-edge-peek/05-staging-right-edge-left-body.png`
 - 拖离边框恢复完整身体：`/Users/yuruby/.codex/visualizations/2026/08/16/01a00a04-64ab-7a60-8f2b-913d1eb879a9/xiaowu-edge-peek/02-dragged-inside-full.png`
 
 ### 结果
 
 - 桌面浏览器以居中的 430px ReaderShell 为活动范围，不再把两侧黑色留白计入可拖拽区域；正式阅读同样使用居中的阅读框。
-- 贴左边框显示原方向半身探头；贴右边框使用同一资产水平镜像，容器宽度和可见比例对称。
+- 贴左边框保留角色右半边，贴右边框保留角色左半边；角色本身不做水平镜像，容器宽度和可见比例对称。
 - 从任一边框向内拖过 12px 阈值后，同一次拖动立即切换为完整身体；再次贴边则恢复对应探头方向。
 - 旧版归一化位置偏好会重新映射到内容框并夹紧，右侧旧位置不会停留在桌面留白。
 - 360×800、390×844、430×932 均无横向溢出；桌面 1280px 视口下角色始终位于 425–855px 内容框。
