@@ -7,11 +7,8 @@ import {
   NODE_BODY_MAX_LENGTH,
   NODE_BODY_RECOMMENDED_LENGTH,
   normalizeStory,
-  paginateStoryBody,
   parseReadingProgress,
   STORY_PAGE_BREAK,
-  STORY_PAGE_MAX_LENGTH,
-  STORY_PAGE_TARGET_LENGTH,
   validateStory,
   validateStoryBodyLengths,
   validateStoryMedia,
@@ -34,22 +31,6 @@ test("短篇字数汇总所有剧情节点且不计算标题与小雾台词", ()
   second.body = "丙\n丁";
   story.nodes = [story.nodes[0], second];
   assert.equal(countStoryBodyCharacters(story), 5);
-});
-
-test("手动分页符决定分页位置且不会展示给读者", () => {
-  const pages = paginateStoryBody(`第一面\n${STORY_PAGE_BREAK}\n第二面`);
-  assert.deepEqual(pages, ["第一面\n", "\n第二面"]);
-  assert.ok(pages.every((page) => !page.includes(STORY_PAGE_BREAK)));
-  assert.deepEqual(paginateStoryBody(`正文${STORY_PAGE_BREAK}`), ["正文"]);
-});
-
-test("长正文优先在段落或句末自动分页并保持内容顺序", () => {
-  const body = `${"甲".repeat(STORY_PAGE_TARGET_LENGTH - 1)}。\n${"乙".repeat(210)}！${"丙".repeat(50)}`;
-  const pages = paginateStoryBody(body);
-  assert.ok(pages.length >= 2);
-  assert.equal(pages.join(""), body);
-  assert.ok(pages.every((page) => countStoryCharacters(page) <= STORY_PAGE_MAX_LENGTH));
-  assert.match(pages[0], /。\n$/u);
 });
 
 test("章节开场图可选，收尾媒体只在提交审核或发布时作为完整性错误", () => {
@@ -115,17 +96,6 @@ test("独立图片素材参与发布校验与安全删除引用扫描", () => {
   assert.deepEqual(validateStoryAssetReferences(story, [...chapterAssets, asset]), []);
   assert.match(validateStoryAssetReferences(story, chapterAssets).join("；"), /独立图片页.*不存在/);
   assert.equal(storyReferencesAsset(story, asset)[0].field, "独立图片页");
-});
-
-test("英文长段落和超长连续文本会安全拆页", () => {
-  const english = Array.from({ length: 180 }, (_, index) => `word${index}`).join(" ");
-  const continuous = "雾".repeat(STORY_PAGE_MAX_LENGTH * 2 + 7);
-  const englishPages = paginateStoryBody(english);
-  const continuousPages = paginateStoryBody(continuous);
-  assert.equal(englishPages.join(""), english);
-  assert.equal(continuousPages.join(""), continuous);
-  assert.ok(englishPages.length > 1);
-  assert.ok(continuousPages.every((page) => countStoryCharacters(page) <= STORY_PAGE_MAX_LENGTH));
 });
 
 test("600 字仅提示，超过 2000 字会阻止保存与发布", () => {

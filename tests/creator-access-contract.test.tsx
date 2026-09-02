@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { AdminStudio } from "../app/admin/studio";
+import { AdminStudio, ShortEditor } from "../app/admin/studio";
 import { CreatorEntry } from "../app/creator/creator-entry";
 import { createBlankNovel, createBlankStory } from "../lib/story";
 
@@ -26,6 +27,8 @@ function installDom() {
     window,
     self: window,
     document: window.document,
+    localStorage: window.localStorage,
+    sessionStorage: window.sessionStorage,
     HTMLElement: window.HTMLElement,
     Event: window.Event,
     MouseEvent: window.MouseEvent,
@@ -37,6 +40,8 @@ function installDom() {
     unobserve() {}
     disconnect() {}
   };
+  globalThis.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 0) as unknown as number;
+  globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
   recoveryAvailable = false;
   accessUnavailable = false;
   firstAccessAllowed = false;
@@ -162,7 +167,7 @@ test("作品管理提供两种新建入口且短篇进入合并式编辑页", as
   const draft = createBlankNovel();
   draft.name = "契约短篇";
   const story = createBlankStory();
-  story.nodes[0].body = "一二三";
+  story.nodes[0].body = "👨‍👩‍👧‍👦".repeat(361);
   story.nodes[0].canEndChapter = true;
   const novel = {
     id: "short", slug: "short", ownerId: null, format: "short", formatLockedAt: null, convertibleTo: "serial",
@@ -188,9 +193,132 @@ test("作品管理提供两种新建入口且短篇进入合并式编辑页", as
   assert.ok(edit);
   await act(async () => edit.click());
   assert.match(container.textContent || "", /短篇编辑/);
-  assert.match(container.textContent || "", /3 \/ 20,000 字/);
+  assert.match(container.textContent || "", /361 \/ 20,000 字/);
+  assert.match(container.textContent || "", /阅读节奏/);
+  assert.match(container.textContent || "", /预计 4 页/);
+  assert.match(container.textContent || "", /开场前三页 50–90 字/);
+  assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /120 字 · 硬切/);
+  assert.equal([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("发布短篇"))?.disabled, false);
   assert.match(container.textContent || "", /可选自定义收尾图/);
-  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("开启互动编辑")));
+  assert.ok([...container.querySelectorAll("button")].some((button) => /开启互动编辑|打开互动编辑器/.test(button.textContent || "")));
+});
+
+test("短篇编辑器按 startNodeId 展示正文与阅读节奏", async () => {
+  const draft = createBlankNovel();
+  const story = createBlankStory();
+  const start = story.nodes[0];
+  start.body = "👨‍👩‍👧‍👦".repeat(361);
+  story.nodes = [{ ...start, id: "array-first", body: "旁".repeat(60) }, start];
+  const novel = {
+    id: "direct-short", slug: "direct-short", ownerId: null, format: "short" as const, formatLockedAt: null, convertibleTo: "serial" as const,
+    draftStatus: "draft" as const, submittedAt: null, reviewNote: "", sortOrder: 1, status: "draft" as const, version: 0,
+    draft, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+
+  await act(async () => root.render(<ShortEditor
+    scope="admin"
+    novel={novel}
+    draft={draft}
+    setDraft={() => {}}
+    story={story}
+    setStory={() => {}}
+    assets={[]}
+    folders={[]}
+    onBack={() => {}}
+    onAssets={() => {}}
+    onInteractive={() => {}}
+    onPreview={() => {}}
+    onSave={() => {}}
+    onSubmit={() => {}}
+  />));
+
+  assert.equal(container.querySelector<HTMLTextAreaElement>(".body-editor textarea")?.value, start.body);
+  assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /预计 4 页/);
+});
+
+test("连载阅读节奏面板在手机检查栏内可收缩且标签可滚动", () => {
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.flow-inspector\{min-width:0\}/);
+  assert.match(css, /@media\(max-width:700px\)\{\.flow-inspector>\.tabs\{overflow-x:auto/);
+});
+
+test("连载章节编辑器显示与阅读会话一致的实时分页节奏", async () => {
+  firstAccessAllowed = true;
+  const baseFetch = globalThis.fetch;
+  const draft = createBlankNovel();
+  draft.name = "契约连载";
+  const story = createBlankStory();
+  story.nodes[0].body = "👨‍👩‍👧‍👦".repeat(361);
+  const novel = {
+    id: "serial", slug: "serial", ownerId: null, format: "serial", formatLockedAt: null, convertibleTo: "short",
+    draftStatus: "draft", submittedAt: null, reviewNote: "", sortOrder: 1, status: "draft", version: 0,
+    draft, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  const chapter = {
+    id: "serial-chapter", novelId: "serial", slug: "serial-chapter", title: story.title, summary: "", coverUrl: "",
+    sortOrder: 1, status: "draft", ownerId: null, draftStatus: "draft", submittedAt: null, reviewNote: "",
+    version: 0, draft: story, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === "/admin/api/novels" && !init?.method) return Response.json({ novels: [novel] });
+    if (url === "/admin/api/chapters" && !init?.method) return Response.json({ chapters: [chapter] });
+    if (url === "/admin/api/chapters/versions?chapterId=serial-chapter") return Response.json({ versions: [] });
+    return baseFetch(input, init);
+  };
+
+  await act(async () => root.render(<AdminStudio />));
+  await settle();
+  const chapters = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("章节目录"));
+  assert.ok(chapters);
+  await act(async () => chapters.click());
+  const edit = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("编辑剧情"));
+  assert.ok(edit);
+  await act(async () => edit.click());
+  await settle();
+
+  assert.match(container.textContent || "", /正在编辑剧情/);
+  assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /预计 4 页/);
+  assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /120 字 · 硬切/);
+  assert.ok([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("插入分页")));
+  assert.equal([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("立即保存"))?.disabled, false);
+});
+
+test("阅读节奏面板会提示自动词间分页缺少语义收尾", async () => {
+  firstAccessAllowed = true;
+  const baseFetch = globalThis.fetch;
+  const draft = createBlankNovel();
+  const story = createBlankStory();
+  story.nodes[0].body = Array.from({ length: 80 }, (_, index) => `word${index}`).join(" ");
+  const novel = {
+    id: "word-break", slug: "word-break", ownerId: null, format: "serial", formatLockedAt: null, convertibleTo: "short",
+    draftStatus: "draft", submittedAt: null, reviewNote: "", sortOrder: 1, status: "draft", version: 0,
+    draft, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  const chapter = {
+    id: "word-break-chapter", novelId: "word-break", slug: "word-break-chapter", title: story.title, summary: "", coverUrl: "",
+    sortOrder: 1, status: "draft", ownerId: null, draftStatus: "draft", submittedAt: null, reviewNote: "",
+    version: 0, draft: story, published: null, updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === "/admin/api/novels" && !init?.method) return Response.json({ novels: [novel] });
+    if (url === "/admin/api/chapters" && !init?.method) return Response.json({ chapters: [chapter] });
+    if (url === "/admin/api/chapters/versions?chapterId=word-break-chapter") return Response.json({ versions: [] });
+    return baseFetch(input, init);
+  };
+
+  await act(async () => root.render(<AdminStudio />));
+  await settle();
+  const chapters = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("章节目录"));
+  assert.ok(chapters);
+  await act(async () => chapters.click());
+  const edit = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("编辑剧情"));
+  assert.ok(edit);
+  await act(async () => edit.click());
+  await settle();
+
+  assert.match(container.querySelector(".reading-rhythm-panel")?.textContent || "", /词间自动分页/);
 });
 
 test("作品管理为已发布连载提供完结与重新连载操作", async () => {

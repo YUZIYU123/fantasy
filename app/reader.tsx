@@ -1,13 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ReadingFactOutbox, type ReadingFactEnvelope } from "./reading-fact-outbox";
 import { createReadingDiscoveryFact, createReadingHeartbeatFact, createReadingSession, observeReadingSession, type ReadingEffect, type ReadingEvent, type ReadingState, type SessionTerminalPlayback } from "../lib/reading-session";
 import {
   clampMediaVolume,
   normalizeChoiceSfxMaxDuration,
-  paginateStoryBody,
   parseReadingProgress,
   type NovelRecord,
   type StoryChoice,
@@ -271,14 +270,12 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     }));
   }, [chapterId, chapterVersion, preview, state?.nodeId, state?.phase]);
 
-  const node = story.nodes.find((item) => item.id === state?.nodeId) || story.nodes[0];
-  const pages = useMemo(() => paginateStoryBody(node?.body || ""), [node?.body]);
   if (!state) return <ReaderEntryState kind="loading" onBack={onBack} backLabel={backLabel} />;
+  const node = story.nodes.find((item) => item.id === state.nodeId) || story.nodes[0];
   if (!node) return <ReaderEntryState kind="empty" onBack={onBack} backLabel={backLabel} />;
-  const pageIndex = Math.min(state.pageIndex, Math.max(0, pages.length - 1));
-  const isLastPage = pageIndex === pages.length - 1;
-  const needsAfterImage = node.displayImagePosition === "after" && !state.afterImageDone;
   const sessionView = observeReadingSession(story, state);
+  const { currentPage, pageIndex, totalPages, isLastPage } = sessionView;
+  const needsAfterImage = node.displayImagePosition === "after" && !state.afterImageDone;
 
   return <section className={`reader animation-${node.animation}`}>
     <audio ref={music} /><audio ref={sfx} />
@@ -290,8 +287,8 @@ export function Reader({ story, chapterId, chapterVersion = 0, onBack, onComplet
     {state.phase === "transitionVideo" && <div className="transition-video"><video ref={video} src={node.videoUrl} poster={node.imageUrl || undefined} playsInline controls={needsPlay} onEnded={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")} onError={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "failure")} />{needsPlay && <button onClick={() => { const id = activeVideoEffectId.current; if (!id) return; video.current?.play().then(() => setNeedsPlay(false)).catch(() => reportVideoOutcome(id, "failure")); }}>点击播放</button>}<button className="skip-video" onClick={() => activeVideoEffectId.current && reportVideoOutcome(activeVideoEffectId.current, "complete")}>跳过动画 →</button></div>}
     <header className="reader-nav"><button onClick={onBack} aria-label={backLabel}>←</button><div><span>{story.title}</span>{state.activeCueName && <small>♫ {state.activeCueName}</small>}</div><button onClick={() => setMuted((value) => !value)} aria-label={muted ? "开启声音" : "静音"}>{muted ? "♩" : "♫"}</button></header>
     {(state.phase === "beforeImage" || state.phase === "afterImage") && <NodeDisplayImage node={node} onContinue={() => dispatch({ type: "continue-image" })} />}
-    {state.phase === "content" && <article className="story-panel" ref={storyPanel}><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${pageIndex}`} aria-live="polite">{pages[pageIndex]}</p>
-      {pages.length > 1 && <nav className="story-pagination" aria-label="正文分页"><button disabled={pageIndex === 0 || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex - 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>← 上一页</button><span>{pageIndex + 1} / {pages.length}</span><button disabled={isLastPage || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex + 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>下一页 →</button></nav>}
+    {state.phase === "content" && <article className="story-panel" ref={storyPanel}><p className="node-kicker">{node.canEndChapter ? "CHAPTER GATE" : "CHAPTER SCENE"}</p><h1>{node.title}</h1><div className="ornament">✦</div><p className="story-body" key={`${node.id}-${pageIndex}`} aria-live="polite">{currentPage?.text || ""}</p>
+      {totalPages > 1 && <nav className="story-pagination" aria-label="正文分页"><button disabled={pageIndex === 0 || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex - 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>← 上一页</button><span>{pageIndex + 1} / {totalPages}</span><button disabled={isLastPage || state.choiceLocked} onClick={() => { dispatch({ type: "page", index: pageIndex + 1 }); storyPanel.current?.scrollTo({ top: 0 }); }}>下一页 →</button></nav>}
       {isLastPage && needsAfterImage && <div className="choices"><button disabled={state.choiceLocked} onClick={() => dispatch({ type: "show-after-image" })}><span>查看节点图片</span><i>→</i></button></div>}
       {isLastPage && !needsAfterImage && <div className="choices">{node.choices.map((choice) => <button key={choice.id} disabled={state.choiceLocked} onClick={() => dispatch({ type: "choose", choiceId: choice.id })}><span>{choice.label}</span><i>→</i></button>)}{node.canEndChapter && <button className="end-chapter-choice" disabled={state.choiceLocked} onClick={() => dispatch({ type: "complete" })}><span>结束本章</span><i>→</i></button>}</div>}
     </article>}

@@ -4,14 +4,173 @@ import {
   createReadingDiscoveryFact,
   createReadingHeartbeatFact,
   createReadingSession,
+  inspectReadingPages,
   observeReadingSession,
 } from "../lib/reading-session.ts";
-import { normalizeStory } from "../lib/story.ts";
+import { normalizeStory, STORY_PAGE_BREAK } from "../lib/story.ts";
 import { storyFixture } from "./story-fixture.mjs";
 
 function story() {
   return normalizeStory(storyFixture());
 }
+
+test("ReadingSession 让起始节点前三页采用开场节奏，之后恢复标准节奏", () => {
+  const current = story();
+  current.nodes.find((node) => node.id === current.startNodeId).body = Array.from(
+    { length: 6 },
+    (_, index) => `${String.fromCharCode(30000 + index).repeat(59)}。`,
+  ).join("");
+
+  const inspection = inspectReadingPages(current, current.startNodeId);
+
+  assert.deepEqual(inspection.pages.map((page) => page.characterCount), [60, 60, 60, 120, 60]);
+  assert.deepEqual(inspection.pages.map((page) => page.pace), ["opening", "opening", "opening", "standard", "standard"]);
+  assert.deepEqual(inspection.pages.map((page) => page.breakReason), ["sentence", "sentence", "sentence", "sentence", "end"]);
+});
+
+test("ReadingSession 让非起始节点从第一页采用标准节奏", () => {
+  const current = story();
+  const branch = current.nodes.find((node) => node.id !== current.startNodeId);
+  branch.body = Array.from({ length: 6 }, (_, index) => `${String.fromCharCode(31000 + index).repeat(59)}。`).join("");
+
+  const inspection = inspectReadingPages(current, branch.id);
+
+  assert.deepEqual(inspection.pages.map((page) => page.characterCount), [120, 120, 120]);
+  assert.ok(inspection.pages.every((page) => page.pace === "standard"));
+});
+
+test("ReadingSession 在句末分页时保留紧随其后的中文引号", () => {
+  const current = story();
+  const branch = current.nodes.find((node) => node.id !== current.startNodeId);
+  branch.body = `${"甲".repeat(118)}。”${"乙".repeat(119)}。`;
+
+  const inspection = inspectReadingPages(current, branch.id);
+
+  assert.equal(inspection.pages[0].text.endsWith("。”"), true);
+  assert.equal(inspection.pages[1].text.startsWith("乙"), true);
+  assert.deepEqual(inspection.pages.map((page) => page.characterCount), [120, 120]);
+});
+
+test("ReadingSession 保留手动分页并报告分页点是否语义完整", () => {
+  const current = story();
+  const branch = current.nodes.find((node) => node.id !== current.startNodeId);
+  branch.body = `${"甲".repeat(80)}${STORY_PAGE_BREAK}${"乙".repeat(119)}。`;
+
+  const inspection = inspectReadingPages(current, branch.id);
+
+  assert.deepEqual(inspection.pages.map((page) => ({
+    count: page.characterCount,
+    reason: page.breakReason,
+    assessment: page.assessment,
+    semanticEnding: page.semanticEnding,
+  })), [
+    { count: 80, reason: "manual", assessment: "short", semanticEnding: false },
+    { count: 120, reason: "end", assessment: "ending", semanticEnding: true },
+  ]);
+  assert.equal(inspection.pages.map((page) => page.text).join(""), branch.body.replace(STORY_PAGE_BREAK, ""));
+});
+
+test("ReadingSession 保留空白手动页与全部正文，并让手动页计入开场前三页", () => {
+  const current = story();
+  const start = current.nodes.find((node) => node.id === current.startNodeId);
+  start.body = ["甲".repeat(60), "   ", "乙".repeat(60), "丙".repeat(120)].join(STORY_PAGE_BREAK);
+
+  const inspection = inspectReadingPages(current, current.startNodeId);
+
+  assert.deepEqual(inspection.pages.map((page) => page.pace), ["opening", "opening", "opening", "standard"]);
+  assert.deepEqual(inspection.pages.map((page) => page.breakReason), ["manual", "manual", "manual", "end"]);
+  assert.deepEqual(inspection.pages.map((page) => page.characterCount), [60, 0, 60, 120]);
+  assert.equal(inspection.pages.map((page) => page.text).join(""), start.body.replaceAll(STORY_PAGE_BREAK, ""));
+});
+
+test("ReadingSession observation 直接提供当前页面和末页状态", () => {
+  const current = story();
+  const start = current.nodes.find((node) => node.id === current.startNodeId);
+  start.body = Array.from({ length: 6 }, (_, index) => `${String.fromCharCode(32000 + index).repeat(59)}。`).join("");
+  start.terminalEvent.trigger = "afterContent";
+  const session = createReadingSession({ story: current, chapterId: "observed-pages", chapterVersion: 1, preview: true });
+
+  const first = observeReadingSession(current, session.state);
+  assert.equal(first.pageIndex, 0);
+  assert.equal(first.totalPages, 5);
+  assert.equal(first.currentPage.characterCount, 60);
+  assert.equal(first.isLastPage, false);
+  assert.equal(first.terminalEvent, undefined);
+
+  session.dispatch({ type: "page", index: 4 });
+  const last = observeReadingSession(current, session.state);
+  assert.equal(last.currentPage.characterCount, 60);
+  assert.equal(last.isLastPage, true);
+  assert.equal(last.terminalEvent.trigger, "afterContent");
+});
+
+test("ReadingSession 在恢复时夹取旧分页页码并写回合法进度", () => {
+  const current = story();
+  const branch = current.nodes.find((node) => node.id !== current.startNodeId);
+  branch.body = `${"雾".repeat(119)}。`;
+
+  const session = createReadingSession({
+    story: current,
+    chapterId: "repaginated-progress",
+    chapterVersion: 3,
+    preview: false,
+    deviceProgress: { nodeId: branch.id, pageIndex: 99, version: 3, updatedAt: "2026-09-01T00:00:00Z" },
+  });
+
+  assert.equal(session.state.pageIndex, 0);
+  assert.equal(session.initialEffects.find((effect) => effect.kind === "persist-progress").progress.pageIndex, 0);
+});
+
+test("ReadingSession 在目标区间内优先选择段落结尾", () => {
+  const current = story();
+  const branch = current.nodes.find((node) => node.id !== current.startNodeId);
+  branch.body = `${"甲".repeat(119)}。${"乙".repeat(14)}\n${"丙".repeat(119)}。`;
+
+  const inspection = inspectReadingPages(current, branch.id);
+
+  assert.equal(inspection.pages[0].characterCount, 134);
+  assert.equal(inspection.pages[0].breakReason, "paragraph");
+  assert.equal(inspection.pages[0].text.endsWith("\n"), true);
+});
+
+test("ReadingSession 在没有语义边界时按完整 Emoji 字素安全硬切", () => {
+  const current = story();
+  const branch = current.nodes.find((node) => node.id !== current.startNodeId);
+  branch.body = "👨‍👩‍👧‍👦".repeat(361);
+
+  const inspection = inspectReadingPages(current, branch.id);
+
+  assert.deepEqual(inspection.pages.map((page) => page.characterCount), [180, 180, 1]);
+  assert.deepEqual(inspection.pages.map((page) => page.breakReason), ["hard", "hard", "end"]);
+  assert.equal(inspection.pages.map((page) => page.text).join(""), branch.body);
+});
+
+test("ReadingSession 为英文正文保留词间分页边界", () => {
+  const current = story();
+  const branch = current.nodes.find((node) => node.id !== current.startNodeId);
+  branch.body = Array.from({ length: 80 }, (_, index) => `word${index}`).join(" ");
+
+  const inspection = inspectReadingPages(current, branch.id);
+
+  assert.ok(inspection.pages.length > 1);
+  assert.ok(inspection.pages.some((page) => page.breakReason === "word"));
+  assert.ok(inspection.pages.every((page) => page.characterCount <= 180));
+  assert.equal(inspection.pages.map((page) => page.text).join(""), branch.body);
+});
+
+test("ReadingSession 为现有空节点提供一个可渲染的收尾页", () => {
+  const current = story();
+  current.nodes[0].body = "";
+
+  assert.deepEqual(inspectReadingPages(current, current.startNodeId).pages, [{
+    text: "",
+    characterCount: 0,
+    pace: "opening",
+    breakReason: "end",
+    assessment: "ending",
+    semanticEnding: true,
+  }]);
+});
 
 test("ReadingSession 选择较新进度并在完成或版本变化时重启", () => {
   const current = story();

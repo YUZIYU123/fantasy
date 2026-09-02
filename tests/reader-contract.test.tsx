@@ -144,6 +144,23 @@ test("预览会话共享分页和剧情推进，但不读取或保存阅读进�
   assert.equal(localStorage.getItem("mist-page-progress:preview-chapter"), null);
 });
 
+test("读者端使用 ReadingSession 的短页结果并只在末页显示剧情选择", async () => {
+  const story = readerStory();
+  story.nodes[0].body = Array.from(
+    { length: 6 },
+    (_, index) => `${String.fromCharCode(30000 + index).repeat(59)}。`,
+  ).join("");
+  await act(async () => root.render(<Reader story={story} chapterId="short-page-reader" preview onBack={() => {}} />));
+
+  assert.match(container.textContent || "", /1 \/ 5/);
+  assert.doesNotMatch(container.textContent || "", /路径甲/);
+  for (let page = 2; page <= 5; page += 1) {
+    await act(async () => clickButton("下一页"));
+    assert.match(container.textContent || "", new RegExp(`${page} \\/ 5`));
+  }
+  assert.match(container.textContent || "", /路径甲/);
+});
+
 test("正式阅读选择较新的云端进度", async () => {
   const story = readerStory();
   localStorage.setItem("mist-page-progress:progress-chapter", JSON.stringify({

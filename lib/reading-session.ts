@@ -1,13 +1,180 @@
 import {
   applyTerminalTaskEvents,
+  countStoryCharacters,
   normalizeChoiceImageDuration,
-  paginateStoryBody,
   resolveMusicCueAction,
+  STORY_PAGE_BREAK,
   type StoryChoice,
   type StoryDocument,
   type StoryMusicCue,
   type TransitionPreset,
 } from "./story.ts";
+
+export type ReadingPagePace = "opening" | "standard";
+export type ReadingPageBreakReason = "manual" | "paragraph" | "sentence" | "word" | "hard" | "end";
+export type ReadingPageAssessment = "opening-ideal" | "balanced" | "short" | "long" | "hard" | "ending";
+
+export type ReadingPage = {
+  text: string;
+  characterCount: number;
+  pace: ReadingPagePace;
+  breakReason: ReadingPageBreakReason;
+  assessment: ReadingPageAssessment;
+  semanticEnding: boolean;
+};
+
+export type ReadingPageInspection = {
+  nodeId: string;
+  pages: ReadingPage[];
+};
+
+export const OPENING_PAGE_POLICY = { minimum: 50, target: 70, maximum: 90, hardMaximum: 120 } as const;
+export const STANDARD_PAGE_POLICY = { minimum: 100, target: 120, maximum: 140, hardMaximum: 180 } as const;
+
+const readingGraphemeSegmenter = new Intl.Segmenter("zh-CN", { granularity: "grapheme" });
+
+function readingGraphemes(value: string) {
+  return Array.from(readingGraphemeSegmenter.segment(value), (part) => part.segment);
+}
+
+function isReadingVisibleCharacter(value: string) {
+  return !/^\s+$/u.test(value);
+}
+
+type PageCandidate = { index: number; visible: number; reason: Exclude<ReadingPageBreakReason, "manual" | "hard" | "end"> };
+type RawReadingPage = Omit<ReadingPage, "assessment" | "semanticEnding">;
+
+function candidatePriority(reason: PageCandidate["reason"]) {
+  return reason === "paragraph" ? 0 : reason === "sentence" ? 1 : 2;
+}
+
+function splitReadingSection(
+  section: string,
+  startsAtPage: number,
+  opening: boolean,
+  manualBoundaryAfter: boolean,
+) {
+  const characters = readingGraphemes(section);
+  const pages: RawReadingPage[] = [];
+  if (characters.length === 0) {
+    return [{
+      text: "",
+      characterCount: 0,
+      pace: opening && startsAtPage < 3 ? "opening" : "standard",
+      breakReason: manualBoundaryAfter ? "manual" : "end",
+    } satisfies RawReadingPage];
+  }
+  let offset = 0;
+
+  while (offset < characters.length) {
+    const pageNumber = startsAtPage + pages.length;
+    const pace: ReadingPagePace = opening && pageNumber < 3 ? "opening" : "standard";
+    const policy = pace === "opening" ? OPENING_PAGE_POLICY : STANDARD_PAGE_POLICY;
+    const remainingText = characters.slice(offset).join("");
+    const remainingCount = countStoryCharacters(remainingText);
+    if (remainingCount <= policy.maximum) {
+      pages.push({
+        text: remainingText,
+        characterCount: remainingCount,
+        pace,
+        breakReason: manualBoundaryAfter ? "manual" : "end",
+      });
+      break;
+    }
+
+    const candidates: PageCandidate[] = [];
+    let visible = 0;
+    let hardIndex = characters.length;
+    for (let index = offset; index < characters.length; index += 1) {
+      const character = characters[index];
+      if (isReadingVisibleCharacter(character)) visible += 1;
+      const reason = character === "\n"
+        ? "paragraph"
+        : /[。！？；.!?…]/u.test(character)
+          ? "sentence"
+          : /^\s+$/u.test(character)
+            ? "word"
+            : null;
+      if (reason === "sentence") {
+        let candidateIndex = index + 1;
+        let candidateVisible = visible;
+        while (candidateIndex < characters.length && /^[”’」』）】》〉〕〗〙〛]/u.test(characters[candidateIndex])) {
+          if (isReadingVisibleCharacter(characters[candidateIndex])) candidateVisible += 1;
+          candidateIndex += 1;
+        }
+        candidates.push({ index: candidateIndex, visible: candidateVisible, reason });
+      } else if (reason) {
+        candidates.push({ index: index + 1, visible, reason });
+      }
+      if (visible >= policy.hardMaximum) {
+        hardIndex = index + 1;
+        break;
+      }
+    }
+
+    const preferred = candidates.filter((candidate) => (
+      candidate.visible >= policy.minimum && candidate.visible <= policy.maximum
+    )).sort((left, right) => (
+      candidatePriority(left.reason) - candidatePriority(right.reason)
+      || Math.abs(left.visible - policy.target) - Math.abs(right.visible - policy.target)
+      || left.index - right.index
+    ));
+    const fallback = candidates.filter((candidate) => (
+      candidate.visible > policy.maximum && candidate.visible <= policy.hardMaximum
+    )).sort((left, right) => (
+      candidatePriority(left.reason) - candidatePriority(right.reason)
+      || left.visible - right.visible
+      || left.index - right.index
+    ));
+    const selected = preferred[0] ?? fallback[0];
+    const splitAt = selected?.index ?? hardIndex;
+    const text = characters.slice(offset, splitAt).join("");
+    const isSectionEnd = splitAt === characters.length;
+    pages.push({
+      text,
+      characterCount: countStoryCharacters(text),
+      pace,
+      breakReason: isSectionEnd
+        ? manualBoundaryAfter ? "manual" : "end"
+        : selected?.reason ?? "hard",
+    });
+    offset = splitAt;
+  }
+
+  return pages;
+}
+
+export function inspectReadingPages(story: StoryDocument, nodeId: string): ReadingPageInspection {
+  const node = story.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node) return { nodeId, pages: [] };
+  const sections = node.body.split(STORY_PAGE_BREAK);
+  const rawPages: RawReadingPage[] = [];
+  for (const [index, section] of sections.entries()) {
+    rawPages.push(...splitReadingSection(
+      section,
+      rawPages.length,
+      nodeId === story.startNodeId,
+      index < sections.length - 1,
+    ));
+  }
+  const pages = rawPages.map((page, index): ReadingPage => {
+    const policy = page.pace === "opening" ? OPENING_PAGE_POLICY : STANDARD_PAGE_POLICY;
+    const isLastPage = index === rawPages.length - 1;
+    const assessment: ReadingPageAssessment = page.breakReason === "hard"
+      ? "hard"
+      : isLastPage
+        ? "ending"
+        : page.characterCount < policy.minimum
+          ? "short"
+          : page.characterCount > policy.maximum
+            ? "long"
+            : page.pace === "opening" ? "opening-ideal" : "balanced";
+    const semanticEnding = page.breakReason === "paragraph" || page.breakReason === "sentence" || page.breakReason === "end"
+      || page.breakReason === "manual" && /(?:\n|[。！？；.!?…][”’」』）】》〉〕〗〙〛]*)\s*$/u.test(page.text);
+    return { ...page, assessment, semanticEnding };
+  });
+  return { nodeId, pages };
+}
 
 export type ReadingProgress = {
   nodeId: string;
@@ -176,12 +343,16 @@ export type ReadingSessionInput = {
 
 export function observeReadingSession(story: StoryDocument, state: ReadingState) {
   const node = story.nodes.find((item) => item.id === state.nodeId);
-  const pages = paginateStoryBody(node?.body || "");
+  const pages = inspectReadingPages(story, state.nodeId).pages;
   const pageIndex = Math.min(state.pageIndex, Math.max(0, pages.length - 1));
   const isLastPage = pageIndex === pages.length - 1;
   const terminalEvent = node && (node.terminalEvent?.trigger === "beforeContent" && pageIndex === 0
     || node.terminalEvent?.trigger === "afterContent" && isLastPage) ? node.terminalEvent : undefined;
   return {
+    currentPage: pages[pageIndex],
+    pageIndex,
+    totalPages: pages.length,
+    isLastPage,
     terminalEvent,
     terminalTask: applyTerminalTaskEvents(story, state.terminalEventIds).task,
     terminalSuppressed: state.phase !== "content" || state.choiceLocked,
@@ -216,6 +387,10 @@ export function createReadingSession(input: ReadingSessionInput) {
   const nodeId = initialNodeId(input);
   const resumed = nodeId === progress?.nodeId && !progress.completedAt
     && (typeof progress.version !== "number" || progress.version === input.chapterVersion);
+  const restoredPageCount = inspectReadingPages(input.story, nodeId).pages.length;
+  const restoredPageIndex = resumed
+    ? Math.max(0, Math.min(progress.pageIndex || 0, Math.max(0, restoredPageCount - 1)))
+    : 0;
   const firstPhase = (targetId: string): ReadingPhase => {
     const node = input.story.nodes.find((item) => item.id === targetId);
     if (node?.displayImagePosition === "before") return "beforeImage";
@@ -224,7 +399,7 @@ export function createReadingSession(input: ReadingSessionInput) {
   };
   let state: ReadingState = {
     nodeId,
-    pageIndex: resumed ? Math.max(0, progress?.pageIndex || 0) : 0,
+    pageIndex: restoredPageIndex,
     phase: firstPhase(nodeId),
     afterImageDone: false,
     incomingChoice: null,
@@ -315,7 +490,7 @@ export function createReadingSession(input: ReadingSessionInput) {
     const node = input.story.nodes.find((item) => item.id === state.nodeId);
     if (!node) return { state, effects };
     if (event.type === "page") {
-      const pages = paginateStoryBody(node.body);
+      const pages = inspectReadingPages(input.story, node.id).pages;
       state = { ...state, pageIndex: Math.max(0, Math.min(event.index, pages.length - 1)) };
       effects.push(...progressEffect());
     } else if (event.type === "show-after-image") {

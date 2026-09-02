@@ -194,8 +194,6 @@ export const STORY_PAGE_BREAK = "[[PAGE_BREAK]]";
 export const NODE_BODY_RECOMMENDED_LENGTH = 600;
 export const NODE_BODY_MAX_LENGTH = 2000;
 export const SHORT_STORY_MAX_LENGTH = 20_000;
-export const STORY_PAGE_TARGET_LENGTH = 190;
-export const STORY_PAGE_MAX_LENGTH = 240;
 export const DEFAULT_COVER_PRESENTATION: ImagePresentation = { fit: "cover", positionX: 50, positionY: 50 };
 export const DEFAULT_CONTAIN_PRESENTATION: ImagePresentation = { fit: "contain", positionX: 50, positionY: 50 };
 export const CHOICE_FEEDBACK_IMAGE_DEFAULT_MS = 1200;
@@ -369,62 +367,6 @@ export function countStoryCharacters(body: string) {
 
 export function countStoryBodyCharacters(story: Pick<StoryDocument, "nodes">) {
   return story.nodes.reduce((total, node) => total + countStoryCharacters(node.body), 0);
-}
-
-function splitAutomaticPage(section: string): string[] {
-  const characters = graphemes(section);
-  const pages: string[] = [];
-  let offset = 0;
-
-  while (offset < characters.length) {
-    let visible = 0;
-    let targetReached = false;
-    let paragraphBreak = -1;
-    let sentenceBreak = -1;
-    let wordBreak = -1;
-    let hardBreak = characters.length;
-
-    for (let index = offset; index < characters.length; index += 1) {
-      const character = characters[index];
-      if (isVisibleCharacter(character)) visible += 1;
-      if (visible >= STORY_PAGE_TARGET_LENGTH) targetReached = true;
-      if (targetReached) {
-        if (character === "\n" && paragraphBreak === -1) paragraphBreak = index + 1;
-        else if (/[。！？；.!?]/u.test(character) && sentenceBreak === -1) sentenceBreak = index + 1;
-        else if (/^\s+$/u.test(character) && wordBreak === -1) wordBreak = index + 1;
-      }
-      if (visible >= STORY_PAGE_MAX_LENGTH) {
-        hardBreak = index + 1;
-        break;
-      }
-    }
-
-    if (hardBreak === characters.length
-      && graphemes(characters.slice(offset).join("")).filter(isVisibleCharacter).length <= STORY_PAGE_MAX_LENGTH) {
-      pages.push(characters.slice(offset).join(""));
-      break;
-    }
-
-    const splitAt = paragraphBreak > offset
-      ? paragraphBreak
-      : sentenceBreak > offset
-        ? sentenceBreak
-        : wordBreak > offset
-          ? wordBreak
-          : hardBreak;
-    pages.push(characters.slice(offset, splitAt).join(""));
-    offset = splitAt;
-  }
-
-  return pages.length ? pages : [section];
-}
-
-export function paginateStoryBody(body: string): string[] {
-  const manualSections = body.split(STORY_PAGE_BREAK)
-    .filter((section) => countStoryCharacters(section) > 0);
-  if (manualSections.length === 0) return [""];
-  const pages = manualSections.flatMap((section) => splitAutomaticPage(section));
-  return pages;
 }
 
 export function validateStoryBodyLengths(story: StoryDocument): string[] {
