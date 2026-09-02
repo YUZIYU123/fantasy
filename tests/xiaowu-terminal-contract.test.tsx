@@ -178,8 +178,7 @@ test("小雾只在手机内容框内移动并在左右边框对称探头", async
   assert.equal(launcher.style.left, "523px");
 
   const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /\.xiaowu-companion\.edge-right img\{[^}]*left:0/);
-  assert.doesNotMatch(css, /\.xiaowu-companion\.edge-right img\{[^}]*scaleX\(-1\)/);
+  assert.match(css, /\.xiaowu-companion\.edge-right img\{[^}]*left:-6px[^}]*scaleX\(-1\)/);
 });
 
 test("正式阅读在桌面端也使用居中的手机阅读框作为小雾边界", async () => {
