@@ -1,13 +1,9 @@
-import { CreationLifecycleError, type CreationCommand, type CreationResult } from "../db/creation-lifecycle";
+import { CREATION_ACTIONS, CreationLifecycleError, type CreationCommand, type CreationResult } from "../db/creation-lifecycle";
 
 export function parseCreationCommand(entity: "novel" | "chapter" | "short", input: unknown): CreationCommand {
   const body = input && typeof input === "object" ? input as Record<string, unknown> : {};
   const action = typeof body.action === "string" ? body.action : "";
-  const allowed = entity === "novel"
-    ? ["create", "duplicate", "convert", "save", "submit", "withdraw", "reject", "publish", "offline", "delete", "rollback"]
-    : entity === "short"
-      ? ["create", "save", "submit", "withdraw", "reject", "publish", "offline", "delete", "rollback"]
-      : ["create", "duplicate", "save", "submit", "withdraw", "reject", "publish", "offline", "delete", "rollback"];
+  const allowed = CREATION_ACTIONS[entity] as readonly string[];
   const label = entity === "novel" ? "小说" : entity === "short" ? "短篇" : "章节";
   if (!allowed.includes(action)) throw new CreationLifecycleError(`不支持的${label}操作`);
   if (!["create", "duplicate"].includes(action) && typeof body.id !== "string") {

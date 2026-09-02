@@ -605,6 +605,33 @@ test("创作者与管理员的小说章节生命周期保持兼容", async (t) =
     assert.equal(currentShorts.some((item) => item.novel.id === interactiveRow.id), true);
   });
 
+  await t.test("零章节连载通过 HTTP 命令完结后进入公开展示", async () => {
+    const created = await authorPost("/studio/api/novels", authorA.cookie, { action: "create" });
+    assert.equal(created.response.status, 201);
+    const row = (await requestJson("/studio/api/novels", { cookie: authorA.cookie })).payload.novels
+      .find((item) => item.id === created.payload.id);
+    const novel = structuredClone(row.draft);
+    novel.name = "群星沉睡以后";
+    novel.summary = "已经闭合的世界线，仅作展示。";
+    novel.coverUrl = "https://example.com/stars-asleep.jpg";
+    novel.coverAlt = "沉睡群星下的孤城";
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, {
+      action: "submit", id: row.id, novel,
+    })).response.status, 200);
+    assert.equal((await adminPost("/admin/api/novels", {
+      action: "publish", id: row.id, novel,
+    })).response.status, 200);
+    assert.equal((await authorPost("/studio/api/novels", authorA.cookie, {
+      action: "complete", id: row.id,
+    })).response.status, 200);
+    const publicRow = (await requestJson("/api/novels")).payload.novels.find((item) => item.id === row.id);
+    assert.equal(publicRow.serialStatus, "completed");
+    assert.equal(publicRow.chapters.length, 0);
+    assert.equal((await adminPost("/admin/api/novels", {
+      action: "reopen", id: row.id,
+    })).response.status, 200);
+  });
+
   let novelId = "";
   let publishedNovel;
   await t.test("作者小说经过提交、撤回、驳回、发布、下线与回滚", async () => {

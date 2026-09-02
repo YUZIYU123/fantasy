@@ -26,6 +26,12 @@ export type CreationActor =
   | { kind: "administrator" }
   | { kind: "author"; id: string };
 
+export const CREATION_ACTIONS = {
+  novel: ["create", "duplicate", "convert", "complete", "reopen", "save", "submit", "withdraw", "reject", "publish", "offline", "delete", "rollback"],
+  chapter: ["create", "duplicate", "save", "submit", "withdraw", "reject", "publish", "offline", "delete", "rollback"],
+  short: ["create", "save", "submit", "withdraw", "reject", "publish", "offline", "delete", "rollback"],
+} as const;
+
 type NovelMeta = Pick<Partial<NovelRecord>, "slug" | "sortOrder"> & { reviewNote?: string };
 type ChapterMeta = Pick<Partial<ChapterRecord>, "slug" | "sortOrder" | "novelId"> & { reviewNote?: string };
 
@@ -33,6 +39,7 @@ type NovelCommand =
   | { entity: "novel"; action: "create" }
   | { entity: "novel"; action: "duplicate"; id?: string }
   | { entity: "novel"; action: "convert"; id: string; format: "serial" | "short" }
+  | { entity: "novel"; action: "complete" | "reopen"; id: string }
   | { entity: "novel"; action: "save" | "submit" | "publish"; id: string; novel: NovelDocument; meta?: NovelMeta }
   | { entity: "novel"; action: "withdraw" | "offline" | "delete"; id: string }
   | { entity: "novel"; action: "reject"; id: string; meta: NovelMeta }
@@ -113,8 +120,8 @@ function enforceCreationPolicy(
   const message = creationMessages[entity];
   if (actor.kind === "author" && current.ownerId !== actor.id) fail(message.forbidden, 403);
   const allowed = actor.kind === "author"
-    ? ["save", "submit", "withdraw", "delete"]
-    : ["save", "publish", "offline", "reject", "delete", "rollback"];
+    ? ["save", "submit", "withdraw", "delete", "complete", "reopen"]
+    : ["save", "publish", "offline", "reject", "delete", "rollback", "complete", "reopen"];
   if (!allowed.includes(action)) fail(message.unsupported);
   if (action === "save" && actor.kind === "author" && current.draftStatus === "submitted") fail(message.locked);
   if (action === "submit" && current.draftStatus === "submitted") fail(message.submitted);
@@ -204,13 +211,14 @@ async function listPublicNovels(slug?: string | null) {
     const chapterRows = await db.select().from(chapters)
       .where(and(eq(chapters.novelId, row.id), eq(chapters.status, "published")))
       .orderBy(asc(chapters.sortOrder));
-    if (chapterRows.length === 0) continue;
+    if (chapterRows.length === 0 && !(row.format === "serial" && row.serialStatus === "completed")) continue;
     const novel = rowToNovel(row);
     const publicChapters = chapterRows.map(rowToChapter);
     const stories = publicChapters.flatMap((chapter) => chapter.published ? [chapter.published] : []);
     result.push({
       id: novel.id, slug: novel.slug, sortOrder: novel.sortOrder, status: novel.status,
       version: novel.version, format: novel.format,
+      serialStatus: novel.serialStatus,
       wordCount: stories.reduce((total, story) => total + countStoryBodyCharacters(story), 0),
       interactive: stories.some((story) => story.nodes.length > 1 || story.nodes.some((node) => node.choices.length > 0)),
       published: novel.published,
@@ -426,7 +434,15 @@ async function executeNovel(actor: CreationActor, command: NovelCommand): Promis
   if (current.format === "short") fail("短篇必须通过整体生命周期操作", 409);
   const reviewNote = enforceCreationPolicy(actor, "novel", command.action, current, command.action === "reject" ? command.meta.reviewNote : undefined);
 
-  if (command.action === "save" && command.novel) {
+  if (command.action === "complete" || command.action === "reopen") {
+    if (current.status !== "published") fail("只有已发布的连载小说可以变更连载状态", 409);
+    if (command.action === "complete" && current.serialStatus === "completed") fail("连载小说已经完结", 409);
+    if (command.action === "reopen" && current.serialStatus !== "completed") fail("连载小说当前仍在连载", 409);
+    await db.update(novels).set({
+      serialStatus: command.action === "complete" ? "completed" : "ongoing",
+      updatedAt: new Date().toISOString(),
+    }).where(eq(novels.id, current.id));
+  } else if (command.action === "save" && command.novel) {
     const novel = normalizeNovel(command.novel);
     await db.update(novels).set({
       slug: String(command.meta?.slug || current.slug).slice(0, 100),
@@ -509,9 +525,12 @@ async function executeChapter(actor: CreationActor, command: ChapterCommand): Pr
   if (!command.id) fail("缺少章节 ID");
   const current = (await db.select().from(chapters).where(eq(chapters.id, command.id)).limit(1))[0];
   if (!current) fail("章节不存在", 404);
-  const parent = (await db.select({ format: novels.format }).from(novels).where(eq(novels.id, current.novelId)).limit(1))[0];
+  const parent = (await db.select({ format: novels.format, serialStatus: novels.serialStatus }).from(novels).where(eq(novels.id, current.novelId)).limit(1))[0];
   if (parent?.format === "short") fail("短篇正文必须通过短篇整体生命周期操作", 409);
   const reviewNote = enforceCreationPolicy(actor, "chapter", command.action, current, command.action === "reject" ? command.meta.reviewNote : undefined);
+  if (parent?.serialStatus === "completed" && (command.action === "submit" || command.action === "publish")) {
+    fail("已完结小说需先重新连载，才能提交或发布章节", 409);
+  }
   let updatedAt: string | undefined;
 
   if (command.action === "save" && command.story) {
