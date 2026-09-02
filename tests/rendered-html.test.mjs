@@ -150,6 +150,42 @@ test("平台健康检查验证 D1 与 R2 bindings 且禁止缓存", async () => 
   assert.deepEqual(await response.json(), { ok: true, environment: "local" });
 });
 
+test("公开作品目录 HTTP adapter 返回首页摘要并拒绝非法分页参数", async () => {
+  const home = await requestJson("/api/catalog");
+  assert.equal(home.response.status, 200);
+  assert.equal(home.response.headers.get("cache-control"), "public, max-age=30, s-maxage=60");
+  assert.deepEqual(Object.keys(home.payload.sections), ["short", "ongoing", "completed"]);
+  for (const page of Object.values(home.payload.sections)) {
+    assert.ok(page.items.length <= 4);
+    assert.equal(typeof page.total, "number");
+  }
+  const invalidSection = await requestJson("/api/catalog?section=unknown");
+  const invalidLimit = await requestJson("/api/catalog?section=short&limit=21");
+  const invalidCursor = await requestJson("/api/catalog?section=short&cursor=broken");
+  assert.deepEqual(
+    [invalidSection.response.status, invalidLimit.response.status, invalidCursor.response.status],
+    [400, 400, 400],
+  );
+});
+
+test("书架成员 HTTP adapter 批量返回至多二十部作品", async () => {
+  const reader = await createReaderAccount("membership-batch");
+  const query = new URLSearchParams();
+  query.append("novelId", "short-a");
+  query.append("novelId", "short-b");
+  const result = await requestJson(`/api/account/bookshelf/membership?${query}`, { cookie: reader.cookie });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.response.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(result.payload, {
+    kind: "membership-batch",
+    memberships: { "short-a": false, "short-b": false },
+  });
+  const excessive = new URLSearchParams();
+  for (let index = 0; index < 21; index += 1) excessive.append("novelId", `short-${index}`);
+  const rejected = await requestJson(`/api/account/bookshelf/membership?${excessive}`, { cookie: reader.cookie });
+  assert.equal(rejected.response.status, 400);
+});
+
 test("账号身份、配置和错误响应禁止进入共享缓存", async () => {
   for (const path of ["/api/auth/me", "/api/auth/config"]) {
     const response = await fetch(`${origin}${path}`);
@@ -583,6 +619,10 @@ test("创作者与管理员的小说章节生命周期保持兼容", async (t) =
     assert.equal(publicRow.interactive, false);
     assert.equal(publicRow.chapters.length, 1);
     assert.equal(publicRow.chapters[0].published.outroImageUrl, novel.coverUrl);
+    const directPublicRow = await requestJson(`/api/novels?id=${encodeURIComponent(row.id)}`);
+    assert.equal(directPublicRow.response.status, 200);
+    assert.equal(directPublicRow.payload.novel.id, row.id);
+    assert.ok(directPublicRow.payload.novel.chapters[0].published.nodes.length > 0);
 
     const interactiveCreated = await authorPost("/studio/api/shorts", authorA.cookie, { action: "create" });
     assert.equal(interactiveCreated.response.status, 201);
@@ -800,6 +840,9 @@ test("创作者与管理员的小说章节生命周期保持兼容", async (t) =
     assert.ok(publicChapters.some((chapter) => chapter.id === chapterId));
     let publicNovels = (await requestJson("/api/novels")).payload.novels;
     assert.ok(publicNovels.some((novel) => novel.id === novelId && novel.chapters.some((chapter) => chapter.id === chapterId)));
+    const publicNovelByChapter = (await requestJson(`/api/novels?chapterId=${chapterId}`)).payload.novel;
+    assert.equal(publicNovelByChapter.id, novelId);
+    assert.ok(publicNovelByChapter.chapters.some((chapter) => chapter.id === chapterId));
 
     assert.equal((await adminPost("/admin/api/novels", { action: "offline", id: novelId })).response.status, 200);
     publicChapters = (await requestJson(`/api/chapters?novelId=${novelId}`)).payload.chapters;

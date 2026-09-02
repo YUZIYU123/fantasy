@@ -50,6 +50,54 @@ function publicNovel(id: string, name: string, sortOrder: number, chapters: stri
   };
 }
 
+function catalogHome(novels: ReturnType<typeof publicNovel>[]) {
+  const item = (novel: ReturnType<typeof publicNovel> & {
+    format?: "serial" | "short";
+    serialStatus?: "ongoing" | "completed" | null;
+    wordCount?: number;
+    interactive?: boolean;
+  }) => {
+    const format = novel.format ?? "serial";
+    const common = {
+      id: novel.id, slug: novel.slug, sortOrder: novel.sortOrder, version: novel.version,
+      published: novel.published, hasReadableContent: novel.chapters.length > 0,
+    };
+    return format === "short"
+      ? { ...common, format, serialStatus: null, wordCount: novel.wordCount ?? 0, interactive: novel.interactive ?? false }
+      : {
+        ...common, format, serialStatus: novel.serialStatus === "completed" ? "completed" as const : "ongoing" as const,
+        chapterCount: novel.chapters.length,
+        latestChapterTitle: novel.chapters.at(-1)?.published?.title ?? null,
+      };
+  };
+  const all = novels.map((novel) => item(novel));
+  const page = (items: typeof all) => ({ items: items.slice(0, 4), total: items.length, nextCursor: null });
+  return {
+    sections: {
+      short: page(all.filter((novel) => novel.format === "short")),
+      ongoing: page(all.filter((novel) => novel.format === "serial" && novel.serialStatus === "ongoing")),
+      completed: page(all.filter((novel) => novel.format === "serial" && novel.serialStatus === "completed")),
+    },
+  };
+}
+
+function storyStudioFetch(novels: ReturnType<typeof publicNovel>[]) {
+  return async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/catalog") return Response.json(catalogHome(novels));
+    if (url.startsWith("/api/novels?id=")) {
+      const id = new URL(url, "http://localhost").searchParams.get("id");
+      return Response.json({ novel: novels.find((novel) => novel.id === id) ?? null });
+    }
+    if (url.startsWith("/api/account/bookshelf/membership")) {
+      const ids = new URL(url, "http://localhost").searchParams.getAll("novelId");
+      return Response.json({ kind: "membership-batch", memberships: Object.fromEntries(ids.map((id) => [id, false])) });
+    }
+    if (url.startsWith("/api/account/progress")) return Response.json({ progress: null });
+    return Response.json({ user: null });
+  };
+}
+
 function installDom() {
   dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
     url: "http://localhost/",
@@ -191,7 +239,7 @@ test("正式正文隐藏 Dock 但保留不遮挡顶部控件的小雾探头", as
 });
 
 test("世界档案直接使用幻界 OS Dock 而不再折叠主导航", async () => {
-  globalThis.fetch = async () => Response.json({ novels: [] });
+  globalThis.fetch = storyStudioFetch([]);
   await act(async () => root.render(<StoryStudio />));
   await settle();
 
@@ -201,24 +249,27 @@ test("世界档案直接使用幻界 OS Dock 而不再折叠主导航", async ()
   assert.equal(container.querySelector("details.reader-navigation"), null);
 });
 
-test("多部连载小说在同一分区按原顺序使用统一卡片展示", async () => {
+test("首页每类只展示前四部紧凑双列卡片并提供全部入口", async () => {
   const novels = [
     publicNovel("primary", "焦账员", 1, ["失火", "虚假报警的代价"]),
     publicNovel("second", "白塔沉默", 2, ["雪城", "回声"]),
     publicNovel("third", "时隙观测者", 3, ["观测协议"]),
+    publicNovel("fourth", "深海来客", 4, ["下潜"]),
+    publicNovel("fifth", "不会出现在首页", 5, ["远方"]),
   ];
-  globalThis.fetch = async (input) => String(input) === "/api/novels"
-    ? Response.json({ novels })
-    : Response.json({ user: null });
+  globalThis.fetch = storyStudioFetch(novels);
 
   await act(async () => root.render(<StoryStudio />));
   await settle();
 
   assert.deepEqual(
     [...container.querySelectorAll(".serial-catalog .catalog-card h3")].map((heading) => heading.textContent),
-    ["焦账员", "白塔沉默", "时隙观测者"],
+    ["焦账员", "白塔沉默", "时隙观测者", "深海来客"],
   );
-  assert.equal(container.querySelector(".serial-catalog .catalog-card")?.textContent?.includes("虚假报警的代价"), true);
+  assert.equal(container.querySelector(".serial-catalog .catalog-card")?.querySelector("p"), null);
+  assert.equal(container.querySelector(".serial-catalog .catalog-card-grid")?.classList.contains("catalog-card-grid-compact"), true);
+  const all = container.querySelector<HTMLAnchorElement>('.serial-catalog a[href="/catalog/ongoing"]');
+  assert.equal(all?.textContent, "全部 5 部 →");
   assert.equal(container.querySelector(".serial-catalog .archive-list"), null);
   assert.equal(container.querySelector(".serial-catalog .archive-feature"), null);
 });
@@ -231,11 +282,7 @@ test("首页先展示短篇区并从卡片直接进入唯一正文", async () =>
     interactive: false,
   };
   const serial = { ...publicNovel("serial-one", "长夜连载", 2, ["第一章"]), format: "serial" as const };
-  globalThis.fetch = async (input) => String(input) === "/api/novels"
-    ? Response.json({ novels: [short, serial] })
-    : String(input).startsWith("/api/account/progress")
-      ? Response.json({ progress: null })
-      : Response.json({ user: null });
+  globalThis.fetch = storyStudioFetch([short, serial]);
 
   await act(async () => root.render(<StoryStudio />));
   await settle();
@@ -244,10 +291,12 @@ test("首页先展示短篇区并从卡片直接进入唯一正文", async () =>
   assert.deepEqual(headings, ["短篇", "连载小说"]);
   assert.deepEqual([...container.querySelectorAll(".catalog-section-heading p")].map((item) => item.textContent), ["凝结于一瞬的幻境", "尚未闭合的世界线"]);
   assert.ok([...container.querySelectorAll(".catalog-section-heading h2")].every((heading) => heading.previousElementSibling?.tagName === "P"));
-  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading>span")].map((item) => item.textContent), ["1 部", "1 部"]);
+  assert.deepEqual([...container.querySelectorAll(".catalog-section-heading>a")].map((item) => item.textContent), ["全部 1 部 →", "全部 1 部 →"]);
   assert.match(container.querySelector(".short-catalog .catalog-card")?.textContent || "", /3,210 字 · 线性/);
   assert.equal(container.querySelectorAll(".work-catalog").length, 2);
-  await act(async () => clickButton("开始 / 继续阅读"));
+  const shortLink = container.querySelector<HTMLAnchorElement>('a[aria-label="开始或继续阅读短篇：雾中来信"]');
+  assert.ok(shortLink);
+  await act(async () => shortLink.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true })));
   await settle();
   assert.match(container.textContent || "", /起点正文/);
   assert.equal(container.querySelector(".novel-home"), null);
@@ -271,9 +320,7 @@ test("首页依次展示短篇、连载中与已完结，并让零正文示例�
     format: "serial" as const,
     serialStatus: "completed" as const,
   };
-  globalThis.fetch = async (input) => String(input) === "/api/novels"
-    ? Response.json({ novels: [short, ongoing, completed] })
-    : Response.json({ user: null });
+  globalThis.fetch = storyStudioFetch([short, ongoing, completed]);
 
   await act(async () => root.render(<StoryStudio />));
   await settle();
@@ -289,13 +336,11 @@ test("首页依次展示短篇、连载中与已完结，并让零正文示例�
   const completedCard = container.querySelector(".completed-catalog .catalog-card");
   assert.match(completedCard?.textContent || "", /0 个章节/);
   assert.match(completedCard?.textContent || "", /暂无正文，仅作展示/);
-  assert.equal(completedCard?.querySelector("button.catalog-card-open"), null);
+  assert.equal(completedCard?.querySelector("a.catalog-card-open"), null);
 });
 
 test("只有一部连载小说时只显示一张统一卡片", async () => {
-  globalThis.fetch = async (input) => String(input) === "/api/novels"
-    ? Response.json({ novels: [publicNovel("only", "唯一档案", 1, ["入口"])] })
-    : Response.json({ user: null });
+  globalThis.fetch = storyStudioFetch([publicNovel("only", "唯一档案", 1, ["入口"])]);
 
   await act(async () => root.render(<StoryStudio />));
   await settle();
@@ -306,15 +351,13 @@ test("只有一部连载小说时只显示一张统一卡片", async () => {
 });
 
 test("小说详情把加入书架呈现为紧凑次级操作", async () => {
-  globalThis.fetch = async (input) => String(input) === "/api/novels"
-    ? Response.json({ novels: [publicNovel("compact-shelf", "微光档案", 1, ["入口"])] })
-    : String(input).startsWith("/api/account/bookshelf/membership")
-      ? Response.json({ present: false })
-      : Response.json({ user: null });
+  globalThis.fetch = storyStudioFetch([publicNovel("compact-shelf", "微光档案", 1, ["入口"])]);
 
   await act(async () => root.render(<StoryStudio />));
   await settle();
-  await act(async () => clickButton("进入小说"));
+  const detailLink = container.querySelector<HTMLAnchorElement>('a[aria-label="进入连载小说：微光档案"]');
+  assert.ok(detailLink);
+  await act(async () => detailLink.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true })));
   await settle();
 
   const action = [...container.querySelectorAll<HTMLButtonElement>("button")]
@@ -326,30 +369,27 @@ test("小说详情把加入书架呈现为紧凑次级操作", async () => {
 });
 
 test("从世界档案进入小说时把新页面恢复到顶部", async () => {
-  globalThis.fetch = async (input) => String(input) === "/api/novels"
-    ? Response.json({ novels: [publicNovel("only", "唯一档案", 1, ["入口"])] })
-    : Response.json({ user: null });
+  globalThis.fetch = storyStudioFetch([publicNovel("only", "唯一档案", 1, ["入口"])]);
   await act(async () => root.render(<StoryStudio />));
   await settle();
 
   let requestedTop: number | undefined;
   Object.defineProperty(window, "scrollY", { configurable: true, value: 500 });
   window.scrollTo = ((options: ScrollToOptions) => { requestedTop = options.top; }) as typeof window.scrollTo;
-  const enter = [...container.querySelectorAll<HTMLButtonElement>("button")]
-    .find((button) => button.textContent?.includes("进入小说"));
+  const enter = container.querySelector<HTMLAnchorElement>('a[aria-label="进入连载小说：唯一档案"]');
   assert.ok(enter);
 
-  await act(async () => enter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await act(async () => enter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true })));
   assert.equal(requestedTop, 0);
 });
 
 test("世界档案读取失败时显示错误并允许重试", async () => {
   let attempts = 0;
   globalThis.fetch = async (input) => {
-    if (String(input) !== "/api/novels") return Response.json({});
+    if (String(input) !== "/api/catalog") return Response.json({});
     attempts += 1;
     if (attempts === 1) return Response.json({ error: "temporary" }, { status: 503 });
-    return Response.json({ novels: [] });
+    return Response.json(catalogHome([]));
   };
   await act(async () => root.render(<StoryStudio />));
   await settle();

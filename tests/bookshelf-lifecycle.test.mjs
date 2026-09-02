@@ -8,7 +8,7 @@ function snapshot(name) {
 
 class MemoryBookshelfStore {
   novels = new Map(); entries = new Map(); facts = new Map(); receipts = new Map(); attempts = []; frontiers = new Map(); snapshots = new Map();
-  factsUnavailable = new Set(); frontierBatches = 0;
+  factsUnavailable = new Set(); frontierBatches = 0; membershipBatches = [];
   async findNovel(id) { return this.novels.get(id) || null; }
   async findEntry(userId, novelId) { return this.entries.get(`${userId}:${novelId}`) || null; }
   async addEntry(userId, novel, now) {
@@ -19,6 +19,11 @@ class MemoryBookshelfStore {
   }
   async removeEntry(userId, novelId) { return this.entries.delete(`${userId}:${novelId}`) ? "removed" : "already_absent"; }
   async listEntries(userId) { return [...this.entries.values()].filter((entry) => entry.userId === userId); }
+  async findEntries(userId, novelIds) {
+    this.membershipBatches.push([...novelIds]);
+    const wanted = new Set(novelIds);
+    return (await this.listEntries(userId)).filter((entry) => wanted.has(entry.novelId));
+  }
   async listResolvedEntries(userId, entryIds) {
     const wanted = entryIds ? new Set(entryIds) : null;
     return (await this.listEntries(userId)).filter((entry) => !wanted || wanted.has(entry.id)).map((entry) => {
@@ -166,6 +171,32 @@ test("BookshelfLifecycle 回执重放不覆盖后续意图并执行双维度频�
   await assert.rejects(
     () => lifecycle.execute(actor, { action: "remove", novelId: "other", operationId: addOperation, sourceKey: "source" }),
     (error) => error instanceof BookshelfError && error.status === 409,
+  );
+});
+
+test("BookshelfLifecycle 一次返回至多二十部小说的书架成员状态", async () => {
+  const store = new MemoryBookshelfStore();
+  const actor = { kind: "account", id: "reader" };
+  const lifecycle = new BookshelfLifecycle(store);
+  for (const id of ["short-a", "short-b", "short-c"]) {
+    const value = novel(id); store.novels.set(id, value);
+  }
+  await store.addEntry(actor.id, store.novels.get("short-a"), "2026-08-16T03:00:00.000Z");
+  await store.addEntry(actor.id, store.novels.get("short-c"), "2026-08-16T03:00:00.000Z");
+
+  const result = await lifecycle.execute(actor, {
+    action: "membership-batch", novelIds: ["short-a", "short-b", "short-a", "short-c"],
+  });
+  assert.deepEqual(result, {
+    kind: "membership-batch",
+    memberships: { "short-a": true, "short-b": false, "short-c": true },
+  });
+  assert.deepEqual(store.membershipBatches, [["short-a", "short-b", "short-c"]]);
+  await assert.rejects(
+    () => lifecycle.execute(actor, {
+      action: "membership-batch", novelIds: Array.from({ length: 21 }, (_, index) => `short-${index}`),
+    }),
+    (error) => error instanceof BookshelfError && error.status === 400,
   );
 });
 

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDb } from ".";
 import { ensureSeed, rowToChapter } from "./chapters";
 import { rowToNovel } from "./novels";
@@ -16,9 +16,12 @@ import {
   validateStoryInputLengths,
   validateStoryMedia,
   SHORT_STORY_MAX_LENGTH,
+  type CatalogSection,
   type ChapterRecord,
   type NovelDocument,
   type NovelRecord,
+  type PublicCatalogItem,
+  type PublicCatalogPage,
   type StoryDocument,
 } from "../lib/story";
 
@@ -200,22 +203,16 @@ async function listShorts(actor: CreationActor) {
   return result;
 }
 
-async function listPublicNovels(slug?: string | null) {
-  await ensureSeed();
+async function publicNovelFromRow(row: typeof novels.$inferSelect) {
   const db = getDb();
-  const novelRows = slug
-    ? await db.select().from(novels).where(and(eq(novels.slug, slug), eq(novels.status, "published"))).limit(1)
-    : await db.select().from(novels).where(eq(novels.status, "published")).orderBy(asc(novels.sortOrder));
-  const result = [];
-  for (const row of novelRows) {
-    const chapterRows = await db.select().from(chapters)
-      .where(and(eq(chapters.novelId, row.id), eq(chapters.status, "published")))
-      .orderBy(asc(chapters.sortOrder));
-    if (chapterRows.length === 0 && !(row.format === "serial" && row.serialStatus === "completed")) continue;
-    const novel = rowToNovel(row);
-    const publicChapters = chapterRows.map(rowToChapter);
-    const stories = publicChapters.flatMap((chapter) => chapter.published ? [chapter.published] : []);
-    result.push({
+  const chapterRows = await db.select().from(chapters)
+    .where(and(eq(chapters.novelId, row.id), eq(chapters.status, "published")))
+    .orderBy(asc(chapters.sortOrder));
+  if (chapterRows.length === 0 && !(row.format === "serial" && row.serialStatus === "completed")) return null;
+  const novel = rowToNovel(row);
+  const publicChapters = chapterRows.map(rowToChapter);
+  const stories = publicChapters.flatMap((chapter) => chapter.published ? [chapter.published] : []);
+  return {
       id: novel.id, slug: novel.slug, sortOrder: novel.sortOrder, status: novel.status,
       version: novel.version, format: novel.format,
       serialStatus: novel.serialStatus,
@@ -228,9 +225,138 @@ async function listPublicNovels(slug?: string | null) {
         published: chapter.published, updatedAt: chapter.updatedAt,
       })),
       updatedAt: novel.updatedAt,
-    });
+    };
+}
+
+async function listPublicNovels(slug?: string | null) {
+  await ensureSeed();
+  const db = getDb();
+  const novelRows = slug
+    ? await db.select().from(novels).where(and(eq(novels.slug, slug), eq(novels.status, "published"))).limit(1)
+    : await db.select().from(novels).where(eq(novels.status, "published")).orderBy(asc(novels.sortOrder));
+  const result = [];
+  for (const row of novelRows) {
+    const novel = await publicNovelFromRow(row);
+    if (novel) result.push(novel);
   }
   return result;
+}
+
+function catalogCursor(cursor?: string | null) {
+  if (!cursor) return null;
+  try {
+    const value = JSON.parse(atob(cursor)) as { sortOrder?: unknown; id?: unknown };
+    if (typeof value.sortOrder !== "number" || !Number.isInteger(value.sortOrder) || typeof value.id !== "string" || !value.id) throw new Error();
+    return { sortOrder: value.sortOrder, id: value.id };
+  } catch {
+    fail("作品目录分页标识无效", 400);
+  }
+}
+
+function catalogSectionWhere(section: CatalogSection) {
+  const formatCondition = section === "short"
+    ? eq(novels.format, "short")
+    : and(eq(novels.format, "serial"), eq(novels.serialStatus, section === "completed" ? "completed" : "ongoing"));
+  if (section === "completed") return and(eq(novels.status, "published"), formatCondition);
+  return and(
+    eq(novels.status, "published"),
+    formatCondition,
+    exists(getDb().select({ id: chapters.id }).from(chapters).where(and(
+      eq(chapters.novelId, novels.id), eq(chapters.status, "published"),
+    ))),
+  );
+}
+
+async function listPublicCatalog(input: { section: CatalogSection; limit?: number; cursor?: string | null }): Promise<PublicCatalogPage> {
+  await ensureSeed();
+  if (!(["short", "ongoing", "completed"] as string[]).includes(input.section)) fail("作品目录分类无效", 400);
+  const limit = input.limit ?? 20;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20) fail("作品目录每页只能读取一至二十部", 400);
+  const cursor = catalogCursor(input.cursor);
+  const db = getDb();
+  const sectionWhere = catalogSectionWhere(input.section);
+  const cursorWhere = cursor ? or(
+    gt(novels.sortOrder, cursor.sortOrder),
+    and(eq(novels.sortOrder, cursor.sortOrder), gt(novels.id, cursor.id)),
+  ) : undefined;
+  const [rows, totalRows] = await Promise.all([
+    db.select().from(novels).where(and(sectionWhere, cursorWhere))
+      .orderBy(asc(novels.sortOrder), asc(novels.id)).limit(limit + 1),
+    db.select({ total: count() }).from(novels).where(sectionWhere),
+  ]);
+  const pageRows = rows.slice(0, limit);
+  const chapterRows = pageRows.length === 0 ? [] : await db.select({
+    id: chapters.id,
+    novelId: chapters.novelId,
+    title: chapters.title,
+    sortOrder: chapters.sortOrder,
+    publishedJson: chapters.publishedJson,
+  }).from(chapters).where(and(
+    inArray(chapters.novelId, pageRows.map((row) => row.id)),
+    eq(chapters.status, "published"),
+  )).orderBy(asc(chapters.novelId), asc(chapters.sortOrder), asc(chapters.id));
+  const byNovel = new Map<string, typeof chapterRows>();
+  for (const chapter of chapterRows) byNovel.set(chapter.novelId, [...(byNovel.get(chapter.novelId) ?? []), chapter]);
+  const items = pageRows.flatMap((row): PublicCatalogItem[] => {
+    const published = row.publishedJson ? normalizeNovel(JSON.parse(row.publishedJson)) : null;
+    if (!published) return [];
+    const novelChapters = byNovel.get(row.id) ?? [];
+    const common = {
+      id: row.id, slug: row.slug, sortOrder: row.sortOrder, version: row.version, published,
+      hasReadableContent: novelChapters.length > 0,
+    };
+    if (row.format === "short") {
+      const stories = novelChapters.flatMap((chapter) => chapter.publishedJson
+        ? [normalizeStory(JSON.parse(chapter.publishedJson))] : []);
+      return [{
+        ...common, format: "short", serialStatus: null,
+        wordCount: stories.reduce((total, story) => total + countStoryBodyCharacters(story), 0),
+        interactive: stories.some((story) => story.nodes.length > 1 || story.nodes.some((node) => node.choices.length > 0)),
+      }];
+    }
+    const latest = novelChapters.at(-1);
+    const latestStory = latest?.publishedJson ? normalizeStory(JSON.parse(latest.publishedJson)) : null;
+    return [{
+      ...common, format: "serial", serialStatus: row.serialStatus,
+      chapterCount: novelChapters.length, latestChapterTitle: latestStory?.title || latest?.title || null,
+    }];
+  });
+  const last = pageRows.at(limit - 1);
+  return {
+    items,
+    total: totalRows[0]?.total ?? 0,
+    nextCursor: rows.length > limit && last
+      ? btoa(JSON.stringify({ sortOrder: last.sortOrder, id: last.id })) : null,
+  };
+}
+
+async function getPublicCatalogHome(input: { limitPerSection?: number } = {}) {
+  const limitPerSection = input.limitPerSection ?? 4;
+  if (!Number.isInteger(limitPerSection) || limitPerSection < 1 || limitPerSection > 20) {
+    fail("首页每类只能读取一至二十部作品", 400);
+  }
+  const [short, ongoing, completed] = await Promise.all([
+    listPublicCatalog({ section: "short", limit: limitPerSection }),
+    listPublicCatalog({ section: "ongoing", limit: limitPerSection }),
+    listPublicCatalog({ section: "completed", limit: limitPerSection }),
+  ]);
+  return { sections: { short, ongoing, completed } };
+}
+
+async function getPublicNovel(input: { id?: string; slug?: string; chapterId?: string }) {
+  await ensureSeed();
+  if (!input.id && !input.slug && !input.chapterId) fail("小说标识无效", 400);
+  const db = getDb();
+  let novelId = input.id;
+  if (!novelId && !input.slug && input.chapterId) {
+    const chapterRows = await db.select({ novelId: chapters.novelId }).from(chapters)
+      .where(and(eq(chapters.id, input.chapterId), eq(chapters.status, "published"))).limit(1);
+    novelId = chapterRows[0]?.novelId;
+    if (!novelId) return null;
+  }
+  const keyWhere = novelId ? eq(novels.id, novelId) : eq(novels.slug, input.slug!);
+  const rows = await db.select().from(novels).where(and(keyWhere, eq(novels.status, "published"))).limit(1);
+  return rows[0] ? publicNovelFromRow(rows[0]) : null;
 }
 
 async function listVersions(actor: CreationActor, entity: "novel" | "chapter", id: string) {
@@ -732,4 +858,6 @@ async function execute(actor: CreationActor, command: CreationCommand) {
   return executeShort(actor, command);
 }
 
-export const creationLifecycle = { list, listShorts, listPublicNovels, listVersions, execute };
+export const creationLifecycle = {
+  list, listShorts, listPublicNovels, listPublicCatalog, getPublicCatalogHome, getPublicNovel, listVersions, execute,
+};

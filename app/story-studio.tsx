@@ -1,12 +1,15 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_COVER_PRESENTATION,
+  type CatalogSection,
   type ChapterRecord,
   type ImagePresentation,
   type NovelRecord,
+  type PublicCatalogHome,
   type StoryDocument,
 } from "../lib/story";
 import { Brand, FantasyMark } from "./brand";
@@ -14,6 +17,7 @@ import { Reader } from "./reader";
 import { normalizeRegistrationIntent } from "../lib/registration-intent";
 import { executeBookshelfOperation } from "./bookshelf-operation-client";
 import { ReaderShell } from "./reader-shell";
+import { CatalogGrid, catalogPresentation } from "./catalog/catalog-ui";
 
 export { Reader } from "./reader";
 
@@ -23,11 +27,13 @@ type View = "library" | "novel" | "cover" | "reader" | "outro";
 
 export function StoryStudio() {
   const [view, setView] = useState<View>("library");
+  const [catalog, setCatalog] = useState<PublicCatalogHome | null>(null);
   const [novels, setNovels] = useState<PublicNovel[]>([]);
   const [novelId, setNovelId] = useState("");
   const [chapterId, setChapterId] = useState("");
   const [busy, setBusy] = useState(true);
   const [libraryError, setLibraryError] = useState("");
+  const handledLocationRef = useRef("");
 
   useEffect(() => {
     if (window.scrollY > 0) window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -37,19 +43,37 @@ export function StoryStudio() {
   const chapterIndex = novel?.chapters.findIndex((item) => item.id === chapterId) ?? -1;
   const chapter = chapterIndex >= 0 ? novel?.chapters[chapterIndex] ?? null : null;
   const nextChapter = novel && chapterIndex >= 0 ? novel.chapters[chapterIndex + 1] ?? null : null;
-  const openRecommendedNovel = (id: string) => {
-    const selected = novels.find((item) => item.id === id);
-    if (!selected) return;
-    setNovelId(id);
+  const openNovel = useCallback(async (input: { id?: string; chapterId?: string }) => {
+    const cached = input.id ? novels.find((item) => item.id === input.id) : null;
+    let selected = cached ?? null;
+    if (!selected) {
+      const search = new URLSearchParams();
+      if (input.id) search.set("id", input.id);
+      else if (input.chapterId) search.set("chapterId", input.chapterId);
+      const response = await fetch(`/api/novels?${search}`);
+      if (!response.ok) { setLibraryError("这份世界档案暂时无法打开"); return; }
+      const body = await response.json() as { novel?: PublicNovel };
+      if (!body.novel) { setLibraryError("这份世界档案已经不可用"); return; }
+      selected = body.novel;
+      setNovels((current) => current.some((item) => item.id === selected!.id) ? current : [...current, selected!]);
+    }
+    setNovelId(selected.id);
+    const targetChapter = input.chapterId
+      ? selected.chapters.find((item) => item.id === input.chapterId && item.published)
+      : null;
+    if (targetChapter) {
+      setChapterId(targetChapter.id); setView("reader"); return;
+    }
     if (selected.format === "short" && selected.chapters[0]?.published) {
-      setChapterId(selected.chapters[0].id);
-      setView("reader");
+      setChapterId(selected.chapters[0].id); setView("reader");
     } else setView("novel");
-  };
+  }, [novels]);
+  const openRecommendedNovel = (id: string) => { void openNovel({ id }); };
+  const catalogItems = catalog ? Object.values(catalog.sections).flatMap((page) => page.items) : [];
   const readerShell = (content: ReactNode, contextLabel: string) => <ReaderShell
     active="world"
     contextLabel={contextLabel}
-    novels={novels}
+    novels={catalogItems}
     onOpenNovel={openRecommendedNovel}
   >{content}</ReaderShell>;
 
@@ -57,10 +81,10 @@ export function StoryStudio() {
     setBusy(true);
     setLibraryError("");
     try {
-      const response = await fetch("/api/novels");
+      const response = await fetch("/api/catalog");
       if (!response.ok) throw new Error("小说读取失败");
-      const data = await response.json() as { novels?: PublicNovel[] };
-      setNovels(data.novels || []);
+      const data = await response.json() as PublicCatalogHome;
+      setCatalog(data);
     } catch {
       setLibraryError("世界档案暂时没有加载出来");
     } finally {
@@ -69,21 +93,14 @@ export function StoryStudio() {
   }, []);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => {
-    if (busy || novels.length === 0) return;
+    if (busy || !catalog) return;
     const params = new URLSearchParams(window.location.search);
     const requestedNovelId = params.get("novel");
-    if (requestedNovelId && novels.some((item) => item.id === requestedNovelId)) {
-      params.delete("novel");
-      const query = params.toString();
-      window.history.replaceState(window.history.state, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
-      const requested = novels.find((item) => item.id === requestedNovelId)!;
-      queueMicrotask(() => {
-        setNovelId(requestedNovelId);
-        if (requested.format === "short" && requested.chapters[0]?.published) {
-          setChapterId(requested.chapters[0].id);
-          setView("reader");
-        } else setView("novel");
-      });
+    const locationKey = `${window.location.pathname}${window.location.search}`;
+    if (handledLocationRef.current === locationKey) return;
+    if (requestedNovelId) {
+      handledLocationRef.current = locationKey;
+      queueMicrotask(() => void openNovel({ id: requestedNovelId }));
       return;
     }
     const intent = normalizeRegistrationIntent({ kind: params.get("resume"), targetId: params.get("target") });
@@ -95,33 +112,24 @@ export function StoryStudio() {
       window.history.replaceState(window.history.state, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
     };
     if (intent.kind === "bookshelf") {
-      const targetNovel = novels.find((item) => item.id === intent.targetId);
-      if (!targetNovel) return;
       consumeIntent();
-      queueMicrotask(() => {
-        setNovelId(targetNovel.id);
-        if (targetNovel.format === "short" && targetNovel.chapters[0]?.published) {
-          setChapterId(targetNovel.chapters[0].id);
-          setView("reader");
-        } else setView("novel");
-      });
+      queueMicrotask(() => void openNovel({ id: intent.targetId }));
       return;
     }
     if (intent.kind === "progress") {
-      const targetNovel = novels.find((item) => item.chapters.some((chapter) => chapter.id === intent.targetId));
-      const targetChapter = targetNovel?.chapters.find((chapter) => chapter.id === intent.targetId);
-      if (!targetNovel || !targetChapter?.published) return;
       consumeIntent();
-      queueMicrotask(() => {
-        setNovelId(targetNovel.id);
-        setChapterId(targetChapter.id);
-        setView("reader");
-      });
+      queueMicrotask(() => void openNovel({ chapterId: intent.targetId }));
     }
-  }, [busy, novels]);
+  }, [busy, catalog, openNovel]);
+
+  const returnToLibrary = () => {
+    handledLocationRef.current = "";
+    window.history.pushState(window.history.state, "", "/");
+    setNovelId(""); setChapterId(""); setView("library");
+  };
 
   if (view === "novel" && novel) {
-    return readerShell(<NovelHome novel={novel} onBack={() => setView("library")} onRead={(selected) => {
+    return readerShell(<NovelHome novel={novel} onBack={returnToLibrary} onRead={(selected) => {
       setChapterId(selected.id);
       setView("cover");
     }} />, novel.published?.name || "小说档案");
@@ -130,70 +138,45 @@ export function StoryStudio() {
     return readerShell(<ChapterCover novel={novel} chapter={chapter} onBack={() => setView("novel")} onStart={() => setView("reader")} />, chapter.published.title);
   }
   if (view === "reader" && chapter?.published) {
-    return <Reader story={chapter.published} chapterId={chapter.id} chapterVersion={chapter.version} novels={novels} onOpenNovel={openRecommendedNovel} backLabel={novel?.format === "short" ? "返回世界档案" : "返回章节目录"} onBack={() => setView(novel?.format === "short" ? "library" : "novel")} onComplete={() => setView("outro")} />;
+    return <Reader story={chapter.published} chapterId={chapter.id} chapterVersion={chapter.version} novels={catalogItems} onOpenNovel={openRecommendedNovel} backLabel={novel?.format === "short" ? "返回世界档案" : "返回章节目录"} onBack={() => novel?.format === "short" ? returnToLibrary() : setView("novel")} onComplete={() => setView("outro")} />;
   }
   if (view === "outro" && novel?.published && chapter?.published) {
-    return readerShell(<ChapterOutro novel={novel} chapter={chapter} nextChapter={novel.format === "short" ? null : nextChapter} backLabel={novel.format === "short" ? "返回世界档案" : "返回章节目录"} onBack={() => setView(novel.format === "short" ? "library" : "novel")} onNext={() => {
+    return readerShell(<ChapterOutro novel={novel} chapter={chapter} nextChapter={novel.format === "short" ? null : nextChapter} backLabel={novel.format === "short" ? "返回世界档案" : "返回章节目录"} onBack={() => novel.format === "short" ? returnToLibrary() : setView("novel")} onNext={() => {
       if (!nextChapter) return;
       setChapterId(nextChapter.id);
       setView("cover");
     }} />, "章节完成");
   }
-  return readerShell(<main className="app-shell">{busy && <div className="loading-bar" aria-label="加载中" />}<Library novels={novels} loadError={libraryError} onRetry={() => void load()} onOpen={(selected) => {
-    setNovelId(selected.id);
-    if (selected.format === "short" && selected.chapters[0]?.published) {
-      setChapterId(selected.chapters[0].id);
-      setView("reader");
-    } else setView("novel");
-  }} /></main>, "主档案.001");
+  return readerShell(<main className="app-shell">{busy && <div className="loading-bar" aria-label="加载中" />}<Library catalog={catalog} loadError={libraryError} onRetry={() => void load()} onOpen={(id) => void openNovel({ id })} /></main>, "主档案.001");
 }
 
-function Library({ novels, loadError, onRetry, onOpen }: { novels: PublicNovel[]; loadError: string; onRetry: () => void; onOpen: (novel: PublicNovel) => void }) {
-  const shortNovels = novels.filter((novel) => novel.format === "short");
-  const serialNovels = novels.filter((novel) => novel.format !== "short" && novel.serialStatus !== "completed");
-  const completedNovels = novels.filter((novel) => novel.format !== "short" && novel.serialStatus === "completed");
+function Library({ catalog, loadError, onRetry, onOpen }: {
+  catalog: PublicCatalogHome | null;
+  loadError: string;
+  onRetry: () => void;
+  onOpen: (id: string) => void;
+}) {
+  const sections = catalog?.sections;
+  const total = sections ? Object.values(sections).reduce((sum, page) => sum + page.total, 0) : 0;
   return <div className="library fantasy-library">
     <section className="hero"><FantasyMark className="hero-system-mark" /><p className="eyebrow">INTERACTIVE FICTION UNIVERSE</p><h1>穿过裂隙，<br />抵达你的故事宇宙。</h1><p className="hero-copy">每一本小说都是一座世界，每一个选择都在打开新的时间线。</p><div className="scroll-cue"><span>探索世界档案</span><i /></div></section>
-    {shortNovels.length > 0 && <WorkCatalog section="short" novels={shortNovels} onOpen={onOpen} />}
-    {serialNovels.length > 0 && <WorkCatalog section="ongoingSerial" novels={serialNovels} onOpen={onOpen} />}
-    {completedNovels.length > 0 && <WorkCatalog section="completedSerial" novels={completedNovels} onOpen={onOpen} />}
-    {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : novels.length === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与短篇发布后，会在这里出现。</p></div>}
+    {sections && (["short", "ongoing", "completed"] as CatalogSection[]).map((section) => sections[section].total > 0
+      ? <WorkCatalog key={section} section={section} page={sections[section]} onOpen={onOpen} /> : null)}
+    {loadError ? <div className="empty" role="alert"><b>{loadError}</b><p>请检查网络后再试，已有内容不会受到影响。</p><button className="ghost" onClick={onRetry}>重试</button></div> : catalog && total === 0 && <div className="empty"><b>新的世界正在构建</b><p>小说与短篇发布后，会在这里出现。</p></div>}
     <footer><Brand /><p>你的选择，构成世界。</p><a className="text-button" href="/creator">进入创作中心</a></footer>
   </div>;
 }
 
-type CatalogSection = "short" | "ongoingSerial" | "completedSerial";
-
-const catalogPresentation: Record<CatalogSection, { className: string; title: string; subtitle: string; ariaAction: string; cta: string }> = {
-  short: { className: "short", title: "短篇", subtitle: "凝结于一瞬的幻境", ariaAction: "开始或继续阅读短篇", cta: "开始 / 继续阅读" },
-  ongoingSerial: { className: "serial", title: "连载小说", subtitle: "尚未闭合的世界线", ariaAction: "进入连载小说", cta: "进入小说" },
-  completedSerial: { className: "completed", title: "完结小说", subtitle: "已经闭合的世界线", ariaAction: "进入完结小说", cta: "进入小说" },
-};
-
-function WorkCatalog({ section, novels, onOpen }: { section: CatalogSection; novels: PublicNovel[]; onOpen: (novel: PublicNovel) => void }) {
-  const isShort = section === "short";
+function WorkCatalog({ section, page, onOpen }: {
+  section: CatalogSection;
+  page: PublicCatalogHome["sections"][CatalogSection];
+  onOpen: (id: string) => void;
+}) {
   const presentation = catalogPresentation[section];
   const titleId = `${presentation.className}-catalog-title`;
   return <section className={`shelf work-catalog ${presentation.className}-catalog`} aria-labelledby={titleId}>
-    <header className="catalog-section-heading"><i aria-hidden="true">/</i><div><p>{presentation.subtitle}</p><h2 id={titleId}>{presentation.title}</h2></div><span>{novels.length} 部</span></header>
-    <div className="catalog-card-grid">{novels.map((novel) => {
-      const latestChapter = novel.chapters.at(-1);
-      const latestChapterTitle = latestChapter?.published?.title || latestChapter?.title;
-      const metadata = isShort
-        ? `${novel.wordCount.toLocaleString("zh-CN")} 字 · ${novel.interactive ? "互动" : "线性"}`
-        : `${novel.chapters.length} 个章节${latestChapterTitle ? ` · 最新 ${latestChapterTitle}` : ""}`;
-      const hasReadableContent = novel.chapters.length > 0;
-      const cardContent = <>
-          <div className="catalog-card-cover"><Artwork src={novel.published?.coverUrl || ""} alt={novel.published?.coverAlt || novel.published?.name || `${presentation.title}封面`} presentation={novel.published?.coverPresentation} /></div>
-          <span><small>{metadata}</small><h3>{novel.published?.name}</h3><p>{novel.published?.summary}</p><i>{hasReadableContent ? `${presentation.cta} →` : "暂无正文，仅作展示"}</i></span>
-        </>;
-      return <article className="catalog-card" key={novel.id}>
-        {hasReadableContent
-          ? <button className="catalog-card-open" onClick={() => onOpen(novel)} aria-label={`${presentation.ariaAction}：${novel.published?.name}`}>{cardContent}</button>
-          : <div className="catalog-card-open catalog-card-static" aria-label={`${novel.published?.name}：暂无正文，仅作展示`}>{cardContent}</div>}
-        {isShort && <BookshelfControl novelId={novel.id} />}
-      </article>;
-    })}</div>
+    <header className="catalog-section-heading"><i aria-hidden="true">/</i><div><p>{presentation.subtitle}</p><h2 id={titleId}>{presentation.title}</h2></div><Link href={presentation.href}>全部 {page.total} 部 →</Link></header>
+    <CatalogGrid section={section} page={page} onOpen={onOpen} />
   </section>;
 }
 
