@@ -139,6 +139,70 @@ test("拖拽小雾会保存位置且不会误触发打开对话", async () => {
   assert.equal(launcher.getAttribute("aria-expanded"), "true");
 });
 
+test("小雾只在手机内容框内移动并在左右边框对称探头", async () => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+  container.className = "reader-shell";
+  Object.defineProperty(container, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({ x: 385, y: 0, left: 385, top: 0, right: 815, bottom: 844, width: 430, height: 844, toJSON() {} }),
+  });
+  await act(async () => root.render(<FantasyTerminal />));
+  const launcher = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  Object.defineProperty(launcher, "getBoundingClientRect", {
+    configurable: true,
+    value: () => {
+      const left = Number.parseFloat(launcher.style.left) || 385;
+      const top = Number.parseFloat(launcher.style.top) || 500;
+      return { x: left, y: top, left, top, right: left + 70, bottom: top + 98, width: 70, height: 98, toJSON() {} };
+    },
+  });
+
+  await act(async () => {
+    dispatchPointer(launcher, "pointerdown", 400, 510);
+    dispatchPointer(window, "pointermove", 900, 410);
+    dispatchPointer(window, "pointerup", 900, 410);
+  });
+  assert.match(launcher.className, /edge-right/);
+  assert.match(launcher.className, /is-peeking/);
+  assert.equal(launcher.style.left, "745px");
+
+  await act(async () => {
+    dispatchPointer(launcher, "pointerdown", 760, 410, 2);
+    dispatchPointer(window, "pointermove", 600, 410, 2);
+    dispatchPointer(window, "pointerup", 600, 410, 2);
+  });
+  assert.doesNotMatch(launcher.className, /edge-/);
+  assert.match(launcher.className, /is-floating/);
+  assert.equal(launcher.style.left, "523px");
+
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.xiaowu-companion\.edge-right img\{[^}]*left:-6px[^}]*scaleX\(-1\)/);
+});
+
+test("正式阅读在桌面端也使用居中的手机阅读框作为小雾边界", async () => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+  container.className = "reader";
+  Object.defineProperty(container, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 1200, bottom: 844, width: 1200, height: 844, toJSON() {} }),
+  });
+  localStorage.setItem(COMPANION_PREFERENCE_STORAGE_KEY, JSON.stringify({
+    version: 1,
+    hidden: false,
+    position: { x: 1, y: 0.5 },
+  }));
+
+  await act(async () => root.render(<FantasyTerminal />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  const launcher = container.querySelector<HTMLButtonElement>('button[aria-label="打开小雾"]');
+  assert.ok(launcher);
+  assert.match(launcher.className, /edge-right/);
+  assert.equal(launcher.style.left, "745px");
+});
+
 test("键盘方向键移动小雾并遵守视口安全区", async () => {
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });

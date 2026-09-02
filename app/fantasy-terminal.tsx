@@ -20,9 +20,11 @@ import {
   normalizeCompanionPoint,
   parseCompanionPreference,
   placeCompanionDialog,
+  placeCompanionLauncher,
   placeCompanionRestore,
   resolveCompanionPoint,
   type CompanionPoint,
+  type CompanionEdge,
   type CompanionPreference,
   type CompanionSize,
   type CompanionViewport,
@@ -64,14 +66,24 @@ const reactionLabels: Record<TerminalReaction, string> = { notice: "提示", suc
 const CLOSED_COMPANION_SIZE: CompanionSize = { width: 70, height: 98 };
 const OPEN_COMPANION_SIZE: CompanionSize = { width: 132, height: 150 };
 const COMPANION_DRAG_THRESHOLD = 6;
+const READER_FRAME_MAX_WIDTH = 430;
 
-function currentCompanionViewport(): CompanionViewport {
+function currentCompanionViewport(anchor?: HTMLElement | null): CompanionViewport {
   const visualViewport = window.visualViewport;
+  const width = visualViewport?.width ?? window.innerWidth;
+  const frame = anchor?.closest<HTMLElement>(".reader-shell, .reader");
+  const frameRect = frame?.getBoundingClientRect();
+  const frameWidth = Math.min(READER_FRAME_MAX_WIDTH, frameRect?.width ?? width, width);
+  const frameLeft = frameRect
+    ? Math.max(0, Math.min(width - frameWidth, frameRect.left + (frameRect.width - frameWidth) / 2))
+    : 0;
   return {
-    width: visualViewport?.width ?? window.innerWidth,
+    width,
     height: visualViewport?.height ?? window.innerHeight,
     topInset: 76,
     bottomInset: 96,
+    leftInset: frameLeft,
+    rightInset: Math.max(0, width - frameLeft - frameWidth),
   };
 }
 
@@ -165,6 +177,7 @@ export function FantasyTerminal({
   const movableCompanion = launcher === "default" && !preview;
   const [companionPreference, setCompanionPreference] = useState<CompanionPreference>(DEFAULT_COMPANION_PREFERENCE);
   const [companionPoint, setCompanionPoint] = useState<CompanionPoint | null>(null);
+  const [companionViewport, setCompanionViewport] = useState<CompanionViewport | null>(null);
   const [draggingCompanion, setDraggingCompanion] = useState(false);
   const persistCompanionPreference = useCallback((next: CompanionPreference) => {
     setCompanionPreference(next);
@@ -208,7 +221,7 @@ export function FantasyTerminal({
   const recommendations = useMemo(() => recommendNovels(novels, preferences), [novels, preferences]);
   const activeTask = playback?.task ?? task;
   const completedObjectives = activeTask?.objectives.filter((objective) => objective.status === "completed").length ?? 0;
-  const companionSize = open ? OPEN_COMPANION_SIZE : CLOSED_COMPANION_SIZE;
+  const companionSize = movableCompanion || open ? OPEN_COMPANION_SIZE : CLOSED_COMPANION_SIZE;
 
   useEffect(() => {
     if (!movableCompanion) return;
@@ -229,8 +242,10 @@ export function FantasyTerminal({
     let active = true;
     const syncPoint = () => {
       if (!active) return;
+      const viewport = currentCompanionViewport(launcherRef.current);
+      setCompanionViewport(movableCompanion ? viewport : null);
       setCompanionPoint(movableCompanion && companionPreference.position
-        ? resolveCompanionPoint(companionPreference.position, currentCompanionViewport(), companionSize)
+        ? resolveCompanionPoint(companionPreference.position, viewport, companionSize)
         : null);
     };
     queueMicrotask(syncPoint);
@@ -524,15 +539,15 @@ export function FantasyTerminal({
         ? "greeting"
         : "idle";
   const companionImage = xiaowuAppearanceAsset(companionAppearance, companionState);
-  const companionClassName = `xiaowu-companion state-${companionState}${open ? " is-open" : " is-peeking"}`;
   const openFromCompanion = () => {
     setSection(signal ? "message" : "home");
     setSignal(false);
     setOpen(true);
   };
   const saveCompanionPoint = (point: CompanionPoint) => {
-    const viewport = currentCompanionViewport();
+    const viewport = currentCompanionViewport(launcherRef.current);
     const clamped = clampCompanionPoint(point, viewport, companionSize);
+    setCompanionViewport(viewport);
     setCompanionPoint(clamped);
     persistCompanionPreference({
       version: 1,
@@ -557,7 +572,7 @@ export function FantasyTerminal({
       const delta = { x: pointerEvent.clientX - drag.start.x, y: pointerEvent.clientY - drag.start.y };
       if (!drag.dragged && Math.hypot(delta.x, delta.y) < COMPANION_DRAG_THRESHOLD) return;
       drag.dragged = true;
-      drag.current = clampCompanionPoint({ x: drag.origin.x + delta.x, y: drag.origin.y + delta.y }, currentCompanionViewport(), companionSize);
+      drag.current = clampCompanionPoint({ x: drag.origin.x + delta.x, y: drag.origin.y + delta.y }, currentCompanionViewport(launcherRef.current), companionSize);
       setDraggingCompanion(true);
       setCompanionPoint(drag.current);
       pointerEvent.preventDefault();
@@ -620,10 +635,16 @@ export function FantasyTerminal({
   };
 
   const companionHidden = movableCompanion && companionPreference.hidden && !playback;
-  const companionStyle: CSSProperties | undefined = companionPoint
-    ? { left: companionPoint.x, top: companionPoint.y, bottom: "auto" }
+  const placementViewport = companionPoint ? companionViewport : null;
+  const launcherPlacement = companionPoint && placementViewport && !open
+    ? placeCompanionLauncher(companionPoint, placementViewport, OPEN_COMPANION_SIZE, CLOSED_COMPANION_SIZE)
+    : null;
+  const companionEdge: CompanionEdge = open ? null : launcherPlacement?.edge ?? (companionPoint ? null : "left");
+  const companionDisplayPoint = launcherPlacement?.point ?? companionPoint;
+  const companionStyle: CSSProperties | undefined = companionDisplayPoint
+    ? { left: companionDisplayPoint.x, top: companionDisplayPoint.y, bottom: "auto" }
     : undefined;
-  const placementViewport = companionPoint && typeof window !== "undefined" ? currentCompanionViewport() : null;
+  const companionClassName = `xiaowu-companion state-${companionState}${open ? " is-open" : companionEdge ? ` is-peeking edge-${companionEdge}` : " is-floating"}`;
   const restorePoint = companionPoint && placementViewport
     ? placeCompanionRestore(companionPoint, placementViewport, companionSize, { width: 42, height: 52 })
     : null;
